@@ -1,0 +1,406 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://quayel.dev/schemas/config.schema.json",
+  "title": "Quayel Gateway config.json",
+  "description": "Machine-readable schema for Quayel Gateway configuration. Mirrors src/config/schema.rs (snake_case serde enums) and src/config/loader.rs validation. NOTE: the gateway itself ignores unknown fields; this schema sets additionalProperties=false so typos in generated configs are caught. Validate: check-jsonschema --schemafile docs/config.schema.json config.json",
+  "type": "object",
+  "required": ["gateway_id", "gateway_name", "server_name", "config_version", "listen", "plugins"],
+  "additionalProperties": false,
+  "properties": {
+    "gateway_id": { "type": "string", "description": "Unique identifier for this gateway instance" },
+    "gateway_name": { "type": "string", "description": "Human-readable name" },
+    "server_name": { "type": "string", "description": "Server name used in logging" },
+    "config_version": { "type": "string", "description": "Version string; bump on every change" },
+    "listen": { "$ref": "#/definitions/listen" },
+    "client_ip": { "$ref": "#/definitions/client_ip" },
+    "plugins": { "$ref": "#/definitions/plugins" }
+  },
+
+  "definitions": {
+    "listen": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "http": { "type": "string", "description": "host:port, e.g. \"0.0.0.0:8080\"" },
+        "https": { "type": "string", "description": "host:port, e.g. \"0.0.0.0:8443\"" }
+      },
+      "anyOf": [
+        { "required": ["http"] },
+        { "required": ["https"] }
+      ]
+    },
+
+    "client_ip": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source"],
+      "properties": {
+        "source": {
+          "enum": ["peer_ip", "header", "header_index"],
+          "description": "peer_ip = TCP peer; header = single-valued header; header_index = Nth entry of a comma-separated header"
+        },
+        "header": {
+          "type": "string",
+          "description": "Header name; required when source is header or header_index"
+        },
+        "index": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "0-based index into comma-separated header; required when source is header_index"
+        },
+        "fallback": { "enum": ["peer_ip"] }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "source": { "enum": ["header", "header_index"] } } },
+          "then": { "required": ["header"] }
+        },
+        {
+          "if": { "properties": { "source": { "const": "header_index" } } },
+          "then": { "required": ["index"] }
+        }
+      ]
+    },
+
+    "plugins": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "ip_intel": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": { "enabled": { "type": "boolean", "default": true } }
+        },
+        "firewall": { "$ref": "#/definitions/firewall" },
+        "rate_limiting": { "$ref": "#/definitions/rate_limiting" },
+        "cache": { "$ref": "#/definitions/cache" },
+        "load_balancer": { "$ref": "#/definitions/load_balancer" },
+        "logging": { "$ref": "#/definitions/logging" },
+        "auto_ssl": { "$ref": "#/definitions/auto_ssl" }
+      }
+    },
+
+    "condition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["left", "operator"],
+      "properties": {
+        "left": {
+          "type": "string",
+          "description": "Condition path: req.* / http.* / ip.* / req.header.<name>[.jwt.<claim.path>] / req.query.<name> / req.cookie.<name>. See docs/ai-guide.md section 6."
+        },
+        "operator": {
+          "enum": [
+            "equals", "not_equals", "contains", "not_contains", "starts_with", "ends_with",
+            "exists", "not_exists", "in", "not_in",
+            "greater_than", "greater_than_or_equal", "less_than", "less_than_or_equal", "regex"
+          ]
+        },
+        "value": {
+          "description": "Expected value (string, number, bool or array). Omit for exists/not_exists. in/not_in require an array."
+        },
+        "next": { "enum": ["and", "or"], "description": "Logical join to the NEXT condition; default and" }
+      }
+    },
+
+    "firewall": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean", "default": true },
+        "rules": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "name", "conditions", "action"],
+            "properties": {
+              "id": { "type": "string" },
+              "name": { "type": "string" },
+              "enabled": { "type": "boolean", "default": true },
+              "conditions": {
+                "type": "array",
+                "minItems": 1,
+                "items": { "$ref": "#/definitions/condition" },
+                "description": "At least one condition required (loader rejects empty)"
+              },
+              "action": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["type"],
+                "properties": {
+                  "type": { "enum": ["allow", "block", "redirect", "set_request_header", "set_response_header"] },
+                  "status": { "type": "integer", "minimum": 100, "maximum": 599, "description": "block default 403, redirect default 302" },
+                  "location": { "type": "string", "description": "Required for redirect" },
+                  "headers": {
+                    "type": "object",
+                    "additionalProperties": { "type": "string" },
+                    "description": "Required for set_request_header / set_response_header"
+                  }
+                },
+                "allOf": [
+                  {
+                    "if": { "properties": { "type": { "const": "redirect" } } },
+                    "then": { "required": ["location"] }
+                  },
+                  {
+                    "if": { "properties": { "type": { "enum": ["set_request_header", "set_response_header"] } } },
+                    "then": { "required": ["headers"] }
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+
+    "rate_limiting": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean", "default": true },
+        "rules": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "name", "conditions", "key", "limit", "window_seconds"],
+            "properties": {
+              "id": { "type": "string" },
+              "name": { "type": "string" },
+              "enabled": { "type": "boolean", "default": true },
+              "conditions": {
+                "type": "array",
+                "items": { "$ref": "#/definitions/condition" },
+                "description": "Empty = matches every request (global rate limit is allowed)"
+              },
+              "key": {
+                "description": "Single path (\"req.client_ip\") or composite array ([\"req.client_ip\", \"req.header.X-API-Key\"]). Supports JWT paths (\"authorization.jwt.user_id\") and the legacy template \"{req.client_ip}+{http.header.x-api-key}\".",
+                "oneOf": [
+                  { "type": "string", "minLength": 1 },
+                  { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } }
+                ]
+              },
+              "limit": { "type": "integer", "minimum": 1 },
+              "window_seconds": { "type": "integer", "minimum": 1 },
+              "action": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["type"],
+                "properties": {
+                  "type": { "enum": ["block"] },
+                  "status": { "type": "integer", "minimum": 100, "maximum": 599, "default": 429 }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+
+    "cache": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean", "default": true },
+        "max_object_size_bytes": { "type": "integer", "minimum": 1, "default": 10485760 },
+        "rules": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "name", "edge_ttl"],
+            "properties": {
+              "id": { "type": "string" },
+              "name": { "type": "string" },
+              "enabled": { "type": "boolean", "default": true },
+              "conditions": {
+                "type": "array",
+                "items": { "$ref": "#/definitions/condition" },
+                "description": "Empty = matches every request (cache rules may be catch-all)"
+              },
+              "cache": { "enum": ["eligible", "bypass"], "default": "eligible" },
+              "edge_ttl": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["mode"],
+                "properties": {
+                  "mode": { "enum": ["origin", "custom"] },
+                  "seconds": { "type": "integer", "minimum": 0 }
+                }
+              },
+              "browser_ttl": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["mode"],
+                "properties": {
+                  "mode": { "enum": ["bypass", "origin", "custom"] },
+                  "seconds": { "type": "integer", "minimum": 0 }
+                }
+              },
+              "cache_key": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["mode"],
+                "properties": {
+                  "mode": { "enum": ["default", "custom"] },
+                  "parts": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Condition paths added to the key; required when mode is custom. e.g. [\"ip.country\"]"
+                  }
+                }
+              },
+              "statuses": {
+                "type": "array",
+                "items": { "type": "integer", "minimum": 100, "maximum": 599 },
+                "default": [200, 301, 404]
+              },
+              "stale_while_revalidate": { "type": "integer", "minimum": 0 },
+              "stale_if_error": { "type": "integer", "minimum": 0 }
+            }
+          }
+        }
+      }
+    },
+
+    "load_balancer": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean", "default": true },
+        "load_balancers": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "name", "algorithm", "targets"],
+            "properties": {
+              "id": { "type": "string" },
+              "name": { "type": "string" },
+              "enabled": { "type": "boolean", "default": true },
+              "conditions": {
+                "type": "array",
+                "items": { "$ref": "#/definitions/condition" },
+                "description": "Empty = this pool matches every request. First matching pool in array order wins."
+              },
+              "algorithm": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["type"],
+                "properties": {
+                  "type": {
+                    "enum": ["round_robin", "weighted_round_robin", "least_connections", "fast_response", "sticky_session"]
+                  },
+                  "key": {
+                    "type": "string",
+                    "description": "Condition path used to pin sessions; relevant for sticky_session"
+                  }
+                }
+              },
+              "targets": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["id", "host", "port"],
+                  "properties": {
+                    "id": { "type": "string" },
+                    "host": { "type": "string" },
+                    "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+                    "protocol": { "enum": ["http", "https"], "default": "http" },
+                    "weight": { "type": "integer", "minimum": 0, "default": 100 },
+                    "enabled": { "type": "boolean", "default": true },
+                    "tls": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "verify": { "type": "boolean", "default": false },
+                        "sni": { "type": ["string", "null"] }
+                      }
+                    }
+                  }
+                }
+              },
+              "host_header": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["mode"],
+                "properties": {
+                  "mode": { "enum": ["visitor", "custom", "target"] },
+                  "value": { "type": "string", "description": "Required when mode is custom" }
+                },
+                "allOf": [
+                  {
+                    "if": { "properties": { "mode": { "const": "custom" } } },
+                    "then": { "required": ["value"] }
+                  }
+                ]
+              },
+              "health_check": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["mode"],
+                "properties": {
+                  "mode": {
+                    "enum": ["https", "accepts_connections", "off"],
+                    "description": "https = HTTP(S) GET to path on the target; accepts_connections = TCP connect only; off = disabled. There is NO \"http\" mode."
+                  },
+                  "path": { "type": "string", "default": "/" },
+                  "interval_seconds": { "type": "integer", "minimum": 1, "default": 5 },
+                  "timeout_ms": { "type": "integer", "minimum": 1, "default": 1000 },
+                  "expected_statuses": {
+                    "type": "array",
+                    "items": { "type": "integer", "minimum": 100, "maximum": 599 }
+                  },
+                  "healthy_threshold": { "type": "integer", "minimum": 1, "default": 2 },
+                  "unhealthy_threshold": { "type": "integer", "minimum": 1, "default": 3 }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+
+    "logging": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean", "default": true },
+        "mode": { "type": "string", "default": "file" },
+        "file": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["path"],
+          "properties": {
+            "path": { "type": "string" },
+            "buffer_size": { "type": "integer", "minimum": 1, "default": 8192 },
+            "flush_interval_ms": { "type": "integer", "minimum": 1, "default": 1000 }
+          }
+        }
+      }
+    },
+
+    "auto_ssl": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["email", "domains"],
+      "properties": {
+        "enabled": { "type": "boolean", "default": true },
+        "email": { "type": "string", "description": "Let's Encrypt account email (required)" },
+        "domains": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string" },
+          "description": "Domains to provision certificates for (required, non-empty)"
+        },
+        "cert_storage_path": { "type": "string", "default": "/var/lib/quayel/certs" },
+        "staging": { "type": "boolean", "default": false },
+        "renewal_days_before": { "type": "integer", "minimum": 1, "default": 30 }
+      }
+    }
+  }
+}

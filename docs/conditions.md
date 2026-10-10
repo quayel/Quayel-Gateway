@@ -65,6 +65,17 @@ Conditions are the core matching mechanism used by Firewall, Rate Limiting, Cach
 | `req.cookie.<name>` | string | Cookie value |
 | `http.cookie.<name>` | string | Cookie value |
 
+### JWT claim extraction
+
+A header path ending in `.jwt.<claim.path>` decodes the header value as a JWT
+(a leading `Bearer ` is stripped), then navigates the payload by dotted claim path:
+
+| Path | Meaning |
+|------|---------|
+| `req.header.authorization.jwt.user_id` | `user_id` claim of the Bearer token |
+| `req.header.authorization.jwt.data.role` | nested claim `data.role` |
+| `header.token.jwt.user_id` | bare `header.` prefix also works (same for rate-limit keys) |
+
 ## Operators
 
 | Operator | Description | Example |

@@ -180,6 +180,30 @@ Sliding-window rate limiting.
 }
 ```
 
+#### Rule fields
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `id` | string | ✅ | Unique rule identifier |
+| `name` | string | ✅ | Human-readable name |
+| `enabled` | bool | `true` | Enable/disable rule |
+| `conditions` | array | `[]` | When to apply (**empty = every request**, e.g. a global limit) |
+| `key` | string \| array | ✅ | What to count per client (see below) |
+| `limit` | int > 0 | ✅ | Max requests per window |
+| `window_seconds` | int > 0 | ✅ | Sliding window length |
+| `action` | object | — | `{ "type": "block", "status": 429 }` (default) |
+
+#### `key` forms
+
+| Form | Example | Meaning |
+|------|---------|---------|
+| Single path | `"key": "req.client_ip"` | Count per resolved client IP |
+| Composite array | `"key": ["req.client_ip", "req.header.X-API-Key"]` | Count per combination (parts joined with `:`) |
+| JWT claim | `"key": "req.header.authorization.jwt.user_id"` | Decode Bearer token, count per claim |
+| Legacy template | `"key": "{req.client_ip}+{http.header.x-api-key}"` | Placeholders resolved and concatenated |
+
+Any [condition path](conditions.md) can be used as a key part.
+
 See [Rate Limiting Plugin](plugins/rate-limiting.md) for details.
 
 ### `plugins.cache`
@@ -342,6 +366,37 @@ Upstream load balancing.
 ```
 
 See [Load Balancer Plugin](plugins/load-balancer.md) for details.
+
+#### `algorithm.type` values
+
+| Value | Description |
+|-------|-------------|
+| `round_robin` | Rotate through targets |
+| `weighted_round_robin` | Rotate proportionally to `weight` |
+| `least_connections` | Pick the target with the fewest open connections |
+| `fast_response` | Prefer targets with the fastest recent responses |
+| `sticky_session` | Pin a client to a target; `algorithm.key` names the condition path to pin by (e.g. `"req.header.X-Session-Id"`) |
+
+#### `host_header.mode` values
+
+| Mode | Description |
+|------|-------------|
+| `visitor` | Forward the client's original `Host` header (default) |
+| `custom` | Use the fixed `value` field (required with this mode) |
+| `target` | Use each target's `host` |
+
+#### `health_check.mode` values
+
+| Mode | Description |
+|------|-------------|
+| `https` | HTTP(S) request to `path` on the target (uses the target's `protocol`) |
+| `accepts_connections` | TCP connect check only |
+| `off` | No health checking — all targets assumed healthy |
+
+Other fields: `path` (default `"/"`), `interval_seconds` (5), `timeout_ms` (1000),
+`expected_statuses` (array), `healthy_threshold` (2), `unhealthy_threshold` (3).
+If every target is marked unhealthy the gateway returns `503` with
+`{"error": "no_healthy_upstream"}`.
 
 ### `plugins.logging`
 
@@ -535,3 +590,8 @@ The gateway validates config on startup and rejects:
 - Rate limit rules with `limit: 0` or `window_seconds: 0`
 - Load balancers with no targets
 - Auto-SSL: missing `email` or empty `domains`
+
+> **Tip:** you can pre-validate generated configs against
+> [`config.schema.json`](config.schema.json) (JSON Schema) before starting the
+> gateway. The gateway's own parser remains authoritative. AI agents should also
+> read [`ai-guide.md`](ai-guide.md).

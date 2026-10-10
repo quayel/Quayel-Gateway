@@ -73,6 +73,7 @@ These paths can be used in the `left` field of any condition (firewall, rate lim
 |-------------|------|-------------|
 | `req.header.<name>` | string | Request header value |
 | `http.header.<name>` | string | Request header value |
+| `req.header.<name>.jwt.<claim.path>` | any | Decode JWT from header (strips `Bearer `), navigate dotted claim path |
 | `req.query.<name>` | string | Query parameter value |
 | `http.query.<name>` | string | Query parameter value |
 | `req.cookie.<name>` | string | Cookie value |
@@ -82,6 +83,7 @@ These paths can be used in the `left` field of any condition (firewall, rate lim
 
 ```json
 { "left": "req.header.X-API-Key", "operator": "exists" }
+{ "left": "req.header.authorization.jwt.data.role", "operator": "equals", "value": "admin" }
 { "left": "req.query.page", "operator": "greater_than", "value": 1 }
 { "left": "req.cookie.Session-ID", "operator": "exists" }
 ```
@@ -350,4 +352,5 @@ The access log records:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `RUST_LOG` | `info` | Log level (`debug`, `info`, `warn`, `error`) |
+| `QUAYEL_IP_INTEL_CACHE_SIZE` | `65536` | LRU cache size for IP lookups |ror`) |
 | `QUAYEL_IP_INTEL_CACHE_SIZE` | `65536` | LRU cache size for IP lookups |

@@ -6,6 +6,8 @@ A high-performance API gateway built on [Pingora](https://github.com/cloudflare/
 
 | Document | Description |
 |----------|-------------|
+| [AI Agent Guide](ai-guide.md) | Machine-oriented contract for AI agents: exact schema, enums, defaults, validation loop, recipes |
+| [config.schema.json](config.schema.json) | JSON Schema for validating `config.json` |
 | [Getting Started](getting-started.md) | Install, configure, and run your first gateway |
 | [Architecture](architecture.md) | System design, plugin pipeline, data flow |
 | [Configuration Reference](configuration.md) | Every `config.json` field explained |
@@ -41,7 +43,7 @@ A high-performance API gateway built on [Pingora](https://github.com/cloudflare/
 
 4. **Embedded IP intelligence** — Every request is enriched with country, ASN, VPN/Tor/datacenter/proxy detection, risk scoring, and network classification — all in ~5μs (cached).
 
-5. **Deterministic plugin pipeline** — Plugins execute in a fixed order: IP Intel → Firewall → Rate Limit → Cache → Load Balancer → Logging. Any plugin can short-circuit the pipeline.
+5. **Deterministic plugin pipeline** — Plugins execute in a fixed order: IP Intel → Firewall → Rate Limit → Load Balancer → Cache → Logging. Any plugin can short-circuit the pipeline.
 
 6. **Structured JSONL logging** — Every request produces a single JSON line with full context: IP intel, firewall decisions, rate limit state, cache status, load balancer target, and per-phase timing.
 
