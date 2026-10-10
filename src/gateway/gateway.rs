@@ -41,13 +41,20 @@ impl GatewayState {
 
         // Initialize Auto-SSL manager if configured
         let auto_ssl = config.auto_ssl.as_ref().map(|ssl_config| {
-            Arc::new(AutoSslManager::new(
+            let manager = Arc::new(AutoSslManager::new(
                 &ssl_config.email,
                 &ssl_config.domains,
                 &ssl_config.cert_storage_path,
                 ssl_config.staging,
                 ssl_config.renewal_days_before,
-            ))
+            ));
+            // Give it the background runtime handle so the sync SNI callback can
+            // spawn ACME workers (it runs on a tokio worker and cannot block/spawn
+            // on its own runtime).
+            if let Some(h) = &handle {
+                manager.set_bg_handle(h.clone());
+            }
+            manager
         });
 
         Self { 
@@ -92,6 +99,34 @@ impl ProxyHttp for QuayelGateway {
                 session.write_response_header(Box::new(header), false).await?;
                 session.write_response_body(Some(Bytes::from(response)), true).await?;
                 return Ok(true); // Short-circuit — don't proxy to upstream
+            }
+        }
+
+        // Trigger on-demand Auto-SSL provisioning for the request's host
+        // (fire-and-forget, dedup-guarded). For HTTPS this normally already fired
+        // at handshake time via the SNI resolver; this also covers plain-HTTP
+        // requests and clients that omit SNI.
+        if let Some(ref auto_ssl) = self.state.auto_ssl {
+            let host = session
+                .req_header()
+                .uri
+                .host()
+                .map(|h| h.to_string())
+                .or_else(|| {
+                    session
+                        .req_header()
+                        .headers
+                        .get("host")
+                        .and_then(|v| v.to_str().ok())
+                        .map(|h| h.to_string())
+                })
+                .map(|h| {
+                    // Strip :port if present
+                    let host = h.split(':').next().unwrap_or(&h);
+                    host.trim().to_ascii_lowercase()
+                });
+            if let Some(host) = host {
+                auto_ssl.trigger_provision_if_needed(&host);
             }
         }
 

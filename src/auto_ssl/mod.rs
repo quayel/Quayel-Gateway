@@ -7,9 +7,8 @@ use certificate::{CertExpiryStatus, CertificateManager, CertMap};
 use challenge::ChallengeStore;
 use dashmap::{DashMap, DashSet};
 use rustls::sign::CertifiedKey;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::Instant;
-use tokio::sync::RwLock;
 use tracing::{info, error};
 
 /// Certificate provisioning state
@@ -54,6 +53,9 @@ pub struct AutoSslManager {
     pub staging: bool,
     /// Renewal days before expiry
     pub renewal_days_before: u32,
+    /// Background runtime handle for spawning ACME workers from sync contexts
+    /// (the rustls SNI callback). Set once at startup via `set_bg_handle`.
+    bg_handle: RwLock<Option<tokio::runtime::Handle>>,
 }
 
 impl std::fmt::Debug for AutoSslManager {
@@ -63,7 +65,10 @@ impl std::fmt::Debug for AutoSslManager {
             .field("staging", &self.staging)
             .field("renewal_days_before", &self.renewal_days_before)
             .field("cert_count", &self.cert_map.len())
-            .field("allowed_domains_count", &self.allowed_domains.blocking_read().len())
+            .field(
+                "allowed_domains_count",
+                &self.allowed_domains.read().map(|d| d.len()).unwrap_or(0),
+            )
             .finish()
     }
 }
@@ -125,7 +130,17 @@ impl AutoSslManager {
             email: email.to_string(),
             staging,
             renewal_days_before,
+            bg_handle: RwLock::new(None),
         }
+    }
+
+    /// Set the background runtime handle used to spawn ACME workers from sync
+    /// contexts (the rustls SNI callback, which cannot call `tokio::spawn`).
+    pub fn set_bg_handle(&self, handle: tokio::runtime::Handle) {
+        *self
+            .bg_handle
+            .write()
+            .unwrap_or_else(|e| e.into_inner()) = Some(handle);
     }
 
     /// Get a certificate for a domain (for SNI callback).
@@ -137,9 +152,15 @@ impl AutoSslManager {
     /// Check if a domain should trigger on-demand provisioning.
     /// Returns true if the domain is in the allowed list and needs provisioning.
     pub fn should_provision(&self, domain: &str) -> bool {
-        // Check if domain is in allowed list
+        // Check if domain is in allowed list.
+        // NOTE: this runs inside the tokio runtime (rustls SNI callback) — must never
+        // use tokio's blocking_* APIs here. A std RwLock is safe: the critical section
+        // is a hash-set lookup and is never held across an await point.
         {
-            let allowed = self.allowed_domains.blocking_read();
+            let allowed = self
+                .allowed_domains
+                .read()
+                .unwrap_or_else(|e| e.into_inner());
             if !allowed.contains(domain) {
                 return false;
             }
@@ -165,14 +186,45 @@ impl AutoSslManager {
         }
     }
 
-    /// Trigger on-demand provisioning for a domain.
-    /// This is called from the SNI callback when a TLS handshake arrives for an unknown domain.
-    /// Uses dedup guard to ensure only one worker per domain.
+    /// Trigger on-demand provisioning for a domain (async entry point).
+    /// Called from the daily renewal check. Uses dedup guard — one worker per domain.
     pub async fn provision_if_needed(
         self: &Arc<Self>,
         domain: String,
         bg_handle: &tokio::runtime::Handle,
     ) {
+        self.start_provision(domain, bg_handle);
+    }
+
+    /// Sync entry point for on-demand provisioning, callable from the rustls SNI
+    /// callback and `request_filter`. Checks `should_provision` first (cheap), then
+    /// spawns the ACME worker on the background runtime. Never blocks the caller —
+    /// the SNI callback runs on a tokio worker thread and must not block.
+    pub fn trigger_provision_if_needed(self: &Arc<Self>, domain: &str) {
+        if !self.should_provision(domain) {
+            return;
+        }
+        let handle = self
+            .bg_handle
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        match handle {
+            Some(h) => {
+                info!(domain = %domain, "Domain needs cert provisioning — starting on-demand ACME worker");
+                self.start_provision(domain.to_string(), &h);
+            }
+            None => {
+                tracing::warn!(
+                    domain = %domain,
+                    "Cert provisioning needed but no background runtime handle is set — skipping"
+                );
+            }
+        }
+    }
+
+    /// Dedup-guarded spawn of the ACME worker on `bg_handle`.
+    fn start_provision(self: &Arc<Self>, domain: String, bg_handle: &tokio::runtime::Handle) {
         // Dedup check
         if !self.provisioning_set.insert(domain.clone()) {
             return; // Already provisioning
@@ -245,9 +297,14 @@ impl AutoSslManager {
     /// Update the allowed domains list (called on config change).
     /// Does NOT trigger cert provisioning — that happens on first request.
     pub async fn update_allowed_domains(&self, new_domains: Vec<String>) {
-        let mut allowed = self.allowed_domains.write().await;
-        *allowed = new_domains.into_iter().collect();
-        info!(count = allowed.len(), "Updated allowed domains list");
+        {
+            let mut allowed = self
+                .allowed_domains
+                .write()
+                .unwrap_or_else(|e| e.into_inner());
+            *allowed = new_domains.into_iter().collect();
+            info!(count = allowed.len(), "Updated allowed domains list");
+        }
     }
 
     /// Daily renewal check — renew expiring certs, retry one failed cert.
@@ -257,9 +314,13 @@ impl AutoSslManager {
     ) {
         info!("Running daily cert renewal check");
 
-        let allowed = self.allowed_domains.read().await;
-        let domains: Vec<String> = allowed.iter().cloned().collect();
-        drop(allowed);
+        let domains: Vec<String> = {
+            let allowed = self
+                .allowed_domains
+                .read()
+                .unwrap_or_else(|e| e.into_inner());
+            allowed.iter().cloned().collect()
+        };
 
         let mut retried_failed = false;
 
@@ -314,5 +375,40 @@ impl AutoSslManager {
     pub fn get_challenge_response(&self, path: &str) -> Option<String> {
         ChallengeStore::extract_token(path)
             .and_then(|token| self.challenge_store.get_response(token))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression test for the SNI-callback panic:
+    /// `should_provision` runs inside the tokio runtime (rustls `ResolvesServerCert`
+    /// is invoked during the TLS handshake on a runtime worker thread). It must not
+    /// use tokio's blocking lock APIs — `blocking_read()` there aborts the process
+    /// with "Cannot block the current thread from within a runtime".
+    #[test]
+    fn should_provision_works_inside_tokio_runtime() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("build runtime");
+
+        let manager = AutoSslManager::new(
+            "test@example.com",
+            &["example.com".to_string()],
+            "/tmp/quayel-gateway-test-certs",
+            true,
+            30,
+        );
+
+        rt.block_on(async {
+            // Before the fix: tokio::sync::RwLock::blocking_read() panicked here.
+            assert!(manager.should_provision("example.com"));
+            assert!(!manager.should_provision("not-allowed.example"));
+
+            // And the Debug impl must be safe in runtime context too.
+            let _ = format!("{:?}", manager);
+        });
     }
 }
