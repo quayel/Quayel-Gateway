@@ -69,6 +69,35 @@ cargo build --release         # 2. build (data is embedded into the binary)
 curl -v http://localhost:8080/
 ```
 
+### 🐳 Docker
+
+Pre-built image on Docker Hub (datasets embedded, ready to run):
+
+```bash
+# run with the bundled demo config (listens on 8080 / 8443)
+docker run --rm -p 8080:8080 -p 8443:8443 quayel/quayel-gateway
+
+# run with your own config (mounted over the default)
+docker run --rm -p 8080:8080 -p 8443:8443 \
+  -v $PWD/config.json:/etc/quayel-gateway/config.json:ro \
+  quayel/quayel-gateway
+```
+
+Build it yourself:
+
+```bash
+git clone https://github.com/quayel/quayel-gateway.git
+cd quayel-gateway
+docker build -t quayel/quayel-gateway .
+```
+
+The image is a multi-stage build: `rust:1-bookworm` compiles the release binary
+with all datasets embedded, `debian:bookworm-slim` runs it. If `src/data/*.mmdb`
+is missing at build time the builder runs `setup.sh --data-only` automatically,
+so **rebuilding the image is how you refresh the embedded data** (do it monthly
+for current DB-IP snapshots). Tags: `quayel/quayel-gateway:latest` and
+`quayel/quayel-gateway:<version>`.
+
 ### What `setup.sh` does
 
 1. **Downloads the embedded datasets** into `src/data/` (latest versions):
@@ -207,6 +236,7 @@ Full walk-through: [docs/getting-started.md](docs/getting-started.md) · every f
 ```
 quayel-gateway/
 ├── setup.sh              # bootstrap: datasets + cargo packages
+├── Dockerfile            # multi-stage image build (rust:1-bookworm → debian-slim)
 ├── Cargo.toml            # crate dependencies
 ├── config.demo.json      # full-featured demo config
 ├── src/
@@ -238,4 +268,3 @@ Build: Rust stable (`rustup`), `build-essential`, `pkg-config`, `cmake`, `clang`
 ## License
 
 Internal tool — not open source.
-tool — not open source.

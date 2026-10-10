@@ -1,0 +1,14 @@
+# Never ship build output or VCS history into the image
+target/
+.git/
+.gitignore
+
+# Local machine config — may contain secrets.
+# The image gets config.demo.json copied in as its default config instead.
+config.json
+
+# Not needed inside the image
+diagrams/
+docs/
+*.log
+perf.data*
