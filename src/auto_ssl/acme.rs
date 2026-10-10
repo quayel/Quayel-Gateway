@@ -393,7 +393,7 @@ impl AcmeClient {
             account_url.as_deref(),
         ).await?;
 
-        let mut order: AcmeOrder = response.json().await?;
+        let order: AcmeOrder = response.json().await?;
 
         // Poll for order completion
         for _ in 0..30 {

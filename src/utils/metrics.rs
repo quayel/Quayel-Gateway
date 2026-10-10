@@ -1,5 +1,4 @@
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Instant;
 
 // ── Aggregate Metrics ────────────────────────────────────────────────────────
 // Lock-free per-plugin latency tracking using atomic operations.

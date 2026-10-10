@@ -1,5 +1,5 @@
 use dashmap::DashMap;
-use tracing::{info, debug};
+use tracing::debug;
 
 /// HTTP-01 ACME challenge token store.
 ///
