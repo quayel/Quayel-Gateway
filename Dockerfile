@@ -50,12 +50,28 @@ RUN apt-get update -qq \
 
 COPY --from=builder /usr/local/bin/quayel-gateway /usr/local/bin/quayel-gateway
 
+# Auto-SSL state (ACME account key, issued certs + private keys) lives in
+# /var/lib/quayel/certs (the default `cert_storage_path`). It MUST survive
+# container restarts — otherwise every start re-issues certificates and hits
+# Let's Encrypt rate limits. Mount a volume over it:
+#   -v quayel-certs:/var/lib/quayel/certs   (or see docker-compose.yml)
+RUN mkdir -p /var/lib/quayel/certs /var/log/quayel
+VOLUME ["/var/lib/quayel/certs"]
+
 # Default config = the demo. Mount your own over it:
 #   docker run -v $PWD/config.json:/etc/quayel-gateway/config.json:ro ...
 COPY config.demo.json /etc/quayel-gateway/config.json
 
 WORKDIR /etc/quayel-gateway
-EXPOSE 8080 8443
+
+# 8080/8443 = the bundled demo config's listeners. 80/443 for configs that bind
+# them directly (ACME HTTP-01 needs port 80 reachable from the internet; map
+# with -p 80:8080 -p 443:8443 if your config keeps the 8080/8443 listeners).
+EXPOSE 80 443 8080 8443
+
+# The gateway shuts down gracefully on SIGTERM (5s grace + 5s drain — set in
+# main.rs), so container stop is clean within Docker's default 10s timeout.
+STOPSIGNAL SIGTERM
 
 ENTRYPOINT ["/usr/local/bin/quayel-gateway"]
 CMD ["/etc/quayel-gateway/config.json"]

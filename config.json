@@ -4,7 +4,8 @@
   "server_name": "dev-server",
   "config_version": "2026-10-05-003",
   "listen": {
-    "http": "0.0.0.0:8089"
+    "http": "0.0.0.0:8089",
+    "https":"0.0.0.0:8443"
   },
   "client_ip": {
     "source": "header",
@@ -13,6 +14,17 @@
     "fallback": "peer_ip"
   },
   "plugins": {
+    "auto_ssl": {
+      "enabled": true,
+      "email": "admin@example.com",
+      "domains": [
+        "gateway-testing.quayel.com",
+        "gateway-testing-2.quayel.com"
+      ],
+      "cert_storage_path": "/var/lib/quayel/certs",
+      "staging": false,
+      "renewal_days_before": 10
+    },
     "ip_intel": {
       "enabled": true
     },
@@ -118,6 +130,7 @@
         }
       ]
     },
+
     "logging": {
       "enabled": false,
       "mode": "file",

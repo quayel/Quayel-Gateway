@@ -82,7 +82,7 @@
           "action": {
             "type": "redirect",
             "status": 301,
-            "url": "https://demo.example.com"
+            "location": "https://demo.example.com"
           }
         }
       ]

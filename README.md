@@ -83,6 +83,12 @@ docker run --rm -p 8080:8080 -p 8443:8443 \
   quayel/quayel-gateway
 ```
 
+Or with Docker Compose (SSL-ready: cert persistence + ports 80/443):
+
+```bash
+docker compose up -d --build     # see docker-compose.yml
+```
+
 Build it yourself:
 
 ```bash
@@ -90,6 +96,20 @@ git clone https://github.com/quayel/quayel-gateway.git
 cd quayel-gateway
 docker build -t quayel/quayel-gateway .
 ```
+
+#### Auto-SSL in Docker
+
+- **Persist certificates** — the ACME account key and issued certs live in
+  `cert_storage_path` (`/var/lib/quayel/certs` in the image). Mount a volume
+  over it (`-v quayel-certs:/var/lib/quayel/certs`, or use the compose file),
+  otherwise every container start re-issues certificates and hits Let's
+  Encrypt rate limits.
+- **Ports** — ACME HTTP-01 validation needs port 80 reachable from the
+  internet. Map `80:8080` and `443:8443` when your config keeps the demo's
+  listeners, or bind 80/443 directly in `listen`.
+- **Clean shutdown** — the gateway drains in-flight requests on SIGTERM
+  (5s grace + 5s drain) and exits well inside Docker's 10s stop timeout;
+  `docker-compose.yml` sets `stop_grace_period: 15s` as headroom.
 
 The image is a multi-stage build: `rust:1-bookworm` compiles the release binary
 with all datasets embedded, `debian:bookworm-slim` runs it. If `src/data/*.mmdb`
@@ -229,6 +249,15 @@ Full walk-through: [docs/getting-started.md](docs/getting-started.md) · every f
 | [API Reference](docs/api-reference.md) | Request/response headers, variables |
 | [Logging](docs/logging.md) | JSONL access log format |
 
+### 🤖 For AI agents
+
+| Document | Description |
+|----------|-------------|
+| [AGENTS.md](AGENTS.md) | Start here — working on/with this repo as an agent |
+| [AI Guide](docs/ai-guide.md) | Machine-oriented contract: schema, enums, defaults, validation loop, recipes |
+| [config.schema.json](docs/config.schema.json) | JSON Schema to validate generated `config.json` |
+| [skills/quayel-gateway/SKILL.md](skills/quayel-gateway/SKILL.md) | Portable skill package for AI tools |
+
 ---
 
 ## 🗂 Repository Layout
@@ -248,7 +277,8 @@ quayel-gateway/
 │   ├── config/           # JSON config loader + hot reload
 │   ├── data/             # embedded MMDB + CIDR datasets (setup.sh)
 │   └── utils/            # embedded_data, CIDR sets, helpers
-├── docs/                 # full documentation
+├── docs/                 # full documentation (+ ai-guide.md, config.schema.json)
+├── skills/               # AI skill package (skills/quayel-gateway/SKILL.md)
 └── scripts/              # benchmarks + nginx/APISIX mirrors
 ```
 

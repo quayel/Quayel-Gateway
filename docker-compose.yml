@@ -1,0 +1,47 @@
+# Quayel Gateway — Docker Compose
+#
+# SSL-ready defaults:
+#   - host ports 80/443 published to the demo config's 8080/8443 listeners
+#   - Auto-SSL certificates persisted in the `quayel-certs` volume so ACME
+#     issuances survive container restarts (required — otherwise every start
+#     re-issues certs and hits Let's Encrypt rate limits)
+#   - graceful shutdown that finishes inside Docker's stop timeout
+#
+# Usage:
+#   docker compose up -d --build
+#
+# Using your own config:
+#   1. put it at ./config.json and uncomment the config mount below
+#      (keep `auto_ssl.cert_storage_path` = /var/lib/quayel/certs so certs
+#      land in the persistent volume)
+#   2. `docker compose up -d --build`
+#
+# ACME HTTP-01: port 80 must be reachable from the internet for domain
+# validation to succeed.
+
+services:
+  gateway:
+    build: .
+    image: quayel/quayel-gateway:latest
+    container_name: quayel-gateway
+    restart: unless-stopped
+    ports:
+      - "80:8080"     # HTTP: ACME HTTP-01 challenges + plain HTTP
+      - "443:8443"    # HTTPS: SNI cert resolver / Auto-SSL
+    volumes:
+      # Persist ACME account key + issued certs/keys across restarts
+      - quayel-certs:/var/lib/quayel/certs
+      # Your own config (file must exist before `up`; the bundled demo config
+      # is used when this stays commented out):
+      # - ./config.json:/etc/quayel-gateway/config.json:ro
+      # Optional: access logs on the host
+      # - ./logs:/var/log/quayel
+    environment:
+      RUST_LOG: ${RUST_LOG:-info}
+    # The gateway shuts down gracefully: 5s grace period + 5s runtime drain
+    # (see src/main.rs). Keep this above that so `docker stop` never has to
+    # escalate to SIGKILL.
+    stop_grace_period: 15s
+
+volumes:
+  quayel-certs:
