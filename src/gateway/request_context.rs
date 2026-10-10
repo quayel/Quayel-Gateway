@@ -1,0 +1,297 @@
+use crate::config::schema::*;
+use crate::plugins::ip_intel::IpIntel;
+use serde_json::Value;
+use std::collections::HashMap;
+use std::net::IpAddr;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Instant;
+use tokio::sync::OwnedMutexGuard;
+use http::HeaderMap;
+
+// Global request counter — replaces per-request UUID generation
+pub(crate) static REQUEST_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// Revalidation lock guard — held for the duration of a stale cache refresh request.
+/// When the request completes and ctx is dropped, the guard drops → lock releases.
+pub struct RevalidationGuard(pub OwnedMutexGuard<()>);
+
+impl std::fmt::Debug for RevalidationGuard {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("RevalidationGuard")
+    }
+}
+
+// ── Request Context ──────────────────────────────────────────────────────────
+// One RequestContext is created per request. All plugins read/write the same ctx.
+// No RwLock needed — Pingora gives exclusive &mut access via `type CTX = RequestContext`.
+
+#[derive(Debug)]
+pub struct RequestContext {
+    // Gateway identity
+    pub gateway_id: Arc<str>,
+    pub gateway_name: Arc<str>,
+    pub server_name: Arc<str>,
+    pub config_version: Arc<str>,
+
+    // Request identity
+    pub request_id: String,
+    pub started_at: Instant,
+
+    // Client / network
+    pub peer_ip: IpAddr,
+    pub client_ip: IpAddr,
+    pub client_ip_source: Arc<str>,
+
+    // HTTP
+    pub host: Option<Arc<str>>,
+    pub path: Arc<str>,
+    pub method: Arc<str>,
+    pub scheme: Arc<str>,
+    pub user_agent: Option<Arc<str>>,
+
+    // Pre-parsed request headers — cloned once from raw HeaderMap.
+    // Using http::HeaderMap directly avoids to_lowercase() + to_string()
+    // allocations per header. HeaderMap::clone() is zero-alloc (Bytes refcount bumps).
+    // Case-insensitive lookup is built-in.
+    pub headers: HeaderMap,
+
+    // Lazy parsed data (populated on first access)
+    pub query_cache: Option<HashMap<String, String>>,
+    pub cookie_cache: Option<HashMap<String, String>>,
+    pub jwt_cache: HashMap<String, Value>, // key: token hash
+
+    // IP intelligence
+    pub ip_intel: Option<Arc<IpIntel>>,
+
+    // Plugin results
+    pub firewall: FirewallResult,
+    pub rate_limit: RateLimitResult,
+    pub cache: CacheResult,
+    pub load_balancer: LoadBalancerResult,
+
+    // Upstream
+    pub upstream_name: Option<Arc<str>>,
+    pub upstream_target: Option<Arc<str>>,
+    pub upstream_protocol: Option<UpstreamProtocol>,
+
+    // Response / bandwidth
+    pub status_code: Option<u16>,
+
+    pub client_bytes_in: u64,
+    pub client_bytes_out: u64,
+    pub upstream_bytes_out: u64,
+    pub upstream_bytes_in: u64,
+
+    // Cache response capture (populated in response_filter)
+    pub response_headers_captured: Option<Vec<(String, String)>>,
+    pub response_body_buffer: Vec<u8>,
+    pub cache_should_store: bool,
+
+    /// Cache revalidation lock guard — held while this request refreshes a stale entry.
+    /// When dropped (request completes), the lock releases and concurrent requests
+    /// see fresh cache data.
+    pub revalidation_guard: Option<RevalidationGuard>,
+
+    // Timings (microseconds)
+    pub ip_intel_latency_us: Option<u64>,
+    pub firewall_latency_us: Option<u64>,
+    pub rate_limit_latency_us: Option<u64>,
+    pub cache_lookup_latency_us: Option<u64>,
+    pub lb_latency_us: Option<u64>,
+    pub upstream_connect_latency_us: Option<u64>,
+    pub upstream_ttfb_us: Option<u64>,
+    pub total_latency_us: Option<u64>,
+
+    // Final action
+    pub termination_phase: Option<TerminationPhase>,
+}
+
+// Type aliases for Arc-wrapped shared cache data
+pub type SharedHeaders = Arc<Vec<(String, String)>>;
+pub type SharedBody = Arc<Vec<u8>>;
+
+impl RequestContext {
+    pub fn new(
+        gateway_id: Arc<str>,
+        gateway_name: Arc<str>,
+        server_name: Arc<str>,
+        config_version: Arc<str>,
+        peer_ip: IpAddr,
+        client_ip: IpAddr,
+        client_ip_source: Arc<str>,
+        host: Option<Arc<str>>,
+        path: Arc<str>,
+        method: Arc<str>,
+        scheme: Arc<str>,
+        user_agent: Option<Arc<str>>,
+        headers: HeaderMap,
+    ) -> Self {
+        Self {
+            gateway_id,
+            gateway_name,
+            server_name,
+            config_version,
+            request_id: REQUEST_COUNTER.fetch_add(1, Ordering::Relaxed).to_string(),
+            started_at: Instant::now(),
+            peer_ip,
+            client_ip,
+            client_ip_source,
+            host,
+            path,
+            method,
+            scheme,
+            user_agent,
+            headers,
+            query_cache: None,
+            cookie_cache: None,
+            jwt_cache: HashMap::new(),
+            ip_intel: None,
+            firewall: FirewallResult::default(),
+            rate_limit: RateLimitResult::default(),
+            cache: CacheResult::default(),
+            load_balancer: LoadBalancerResult::default(),
+            upstream_name: None,
+            upstream_target: None,
+            upstream_protocol: None,
+            status_code: None,
+            client_bytes_in: 0,
+            client_bytes_out: 0,
+            upstream_bytes_out: 0,
+            upstream_bytes_in: 0,
+            response_headers_captured: None,
+            response_body_buffer: Vec::new(),
+            cache_should_store: false,
+            revalidation_guard: None,
+            ip_intel_latency_us: None,
+            firewall_latency_us: None,
+            rate_limit_latency_us: None,
+            cache_lookup_latency_us: None,
+            lb_latency_us: None,
+            upstream_connect_latency_us: None,
+            upstream_ttfb_us: None,
+            total_latency_us: None,
+            termination_phase: None,
+        }
+    }
+
+    /// Get total client bandwidth
+    pub fn total_client_bandwidth_bytes(&self) -> u64 {
+        self.client_bytes_in + self.client_bytes_out
+    }
+
+    /// Get total origin bandwidth
+    pub fn total_origin_bandwidth_bytes(&self) -> u64 {
+        self.upstream_bytes_out + self.upstream_bytes_in
+    }
+
+    /// Record total latency since request started
+    pub fn finalize_latency(&mut self) {
+        let elapsed = self.started_at.elapsed().as_micros() as u64;
+        self.total_latency_us = Some(elapsed);
+    }
+}
+
+// ── Plugin Result Types ──────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Default)]
+pub struct FirewallResult {
+    pub matched: bool,
+    pub rule_id: Option<String>,
+    pub rule_name: Option<String>,
+    pub action: Option<FirewallActionType>,
+    pub status: Option<u16>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct RateLimitResult {
+    pub matched: bool,
+    pub rule_id: Option<String>,
+    pub rule_name: Option<String>,
+    pub blocked: bool,
+    pub remaining: Option<u64>,
+    pub limit: Option<u64>,
+    pub window_seconds: Option<u64>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct CacheResult {
+    pub rule_id: Option<String>,
+    pub status: CacheStatus,
+    pub key_hash: Option<String>,
+    pub edge_ttl_mode: Option<&'static str>,
+    pub edge_ttl_seconds: Option<u64>,
+    pub browser_ttl_mode: Option<&'static str>,
+    pub browser_ttl_seconds: Option<u64>,
+    /// Gateway-level stale-while-revalidate override (seconds) from config.
+    /// If Some, overrides origin Cache-Control header value.
+    pub stale_while_revalidate_seconds: Option<u64>,
+    /// Gateway-level stale-if-error override (seconds) from config.
+    /// If Some, overrides origin Cache-Control header value.
+    pub stale_if_error_seconds: Option<u64>,
+    /// Cached max object size from config — avoids arc_swap::load() on every body chunk.
+    pub max_object_size_bytes: usize,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum CacheStatus {
+    #[default]
+    None,
+    Hit,
+    Miss,
+    Expired,
+    Bypass,
+    Dynamic,
+    Stale,
+    Revalidating,
+}
+
+impl CacheStatus {
+    pub fn as_str(&self) -> &str {
+        match self {
+            CacheStatus::None => "NONE",
+            CacheStatus::Hit => "HIT",
+            CacheStatus::Miss => "MISS",
+            CacheStatus::Expired => "EXPIRED",
+            CacheStatus::Bypass => "BYPASS",
+            CacheStatus::Dynamic => "DYNAMIC",
+            CacheStatus::Stale => "STALE",
+            CacheStatus::Revalidating => "REVALIDATING",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct LoadBalancerResult {
+    pub lb_id: Option<Arc<str>>,
+    pub lb_name: Option<Arc<str>>,
+    pub algorithm: Option<String>,
+    pub target_id: Option<Arc<str>>,
+    pub target_host: Option<Arc<str>>,
+    pub target_port: Option<u16>,
+    pub target_protocol: Option<Arc<str>>,
+    pub target_tls_verify: Option<bool>,
+    pub target_tls_sni: Option<Arc<str>>,
+}
+
+// ── Termination Phase ────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TerminationPhase {
+    IpIntel,
+    Firewall,
+    RateLimit,
+    Cache,
+    LoadBalancer,
+    Upstream,
+    Logging,
+    InternalError,
+}
+
+// ── Upstream Protocol ────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UpstreamProtocol {
+    Http,
+    Https,
+}

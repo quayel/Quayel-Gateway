@@ -1,0 +1,99 @@
+[package]
+name = "quayel-gateway"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# Pingora core
+# `rustls` enables Pingora's real TLS stack. Without a TLS feature Pingora
+# compiles its `noop_tls` stub: connections to `https` targets are opened on
+# the given port but plain HTTP is spoken on them and no handshake happens.
+pingora-proxy = { version = "0.9", features = ["rustls"] }
+pingora-core = { version = "0.9", features = ["rustls"] }
+pingora-rustls = "0.9"
+pingora-http = "0.9"
+pingora-error = "0.9"
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# Serialization
+serde = { version = "1", features = ["derive", "rc"] }
+serde_json = "1"
+
+# Config hot-reload
+arc-swap = "1"
+
+# Logging / tracing
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
+
+# Async trait
+async-trait = "0.1"
+
+# Regex
+regex = "1"
+
+# IP / networking
+ipnet = "2"
+
+# GeoIP / MMDB
+maxminddb = "0.24"
+
+# Concurrency
+dashmap = "6"
+parking_lot = "0.12"
+
+# UUIDs — removed (replaced by AtomicU64 counter)
+# uuid = { version = "1", features = ["v4"] }
+
+# Bytes
+bytes = "1"
+
+# JWT
+jsonwebtoken = "9"
+base64 = "0.22"
+
+# Hashing — FxHash for cache keys, SHA-256 for config change detection
+sha2 = "0.10"
+# hex = "0.4"    # removed — no longer used
+rustc-hash = "2"
+
+# Time
+chrono = { version = "0.4", features = ["serde"] }
+
+# Allocator — jemalloc for high-throughput proxy workloads
+tikv-jemallocator = "0.6"
+
+# HTTP types
+http = "1"
+
+# Smallvec
+smallvec = { version = "1", features = ["serde"] }
+
+# reqwest for dataset downloads
+reqwest = { version = "0.12", features = ["rustls-tls", "json"], default-features = false }
+
+# URL encoding
+urlencoding = "2"
+
+# Auto-SSL — certificate generation + parsing (pure Rust, no OpenSSL)
+rcgen = "0.13"
+x509-parser = "0.16"
+rustls-pemfile = "2"
+rustls = { version = "0.23", features = ["ring", "std"] }
+time = "0.3"
+
+# LRU cache for IP lookups — lock-free reads via parking_lot::RwLock
+lru = "0.12"
+
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true
+
+[profile.release.package."*"]
+opt-level = 3

@@ -1,0 +1,51 @@
+# Apache APISIX mirror of quayel-gateway cache semantics for A/B benchmarking.
+# Same route policy as scripts/nginx-mirror/nginx.conf + config.json + cache.rs:
+#   /cache-test        Quayel-CDN-Cache-Control: public s-maxage=3600 swr=3600 sie=3600
+#                      -> edge TTL 3600s
+#   /cache-test-second public s-maxage=2 swr=5 sie=3600
+#                      -> edge TTL 2s (APISIX memory strategy has no bounded SWR
+#                      window; hard expiry + synchronous revalidation. Documented
+#                      approximation, same caveat as the nginx mirror.)
+#   /no-cache          no cache headers -> never cached, always proxied
+# Cache key: scheme|host|path (gateway cache_key req.path, single host).
+# Memory cache strategy = gateway's in-memory DashMap store.
+# ulimit nofile 100000 + worker_rlimit_nofile to match the gateway's fd budget.
+
+apisix:
+  node_listen:
+    - 8091
+  enable_admin: false
+  enable_control: false
+  enable_server_tokens: false
+  enable_http2: false
+  ssl:
+    enable: false
+  proxy_cache:
+    zones:
+      - name: memory_cache
+        memory_size: 256m
+
+deployment:
+  role: data_plane            # standalone yaml provider (no etcd dependency)
+  role_data_plane:
+    config_provider: yaml
+
+nginx_config:
+  enable_cpu_affinity: false     # let workers float across 6 CPUs like gw + nginx
+  worker_rlimit_nofile: 100000
+  main:
+    worker_processes: auto
+  event:
+    worker_connections: 32768
+  http:
+    enable_access_log: false     # gateway logging.enabled = false
+    upstream:
+      keepalive: 500
+      keepalive_requests: 100000
+      keepalive_timeout: 60s
+  http_configuration_snippet: |
+    keepalive_requests 100000;
+    client_header_buffer_size 4k;
+    large_client_header_buffers 4 8k;
+    tcp_nodelay on;
+    tcp_nopush on;

@@ -1,0 +1,131 @@
+{
+  "gateway_id": "gw-local-01",
+  "gateway_name": "local-dev",
+  "server_name": "dev-server",
+  "config_version": "2026-10-05-003",
+  "listen": {
+    "http": "0.0.0.0:8089"
+  },
+  "client_ip": {
+    "source": "header",
+    "header": "X-Forwarded-For",
+    "index": 0,
+    "fallback": "peer_ip"
+  },
+  "plugins": {
+    "ip_intel": {
+      "enabled": true
+    },
+    "firewall": {
+      "enabled": true,
+      "rules": [
+        {
+          "id": "block-tor",
+          "name": "Block Tor exit nodes",
+          "enabled": true,
+          "conditions": [
+            {
+              "left": "ip.is_tor",
+              "operator": "equals",
+              "value": true
+            }
+          ],
+          "action": {
+            "type": "block",
+            "status": 403
+          }
+        }
+      ]
+    },
+    "rate_limiting": {
+      "enabled": true,
+      "rules": [
+        {
+          "id": "global-rate",
+          "name": "Global rate limit",
+          "enabled": true,
+          "conditions": [],
+          "key": "req.client_ip",
+          "limit": 100000000,
+          "window_seconds": 10,
+          "action": {
+            "type": "block",
+            "status": 429
+          }
+        }
+      ]
+    },
+    "cache": {
+      "enabled": true,
+      "max_object_size_bytes": 10485760,
+      "rules": [
+        {
+          "id": "cache-static",
+          "name": "Cache Static Assets",
+          "enabled": true,
+          "conditions": [],
+          "cache": "eligible",
+          "edge_ttl": {
+            "mode": "origin"
+          },
+          "browser_ttl": {
+            "mode": "origin"
+          },
+          "cache_key": {
+            "mode": "custom",
+            "parts": [
+              "req.path"
+            ]
+          },
+          "statuses": [
+            200,
+            301,
+            404
+          ]
+        }
+      ]
+    },
+    "load_balancer": {
+      "enabled": true,
+      "load_balancers": [
+        {
+          "id": "default",
+          "name": "Default Backend",
+          "enabled": true,
+          "conditions": [],
+          "algorithm": {
+            "type": "round_robin"
+          },
+          "targets": [
+            {
+              "id": "backend-1",
+              "host": "94.136.185.15",
+              "port": 4489,
+              "protocol": "http",
+              "weight": 100,
+              "enabled": true,
+              "tls": {
+                "verify": false
+              }
+            }
+          ],
+          "host_header": {
+            "mode": "visitor"
+          },
+          "health_check": {
+            "mode": "accepts_connections"
+          }
+        }
+      ]
+    },
+    "logging": {
+      "enabled": false,
+      "mode": "file",
+      "file": {
+        "path": "/var/log/quayel/access.jsonl",
+        "buffer_size": 81920,
+        "flush_interval_ms": 60000
+      }
+    }
+  }
+}

@@ -1,0 +1,62 @@
+# Standalone (yaml provider) routes for the APISIX benchmark mirror.
+# Upstream = exactly the gateway's load_balancer target and the nginx mirror's
+# proxy_pass target: 94.136.185.15:4489 (echo-server origin).
+routes:
+  # --- /cache-test: TTL 3600s (s-maxage=3600) ---
+  - id: cache-test
+    uri: /cache-test
+    upstream:
+      type: roundrobin
+      nodes:
+        "94.136.185.15:4489": 1
+      pass_host: pass            # host_header mode: visitor (gateway default)
+    plugins:
+      proxy-cache:
+        cache_strategy: memory   # gateway: in-memory DashMap
+        cache_zone: memory_cache
+        cache_control: false     # deterministic TTL, like nginx proxy_ignore_headers
+        cache_key:
+          - "$scheme"
+          - "$host"
+          - "$uri"
+        cache_method:
+          - "GET"
+        cache_http_status:
+          - 200
+        cache_ttl: 3600
+        hide_cache_headers: false
+
+  # --- /cache-test-second: TTL 2s (s-maxage=2) ---
+  - id: cache-test-second
+    uri: /cache-test-second
+    upstream:
+      type: roundrobin
+      nodes:
+        "94.136.185.15:4489": 1
+      pass_host: pass
+    plugins:
+      proxy-cache:
+        cache_strategy: memory
+        cache_zone: memory_cache
+        cache_control: false
+        cache_key:
+          - "$scheme"
+          - "$host"
+          - "$uri"
+        cache_method:
+          - "GET"
+        cache_http_status:
+          - 200
+        cache_ttl: 2
+        hide_cache_headers: false
+
+  # --- /no-cache: never cached (gateway edge TTL 0 path) ---
+  - id: no-cache
+    uri: /no-cache
+    upstream:
+      type: roundrobin
+      nodes:
+        "94.136.185.15:4489": 1
+      pass_host: pass
+
+#END

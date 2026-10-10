@@ -1,0 +1,126 @@
+# =============================================================
+# Quayel Gateway — .gitignore
+# =============================================================
+
+# -------------------- Rust / Cargo --------------------
+# Build artifacts (debug + release)
+/target/
+
+# Cargo.lock is committed for binaries (applications), ignored for libraries.
+# Since this is a binary gateway application, we keep Cargo.lock tracked.
+# Cargo.lock
+
+# Backup files from cargo fmt or clippy
+**/*.rs.bk
+
+# -------------------- IDE / Editor --------------------
+# VS Code
+.vscode/
+
+# JetBrains (RustRover / IntelliJ / CLion)
+.idea/
+*.iml
+*.iws
+
+# Vim / Neovim
+*.swp
+*.swo
+*~
+tags
+.tags
+.vim/
+.nvim/
+
+# Emacs
+*~
+\#*\#
+/.emacs.desktop
+/.emacs.desktop.lock
+*.elc
+.dir-locals.el
+
+# Sublime Text
+*.sublime-project
+*.sublime-workspace
+
+
+
+target
+# -------------------- OS-generated files --------------------
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# -------------------- Environment / Secrets --------------------
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+secrets/
+credentials/
+
+# -------------------- Logging --------------------
+# Local log files (gateway writes to /var/log/quayel/ in production)
+*.log
+logs/
+
+# -------------------- Data files --------------------
+# MaxMind GeoIP databases and downloaded datasets
+*.mmdb
+data/*.mmdb
+data/datasets/
+
+# -------------------- Config overrides --------------------
+# Local config overrides (keep config.json tracked, ignore local variants)
+config.local.json
+config.dev.json
+config.staging.json
+config.production.json
+config.*.json
+!config.json
+
+# -------------------- Profiling / Benchmarking --------------------
+perf.data
+perf.data.old
+flamegraph.svg
+cachegrind.out.*
+callgrind.out.*
+massif.out.*
+
+# -------------------- Testing / Coverage --------------------
+*.profraw
+*.profdata
+lcov.info
+lcov-report/
+tarpaulin-report.html
+cobertura.xml
+
+# -------------------- Documentation build --------------------
+# If docs are built to HTML locally
+docs/_build/
+site/
+
+# -------------------- Miscellaneous --------------------
+# Temporary files
+tmp/
+*.tmp
+*.temp
+
+# Archive artifacts
+*.tar.gz
+*.zip
+*.deb
+*.rpm
+
+# Backups
+*.bak
+*.backup
