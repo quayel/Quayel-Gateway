@@ -146,6 +146,13 @@ fn main() {
     // Increase upstream keepalive pool size to handle concurrent connections
     // Default is 128 per worker thread; bump to 1024 for high-traffic gateways
     conf.upstream_keepalive_pool_size = 1024;
+    // Graceful shutdown timing. Without these, pingora uses EXIT_TIMEOUT = 300s
+    // as the grace period after SIGTERM — the process looks dead for 5 minutes
+    // and container runtimes resort to SIGKILL. 5s grace + 5s runtime shutdown
+    // fits Docker's default 10s stop timeout while still draining in-flight
+    // requests.
+    conf.grace_period_seconds = Some(5);
+    conf.graceful_shutdown_timeout_seconds = Some(5);
     let mut server = Server::new_with_opt_and_conf(opt, conf);
     server.bootstrap();
 
@@ -301,16 +308,14 @@ impl rustls::server::ResolvesServerCert for SniCertResolver {
             return Some(cert);
         }
 
-        // 2. Check if we should provision a cert for this domain
-        if self.auto_ssl.should_provision(&domain) {
-            // 3. Spawn background ACME worker (dedup guarded)
-            // Note: We need a bg_handle here, but we're in a sync context
-            // The provisioning will be triggered from the request_filter instead
-            // For now, just return the fallback cert
-            tracing::info!(domain = %domain, "Domain needs cert provisioning (will trigger on request)");
-        }
+        // 2. + 3. On-demand provisioning: if this domain needs a cert, spawn the
+        // background ACME worker (dedup-guarded, non-blocking) via the manager's
+        // stored runtime handle. This MUST happen here — while only the self-signed
+        // fallback cert is available, HTTPS clients abort the handshake
+        // (CertificateUnknown) and the request never reaches request_filter.
+        self.auto_ssl.trigger_provision_if_needed(&domain);
 
-        // 4. Return fallback cert
+        // 4. Return fallback cert (next handshake gets the real cert)
         Some(Arc::new(self.fallback_cert.clone()))
     }
 }
