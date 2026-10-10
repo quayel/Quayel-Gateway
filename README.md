@@ -2,7 +2,7 @@
 
 **A high-performance, single-binary API gateway built on [Pingora](https://github.com/cloudflare/pingora) (the Rust framework behind Cloudflare's edge) — with embedded IP intelligence, firewall, rate limiting, caching, load balancing and automatic TLS.**
 
-~140 MB of IP-intelligence data (Geo/ASN MMDB databases + VPN / Tor / datacenter / proxy / Cloudflare CIDR lists) is compiled straight into the binary. No Redis, no etcd, no external databases, no downloads at runtime.
+~140 MB of IP-intelligence data (Geo/ASN MMDB databases + VPN / Tor / proxy / Cloudflare CIDR lists + a datacenter-provider ASN registry) is compiled straight into the binary. No Redis, no etcd, no external databases, no downloads at runtime.
 
 ---
 
@@ -26,7 +26,7 @@
 
 | Plugin | What it does | Docs |
 |--------|--------------|------|
-| **IP Intelligence** | Enriches every request with country / region / city, ASN + organization, `is_vpn`, `is_tor`, `is_datacenter`, `is_proxy`, risk score and network classification — in ~5 μs (LRU-cached) | [docs/plugins/ip-intel.md](docs/plugins/ip-intel.md) |
+| **IP Intelligence** | Enriches every request with country / region / city, ASN + organization, hosting provider label (`Hostinger`, `Hetzner`, …), `is_vpn`, `is_tor`, `is_datacenter`, `is_proxy`, risk score and network classification — in ~5 μs (LRU-cached) | [docs/plugins/ip-intel.md](docs/plugins/ip-intel.md) |
 | **Firewall** | Allow / block / redirect on any request attribute: method, path, headers, cookies — or any IP-intel field (`ip.is_tor`, `ip.risk_score`, …) | [docs/plugins/firewall.md](docs/plugins/firewall.md) |
 | **Rate Limiting** | Sliding-window rate limits keyed by IP, header, cookie or expression | [docs/plugins/rate-limiting.md](docs/plugins/rate-limiting.md) |
 | **Cache** | Edge caching with TTLs, bypass rules and custom cache keys | [docs/plugins/cache.md](docs/plugins/cache.md) |
@@ -78,14 +78,16 @@ curl -v http://localhost:8080/
    | `dbip-asn-lite.mmdb` | DB-IP ASN Lite — ASN + organization |
    | `dbip-country.mmdb` | DB-IP Country Lite — country fallback |
    | `cloudflare.txt` | Cloudflare edge ranges (IPv4 + IPv6) |
-   | `datacenter.txt` | X4BNet + AWS + GCP + Oracle + Azure + DigitalOcean ranges |
    | `hosting-asns.txt` | ASNs known for hosting / abuse |
    | `proxy.txt` | FireHOL anonymous proxy ranges |
    | `tor.txt` | Tor Project exit nodes |
    | `vpn.txt` | X4BNet VPN provider ranges |
+   | `provider-asns.txt` | *(versioned in repo, not downloaded)* — provider ASN registry: `ASN\|Label` (e.g. `47583\|Hostinger`) |
+
+   Datacenter/hosting detection is **ASN-based**: the ASN MMDB resolves any client IP to its ASN, and `provider-asns.txt` + `hosting-asns.txt` classify the network. No datacenter IP ranges are shipped. **Adding a provider = one line** in `src/data/provider-asns.txt`, then rebuild.
 2. **Installs cargo packages** — Rust toolchain (rustup) and system build tools if missing, then fetches every crate dependency from `Cargo.toml` / `Cargo.lock`.
 
-Flags: `./setup.sh --data-only` · `./setup.sh --cargo-only`
+Flags: `./setup.sh --data-only` · `./setup.sh --asns-only` · `./setup.sh --cargo-only`
 
 > **Note:** the FireHOL anonymous list behind `proxy.txt` is large (~2.9M ranges, ~40 MB). If you don't need `ip.is_proxy` detection, empty `src/data/proxy.txt` before `cargo build` to keep the binary smaller (the lists are embedded via `include_str!`).
 
@@ -236,3 +238,4 @@ Build: Rust stable (`rustup`), `build-essential`, `pkg-config`, `cmake`, `clang`
 ## License
 
 Internal tool — not open source.
+tool — not open source.

@@ -47,7 +47,8 @@
 │  ┌─────────────────────────────────────────────────┐   │
 │  │        EMBEDDED DATA (140 MB in binary)          │   │
 │  │  MMDB: city, ASN, country                        │   │
-│  │  CIDR: VPN, Tor, datacenter, Cloudflare, proxy   │   │
+│  │  CIDR: VPN, Tor, Cloudflare, proxy               │   │
+│  │  ASN:  provider registry, hosting/abuse ASNs     │   │
 │  └─────────────────────────────────────────────────┘   │
 └─────────────────────────────────────────────────────────┘
 ```
@@ -159,7 +160,7 @@ All IP intelligence data is compiled into the binary at build time using Rust's 
 - **Zero network requests** on startup
 - **Zero disk I/O** for IP intel lookups
 - **Deterministic startup** — no download failures, no timeouts
-- **~140 MB** added to binary size (3 MMDB files + 6 CIDR lists)
+- **~140 MB** added to binary size (3 MMDB files + 4 CIDR lists + 2 ASN lists)
 
 ### Data files in `src/data/`
 
@@ -168,7 +169,7 @@ All IP intelligence data is compiled into the binary at build time using Rust's 
 | `dbip-city-lite.mmdb` | 122 MB | MMDB | Country, region, city, lat/lon |
 | `dbip-asn-lite.mmdb` | 9.2 MB | MMDB | ASN number + organization |
 | `dbip-country.mmdb` | 8.0 MB | MMDB | Country-only fallback |
-| `datacenter.txt` | 2.0 MB | CIDR list | 118K datacenter/hosting ranges |
+| `provider-asns.txt` | ~1.5 KB | ASN registry | `ASN\|Label` provider map (e.g. `47583\|Hostinger`) |
 | `vpn.txt` | 177 KB | CIDR list | 11K VPN provider ranges |
 | `tor.txt` | 19 KB | CIDR list | 1.3K Tor exit node IPs |
 | `hosting-asns.txt` | 4.3 KB | ASN list | Bad/hosting ASN numbers |

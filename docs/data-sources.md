@@ -8,7 +8,7 @@ All IP intelligence data is compiled directly into the gateway binary at build t
 |----------|----------|------------|
 | Geolocation | DB-IP City, Country, ASN (MMDB) | ~139 MB |
 | VPN Detection | X4BNet VPN list | ~177 KB |
-| Datacenter Detection | X4BNet + AWS + GCP + Oracle + Azure + DigitalOcean | ~2.0 MB |
+| Datacenter Detection | Provider ASN registry + bad ASN list (ASN-based) | ~6 KB |
 | Tor Detection | Tor Project exit node list | ~19 KB |
 | Edge Detection | Cloudflare IPv4 + IPv6 | ~336 B |
 | Hosting ASNs | Bad ASN list | ~4.3 KB |
@@ -122,25 +122,35 @@ One CIDR per line. Used for IP range membership checks via binary search (O(log 
 17.5.12.34
 ```
 
-#### `datacenter.txt` (2.0 MB)
+#### `provider-asns.txt` (~1.5 KB)
 
 | Field | Value |
 |-------|-------|
-| **Sources** | X4BNet + AWS + GCP + Oracle + Azure + DigitalOcean |
-| **Entries** | 118,574 CIDR ranges |
-| **Provides** | Known datacenter/hosting/cloud IP CIDRs |
-| **Used for** | `ip.is_datacenter` detection |
+| **Source** | Versioned in repo — manual registry |
+| **Format** | `ASN\|Label` (one per line, `#` comments) |
+| **Entries** | 38 ASNs across 31 providers (AWS, Google, Azure, Oracle, Hostinger, Hetzner, Linode, Contabo, …) |
+| **Refresh** | Manual — add ONE line, rebuild |
+| **Provides** | ASN → provider label map |
+| **Used for** | `ip.is_datacenter` + `ip.provider` detection |
 
-**Source breakdown:**
+Datacenter detection is **ASN-based**: the ASN MMDB resolves the client IP to its
+ASN at runtime (part of the standard lookup), and this registry classifies the
+network. The ASN identifies the operator no matter which IP blocks it announces —
+so no datacenter IP ranges need to be embedded. **Adding a provider is one line:**
 
-| Source | URL | CIDRs |
-|--------|-----|-------|
-| X4BNet Datacenter | `https://raw.githubusercontent.com/X4BNet/lists_vpn/main/output/datacenter/ipv4.txt` | ~40K |
-| AWS IP Ranges | `https://ip-ranges.amazonaws.com/ip-ranges.json` | ~8K |
-| GCP Cloud IPs | `https://www.gstatic.com/ipranges/cloud.json` | ~3K |
-| Oracle Cloud IPs | `https://docs.oracle.com/en-us/iaas/tools/public_ip_ranges.json` | ~5K |
-| Azure Service Tags | `https://download.microsoft.com/download/...ServiceTags_Public_*.json` | ~50K |
-| DigitalOcean IPs | `https://www.digitalocean.com/geo/google.csv` | ~5K |
+```
+47583|Hostinger
+```
+
+Find a provider's ASN: `whois -h whois.radb.net -- '-i origin ASxxxx'` or
+[bgp.tools](https://bgp.tools).
+
+**Sample lines:**
+```
+47583|Hostinger
+24940|Hetzner
+16509|Amazon AWS
+```
 
 #### `cloudflare.txt` (336 B)
 
@@ -205,10 +215,12 @@ In `src/utils/embedded_data.rs`:
 // CIDR lists
 pub const VPN_CIDRS: &str = include_str!("../data/vpn.txt");
 pub const TOR_CIDRS: &str = include_str!("../data/tor.txt");
-pub const DATACENTER_CIDRS: &str = include_str!("../data/datacenter.txt");
 pub const CLOUDFLARE_CIDRS: &str = include_str!("../data/cloudflare.txt");
-pub const HOSTING_ASNS: &str = include_str!("../data/hosting-asns.txt");
 pub const PROXY_CIDRS: &str = include_str!("../data/proxy.txt");
+
+// ASN lists
+pub const PROVIDER_ASNS: &str = include_str!("../data/provider-asns.txt");
+pub const HOSTING_ASNS: &str = include_str!("../data/hosting-asns.txt");
 
 // MMDB databases
 pub const DBIP_CITY_MMDB: &[u8] = include_bytes!("../data/dbip-city-lite.mmdb");
@@ -234,10 +246,12 @@ Gateway starts
     └── load_embedded_cidr_sets()
         ├── vpn.txt      → CidrSet (11,271 ranges, sorted)
         ├── tor.txt      → CidrSet (1,358 IPs, sorted)
-        ├── datacenter.txt → CidrSet (118,574 ranges, sorted)
         ├── cloudflare.txt → CidrSet (22 ranges, sorted)
-        ├── hosting-asns.txt → loaded as ASN numbers
         └── proxy.txt    → CidrSet (0 ranges, empty)
+
+    └── load_embedded_asn_sets()
+        ├── provider-asns.txt → HashMap<ASN, Label> (38 ASNs)
+        └── hosting-asns.txt  → HashSet<ASN> (723 ASNs)
 
 Per request:
     │
@@ -250,9 +264,9 @@ Per request:
         ├── MMDB city lookup → country, region, city
         ├── MMDB country fallback (if city missed)
         ├── MMDB ASN lookup → asn, as_org
+        ├── provider-asns.txt / hosting-asns.txt lookup (by ASN) → is_datacenter, provider
         ├── CidrSet::contains("vpn", ip) → is_vpn
         ├── CidrSet::contains("tor", ip) → is_tor
-        ├── CidrSet::contains("datacenter", ip) → is_datacenter
         ├── CidrSet::contains("proxy", ip) → is_proxy
         ├── classify_network_type()
         ├── calculate_risk_score()
@@ -283,8 +297,10 @@ fn contains(&self, ip: IpAddr) -> bool {
 |-----|--------|----------------------|
 | VPN | 11,271 | ~14 |
 | Tor | 1,358 | ~11 |
-| Datacenter | 118,574 | ~17 |
 | Cloudflare | 22 | ~5 |
+
+**ASN lookups** (datacenter/provider detection) are O(1) hash lookups on the ASN
+the MMDB already returned — no range search at all.
 
 ## Updating Embedded Data
 
@@ -320,31 +336,14 @@ curl -sL https://raw.githubusercontent.com/X4BNet/lists_vpn/main/output/vpn/ipv4
 curl -sL https://check.torproject.org/torbulkexitlist \
   > src/data/tor.txt
 
-# Datacenter (X4BNet)
-curl -sL https://raw.githubusercontent.com/X4BNet/lists_vpn/main/output/datacenter/ipv4.txt \
-  > src/data/datacenter.txt
-
-# AWS
-curl -sL https://ip-ranges.amazonaws.com/ip-ranges.json | \
-  jq -r '.prefixes[].ip_prefix' >> src/data/datacenter.txt
-
-# GCP
-curl -sL https://www.gstatic.com/ipranges/cloud.json | \
-  jq -r '.prefixes[].ipv4Prefix // empty' >> src/data/datacenter.txt
-
-# Oracle
-curl -sL https://docs.oracle.com/en-us/iaas/tools/public_ip_ranges.json | \
-  jq -r '.regions[].cidrs[].cidr' >> src/data/datacenter.txt
-
-# DigitalOcean
-curl -sL https://www.digitalocean.com/geo/google.csv | \
-  cut -d',' -f1 >> src/data/datacenter.txt
+# Datacenter providers — edit the registry (one line per ASN), no download:
+#   echo '47583|Hostinger' >> src/data/provider-asns.txt
 
 # Cloudflare
 curl -sL https://www.cloudflare.com/ips-v4 > src/data/cloudflare.txt
 curl -sL https://www.cloudflare.com/ips-v6 >> src/data/cloudflare.txt
 
-# Hosting ASNs
+# Hosting ASNs (bad-asn-list)
 curl -sL https://raw.githubusercontent.com/brianhama/bad-asn-list/master/bad-asn-list.csv | \
   tail -n +2 | cut -d',' -f1 > src/data/hosting-asns.txt
 ```
@@ -369,7 +368,7 @@ systemctl restart quayel-gateway
 | MMDB (city, ASN, country) | Monthly | DB-IP releases monthly |
 | Tor exit list | Weekly | Exit nodes change frequently |
 | VPN list | Weekly | New VPN providers appear |
-| Datacenter ranges | Monthly | Cloud providers add ranges slowly |
+| Provider ASN registry | On demand | Adding a provider is a one-line edit |
 | Cloudflare ranges | Monthly | Rarely changes |
 | Hosting ASNs | Monthly | Slow-moving list |
 
@@ -380,12 +379,11 @@ systemctl restart quayel-gateway
 | Code + dependencies | ~13 MB | 8.5% |
 | DB-IP City MMDB | ~122 MB | 79.6% |
 | DB-IP ASN MMDB | ~9.2 MB | 6.0% |
-| DB-IP Country MMDB | ~8.0 MB | 5.2% |
-| Datacenter CIDRs | ~2.0 MB | 1.3% |
+| DB-IP Country MMDB | ~8.0 MB | 5.3% |
 | VPN CIDRs | ~177 KB | 0.1% |
 | Tor CIDRs | ~19 KB | <0.1% |
-| Other CIDRs | ~5 KB | <0.1% |
-| **Total (stripped release)** | **~153 MB** | **100%** |
+| ASN lists + other CIDRs | ~10 KB | <0.1% |
+| **Total (stripped release)** | **~151 MB** | **100%** |
 
 ## Runtime Memory
 

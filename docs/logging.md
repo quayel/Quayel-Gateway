@@ -127,6 +127,7 @@ Each line is a complete JSON object:
     "country": "US",
     "region": "CA",
     "asn": 16509,
+    "provider": "Amazon AWS",
     "network_type": "datacenter",
     "is_vpn": false,
     "is_proxy": false,

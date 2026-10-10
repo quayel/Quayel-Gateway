@@ -43,6 +43,7 @@ Conditions are the core matching mechanism used by Firewall, Rate Limiting, Cach
 | `ip.city` | string | City name |
 | `ip.asn` | number | ASN number |
 | `ip.as_org` | string | ASN organization name |
+| `ip.provider` | string | Hosting/cloud provider label (e.g. `"Hostinger"`) |
 | `ip.is_vpn` | bool | IP is a known VPN |
 | `ip.is_tor` | bool | IP is a Tor exit node |
 | `ip.is_datacenter` | bool | IP is from a datacenter/hosting |

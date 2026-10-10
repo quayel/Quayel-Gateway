@@ -7,17 +7,23 @@
 #    1. Downloads every embedded IP-intelligence dataset into src/data/
 #       • MMDB databases (DB-IP Lite, monthly):
 #           dbip-city-lite.mmdb   dbip-asn-lite.mmdb   dbip-country.mmdb
-#       • Latest CIDR / IP lists:
-#           cloudflare.txt   datacenter.txt   hosting-asns.txt
-#           proxy.txt        tor.txt          vpn.txt
+#       • Latest ASN / IP lists:
+#           cloudflare.txt   hosting-asns.txt   proxy.txt   tor.txt   vpn.txt
+#
+#       Datacenter/hosting detection is ASN-based: src/data/provider-asns.txt
+#       ('ASN|Label', e.g. 47583|Hostinger) is versioned in the repo and needs
+#       no download. The ASN MMDB resolves any client IP to its ASN and the
+#       registry maps that ASN to a provider — datacenter IP ranges are not
+#       shipped. To add a provider: add ONE line to provider-asns.txt.
 #
 #    2. Installs the Rust toolchain (if missing), system build tools and all
 #       cargo packages (crate dependencies) declared in Cargo.toml/Cargo.lock.
 #
 #  Usage:
-#    ./setup.sh                # datasets + cargo packages (default)
-#    ./setup.sh --data-only    # only download the datasets
-#    ./setup.sh --cargo-only   # only toolchain + cargo packages
+#    ./setup.sh               # datasets + cargo packages (default)
+#    ./setup.sh --data-only   # only download the datasets
+#    ./setup.sh --asns-only   # only refresh ASN lists (hosting-asns + registry)
+#    ./setup.sh --cargo-only  # only toolchain + cargo packages
 #    ./setup.sh --help
 # ==============================================================================
 set -euo pipefail
@@ -36,13 +42,18 @@ usage() {
 Quayel Gateway — setup.sh
 
   1. Downloads all embedded IP-intelligence datasets into src/data/
-     (MMDB databases + cloudflare/datacenter/hosting-asns/proxy/tor/vpn lists)
+     (MMDB databases + cloudflare/hosting-asns/proxy/tor/vpn lists)
   2. Installs the Rust toolchain, system build tools and all cargo packages.
 
+  Datacenter/hosting detection is ASN-based — no datacenter IP ranges are
+  downloaded. src/data/provider-asns.txt maps 'ASN|Label' (e.g. 47583|Hostinger)
+  and is versioned in the repo. Add a provider by adding one line to that file.
+
 Usage:
-  ./setup.sh                # datasets + cargo packages (default)
-  ./setup.sh --data-only    # only download the datasets
-  ./setup.sh --cargo-only   # only toolchain + cargo packages
+  ./setup.sh               # datasets + cargo packages (default)
+  ./setup.sh --data-only   # only download the datasets
+  ./setup.sh --asns-only   # only refresh ASN lists (hosting-asns + registry)
+  ./setup.sh --cargo-only  # only toolchain + cargo packages
   ./setup.sh --help
 EOF
 }
@@ -55,7 +66,8 @@ fetch_raw() {
 }
 
 # clean_list (stdin → stdout) — trim CR/whitespace, drop comments/blank lines,
-# keep only IPv4/IPv6 addresses or CIDR ranges, deduplicate and sort.
+# keep only IPv4/IPv6 addresses, CIDR ranges or bare ASN numbers, deduplicate
+# and sort.
 clean_list() {
     sed -e 's/\r$//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' \
         | grep -E '^[0-9A-Fa-f:.]+(/[0-9]{1,3})?$' \
@@ -114,25 +126,30 @@ mmdb_month() {
     fi
 }
 
-# azure_service_tags_url — locate the current ServiceTags_Public JSON. The
-# download GUID is stable; the date suffix changes roughly weekly.
-azure_service_tags_url() {
-    local url
-    url="$(fetch_raw 'https://www.microsoft.com/en-us/download/confirmation.aspx?id=56519' 2>/dev/null \
-        | grep -oE "https://download\\.microsoft\\.com/[^\"'<> ]+ServiceTags_Public_[0-9]+\\.json" \
-        | head -n1 || true)"
-    if [[ -z "${url}" ]]; then
-        local guid='https://download.microsoft.com/download/7/1/D/71D86715-5596-4529-9B13-DA13A5DE5B63/ServiceTags_Public_'
-        local i d
-        for i in $(seq 0 30); do
-            d="$(date -d "-${i} days" +%Y%m%d)"
-            if curl -fsI --connect-timeout 8 "${guid}${d}.json" >/dev/null 2>&1; then
-                url="${guid}${d}.json"
-                break
-            fi
-        done
+# ── ASN lists ────────────────────────────────────────────────────────────────
+# provider-asns.txt ('ASN|Label') is versioned in the repo — the single source
+# of truth for datacenter/hosting provider classification. Edit it directly.
+
+# download_hosting_asns — refresh hosting-asns.txt (bad-asn-list): ASNs known
+# for hosting/abuse. Requests from these ASNs are flagged is_datacenter too.
+download_hosting_asns() {
+    info 'downloading hosting-asns.txt …'
+    fetch_raw 'https://raw.githubusercontent.com/brianhama/bad-asn-list/master/bad-asn-list.csv' \
+        | tail -n +2 | cut -d',' -f1 \
+        | save_list 'hosting-asns.txt'
+}
+
+# refresh_asn_lists — hosting-asns.txt download + provider registry summary
+refresh_asn_lists() {
+    echo
+    info '=== ASN lists ==='
+    download_hosting_asns
+    local reg="${DATA_DIR}/provider-asns.txt"
+    if [[ -s "${reg}" ]]; then
+        ok "provider-asns.txt  ($(grep -cE '^[0-9]' "${reg}" || true) ASNs, $(grep -E '^[0-9]' "${reg}" | cut -d'|' -f2 | sort -u | wc -l | tr -d ' ') providers)"
+    else
+        warn 'provider-asns.txt missing — restore it from the repository'
     fi
-    [[ -n "${url}" ]] && echo "${url}"
 }
 
 # ── phase 1: datasets ────────────────────────────────────────────────────────
@@ -170,48 +187,12 @@ setup_datasets() {
         | save_list 'tor.txt'
 
     # ── hosting-asns.txt — ASNs known for hosting/abuse ──────────────────────
-    info 'downloading hosting-asns.txt …'
-    fetch_raw 'https://raw.githubusercontent.com/brianhama/bad-asn-list/master/bad-asn-list.csv' \
-        | tail -n +2 | cut -d',' -f1 \
-        | save_list 'hosting-asns.txt'
+    download_hosting_asns
 
     # ── proxy.txt — FireHOL anonymous proxy ranges ───────────────────────────
     info 'downloading proxy.txt …'
     fetch_raw 'https://raw.githubusercontent.com/firehol/blocklist-ipsets/master/firehol_anonymous.netset' \
         | save_list 'proxy.txt'
-
-    # ── datacenter.txt — merged cloud/hosting ranges ─────────────────────────
-    info 'downloading datacenter.txt (X4BNet + AWS + GCP + Oracle + Azure + DigitalOcean) …'
-    local tmpdir
-    tmpdir="$(mktemp -d)"
-    trap 'rm -rf "${tmpdir}"' RETURN
-
-    fetch_raw 'https://raw.githubusercontent.com/X4BNet/lists_vpn/main/output/datacenter/ipv4.txt' \
-        > "${tmpdir}/x4bnet.txt"       || warn 'X4BNet datacenter list failed — skipping'
-    fetch_raw 'https://ip-ranges.amazonaws.com/ip-ranges.json' \
-        | jq -r '.prefixes[].ip_prefix' \
-        > "${tmpdir}/aws.txt"          || warn 'AWS ip-ranges failed — skipping'
-    fetch_raw 'https://www.gstatic.com/ipranges/cloud.json' \
-        | jq -r '.prefixes[] | .ipv4Prefix // empty' \
-        > "${tmpdir}/gcp.txt"          || warn 'GCP cloud.json failed — skipping'
-    fetch_raw 'https://docs.oracle.com/en-us/iaas/tools/public_ip_ranges.json' \
-        | jq -r '.regions[].cidrs[].cidr' \
-        > "${tmpdir}/oracle.txt"       || warn 'Oracle public_ip_ranges failed — skipping'
-    fetch_raw 'https://www.digitalocean.com/geo/google.csv' \
-        | cut -d',' -f1 \
-        > "${tmpdir}/do.txt"           || warn 'DigitalOcean geo csv failed — skipping'
-
-    local azure_url
-    azure_url="$(azure_service_tags_url || true)"
-    if [[ -n "${azure_url}" ]]; then
-        fetch_raw "${azure_url}" \
-            | jq -r '.values[].properties.addressPrefixes[]' \
-            > "${tmpdir}/azure.txt"    || warn 'Azure ServiceTags failed — skipping'
-    else
-        warn 'Azure ServiceTags URL not found — skipping'
-    fi
-
-    cat "${tmpdir}"/*.txt 2>/dev/null | save_list 'datacenter.txt'
 }
 
 # ── phase 2: cargo packages ──────────────────────────────────────────────────
@@ -252,12 +233,14 @@ setup_cargo() {
 
 DO_DATA=1
 DO_CARGO=1
+DO_ASNS=0
 case "${1:-}" in
-    '')             ;;
-    --data-only)    DO_CARGO=0 ;;
-    --cargo-only)   DO_DATA=0 ;;
-    -h|--help)      usage; exit 0 ;;
-    *)              die "unknown option: ${1} (try --help)" ;;
+    '')                  ;;
+    --data-only)         DO_CARGO=0 ;;
+    --asns-only)         DO_DATA=0; DO_CARGO=0; DO_ASNS=1 ;;
+    --cargo-only)        DO_DATA=0 ;;
+    -h|--help)           usage; exit 0 ;;
+    *)                   die "unknown option: ${1} (try --help)" ;;
 esac
 
 echo '============================================================================='
@@ -265,11 +248,12 @@ echo ' Quayel Gateway — setup'
 echo '============================================================================='
 
 [[ "${DO_DATA}" -eq 1 ]]  && setup_datasets
+[[ "${DO_ASNS}" -eq 1 ]]  && refresh_asn_lists
 [[ "${DO_CARGO}" -eq 1 ]] && setup_cargo
 
 echo
 ok 'setup complete'
-if [[ "${DO_DATA}" -eq 1 ]]; then
+if [[ "${DO_DATA}" -eq 1 || "${DO_ASNS}" -eq 1 ]]; then
     echo
     info 'datasets in src/data/:'
     ls -lh "${DATA_DIR}" | tail -n +2

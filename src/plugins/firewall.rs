@@ -420,6 +420,7 @@ pub fn resolve_condition_value(ctx: &mut RequestContext, path: &str) -> Option<V
         "ip.city" => ctx.ip_intel.as_ref().and_then(|i| i.get_field("city")),
         "ip.asn" => ctx.ip_intel.as_ref().and_then(|i| i.get_field("asn")),
         "ip.as_org" => ctx.ip_intel.as_ref().and_then(|i| i.get_field("as_org")),
+        "ip.provider" => ctx.ip_intel.as_ref().and_then(|i| i.get_field("provider")),
         "ip.is_vpn" => ctx.ip_intel.as_ref().and_then(|i| i.get_field("is_vpn")),
         "ip.is_proxy" => ctx.ip_intel.as_ref().and_then(|i| i.get_field("is_proxy")),
         "ip.is_datacenter" => ctx.ip_intel.as_ref().and_then(|i| i.get_field("is_datacenter")),

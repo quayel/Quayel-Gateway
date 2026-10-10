@@ -25,9 +25,10 @@ That's it. No URLs, no storage directories, no refresh intervals. Everything is 
 | `city` | string | DB-IP City MMDB | City name |
 | `asn` | number | DB-IP ASN MMDB | Autonomous System Number |
 | `as_org` | string | DB-IP ASN MMDB | ASN organization name |
+| `provider` | string | Provider ASN registry | Hosting/cloud provider label (e.g. `"Hostinger"`, `"Hetzner"`) |
 | `is_vpn` | bool | X4BNet VPN list | IP belongs to a known VPN provider |
 | `is_tor` | bool | Tor Project | IP is a current Tor exit node |
-| `is_datacenter` | bool | Multi-source | IP is from a datacenter/hosting provider |
+| `is_datacenter` | bool | ASN-based | IP's ASN is a known datacenter/hosting provider |
 | `is_proxy` | bool | FireHOL | IP is a known anonymous proxy |
 | `is_mobile` | bool | — | Reserved (currently null) |
 | `is_residential` | bool | — | Reserved (currently null) |
@@ -103,9 +104,10 @@ Request arrives
         ├── 2. MMDB city lookup → country, region, city
         ├── 3. MMDB country fallback (if city missed)
         ├── 4. MMDB ASN lookup → asn, as_org
-        ├── 5. CIDR check: vpn.txt → is_vpn
-        ├── 6. CIDR check: tor.txt → is_tor
-        ├── 7. CIDR check: datacenter.txt → is_datacenter
+        ├── 5. ASN registry lookup: provider-asns.txt → is_datacenter, provider
+        │        (fallback: hosting-asns.txt → is_datacenter)
+        ├── 6. CIDR check: vpn.txt → is_vpn
+        ├── 7. CIDR check: tor.txt → is_tor
         ├── 8. CIDR check: proxy.txt → is_proxy
         ├── 9. Classify network_type
         ├── 10. Calculate risk_score
@@ -129,10 +131,17 @@ Request arrives
 |------|------|---------|--------|---------|
 | `vpn.txt` | 177 KB | 11,271 CIDRs | [X4BNet](https://github.com/X4BNet/lists_vpn) | Daily |
 | `tor.txt` | 19 KB | 1,358 IPs | [Tor Project](https://check.torproject.org) | Hourly |
-| `datacenter.txt` | 2.0 MB | 118,574 CIDRs | X4BNet + AWS + GCP + Oracle + Azure + DO | Daily |
 | `cloudflare.txt` | 336 B | 22 CIDRs | [Cloudflare](https://www.cloudflare.com/ips-v4) | Daily |
-| `hosting-asns.txt` | 4.3 KB | ASNs | [brianhama/bad-asn-list](https://github.com/brianhama/bad-asn-list) | Weekly |
 | `proxy.txt` | 0 B | 0 | [FireHOL](https://github.com/firehol/blocklist-ipsets) | Weekly |
+
+### ASN Lists (datacenter / hosting detection)
+
+| File | Size | Entries | Source | Refresh |
+|------|------|---------|--------|---------|
+| `provider-asns.txt` | ~1.5 KB | 38 ASNs | Versioned registry (`ASN\|Label`) — add one line per provider | Manual (one-line edit) |
+| `hosting-asns.txt` | 4.3 KB | ASNs | [brianhama/bad-asn-list](https://github.com/brianhama/bad-asn-list) | Weekly |
+
+Datacenter detection is **ASN-based**: the ASN MMDB resolves the client IP to its ASN (already part of the ~5 μs lookup), and these lists classify the network. No datacenter IP ranges are embedded — the ASN identifies the provider regardless of which blocks it announces.
 
 ## Performance
 

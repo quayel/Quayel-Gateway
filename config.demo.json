@@ -1,0 +1,357 @@
+{
+  "gateway_id": "gw-demo-01",
+  "gateway_name": "demo",
+  "server_name": "demo.example.com",
+  "config_version": "2026-10-17-001",
+  "listen": {
+    "http": "0.0.0.0:8080",
+    "https": "0.0.0.0:8443"
+  },
+  "client_ip": {
+    "source": "header_index",
+    "header": "X-Forwarded-For",
+    "index": 0,
+    "fallback": "peer_ip"
+  },
+  "plugins": {
+    "ip_intel": {
+      "enabled": true
+    },
+    "firewall": {
+      "enabled": true,
+      "rules": [
+        {
+          "id": "block-tor",
+          "name": "Block Tor exit nodes",
+          "enabled": true,
+          "conditions": [
+            {
+              "left": "ip.is_tor",
+              "operator": "equals",
+              "value": true
+            }
+          ],
+          "action": {
+            "type": "block",
+            "status": 403
+          }
+        },
+        {
+          "id": "block-high-risk",
+          "name": "Block high-risk IPs (score > 30)",
+          "enabled": true,
+          "conditions": [
+            {
+              "left": "ip.risk_score",
+              "operator": "greater_than",
+              "value": 30
+            }
+          ],
+          "action": {
+            "type": "block",
+            "status": 403
+          }
+        },
+        {
+          "id": "block-bad-ua",
+          "name": "Block known bad user-agents",
+          "enabled": true,
+          "conditions": [
+            {
+              "left": "req.headers.user-agent",
+              "operator": "regex",
+              "value": "(?i)(sqlmap|nikto|nmap|masscan)"
+            }
+          ],
+          "action": {
+            "type": "block",
+            "status": 403
+          }
+        },
+        {
+          "id": "redirect-www",
+          "name": "Redirect www to bare domain",
+          "enabled": true,
+          "conditions": [
+            {
+              "left": "req.host",
+              "operator": "equals",
+              "value": "www.demo.example.com"
+            }
+          ],
+          "action": {
+            "type": "redirect",
+            "status": 301,
+            "url": "https://demo.example.com"
+          }
+        }
+      ]
+    },
+    "rate_limiting": {
+      "enabled": true,
+      "rules": [
+        {
+          "id": "global-rate",
+          "name": "Global rate limit",
+          "enabled": true,
+          "conditions": [],
+          "key": "req.client_ip",
+          "limit": 1000,
+          "window_seconds": 60,
+          "action": {
+            "type": "block",
+            "status": 429
+          }
+        },
+        {
+          "id": "api-rate",
+          "name": "API rate limit (per IP)",
+          "enabled": true,
+          "conditions": [
+            {
+              "left": "req.path",
+              "operator": "starts_with",
+              "value": "/api/"
+            }
+          ],
+          "key": "req.client_ip",
+          "limit": 100,
+          "window_seconds": 60,
+          "action": {
+            "type": "block",
+            "status": 429
+          }
+        },
+        {
+          "id": "login-rate",
+          "name": "Login endpoint rate limit",
+          "enabled": true,
+          "conditions": [
+            {
+              "left": "req.path",
+              "operator": "equals",
+              "value": "/api/auth/login"
+            },
+            {
+              "left": "req.method",
+              "operator": "equals",
+              "value": "POST"
+            }
+          ],
+          "key": "req.client_ip",
+          "limit": 10,
+          "window_seconds": 60,
+          "action": {
+            "type": "block",
+            "status": 429
+          }
+        }
+      ]
+    },
+    "cache": {
+      "enabled": true,
+      "max_object_size_bytes": 10485760,
+      "rules": [
+        {
+          "id": "cache-static",
+          "name": "Cache static assets",
+          "enabled": true,
+          "conditions": [
+            {
+              "left": "req.path",
+              "operator": "regex",
+              "value": "\\.(css|js|woff2?|ttf|eot|svg|png|jpg|jpeg|gif|webp|ico)$"
+            }
+          ],
+          "cache": "eligible",
+          "edge_ttl": {
+            "mode": "custom",
+            "seconds": 86400
+          },
+          "browser_ttl": {
+            "mode": "custom",
+            "seconds": 3600
+          },
+          "cache_key": {
+            "mode": "default"
+          },
+          "statuses": [200, 301]
+        },
+        {
+          "id": "cache-api-reads",
+          "name": "Cache GET API responses",
+          "enabled": true,
+          "conditions": [
+            {
+              "left": "req.path",
+              "operator": "starts_with",
+              "value": "/api/v1/"
+            },
+            {
+              "left": "req.method",
+              "operator": "equals",
+              "value": "GET"
+            }
+          ],
+          "cache": "eligible",
+          "edge_ttl": {
+            "mode": "origin"
+          },
+          "browser_ttl": {
+            "mode": "bypass"
+          },
+          "cache_key": {
+            "mode": "default"
+          },
+          "stale_while_revalidate": 30,
+          "stale_if_error": 60,
+          "statuses": [200, 404]
+        },
+        {
+          "id": "bypass-admin",
+          "name": "Bypass cache for admin routes",
+          "enabled": true,
+          "conditions": [
+            {
+              "left": "req.path",
+              "operator": "starts_with",
+              "value": "/admin"
+            }
+          ],
+          "cache": "bypass",
+          "edge_ttl": {
+            "mode": "custom",
+            "seconds": 0
+          },
+          "browser_ttl": {
+            "mode": "custom",
+            "seconds": 0
+          },
+          "cache_key": {
+            "mode": "default"
+          },
+          "statuses": [200]
+        }
+      ]
+    },
+    "load_balancer": {
+      "enabled": true,
+      "load_balancers": [
+        {
+          "id": "api-backend",
+          "name": "API Backend Pool",
+          "enabled": true,
+          "conditions": [
+            {
+              "left": "req.path",
+              "operator": "starts_with",
+              "value": "/api/"
+            }
+          ],
+          "algorithm": {
+            "type": "round_robin"
+          },
+          "targets": [
+            {
+              "id": "api-1",
+              "host": "10.0.1.10",
+              "port": 8080,
+              "protocol": "http",
+              "weight": 100,
+              "enabled": true
+            },
+            {
+              "id": "api-2",
+              "host": "10.0.1.11",
+              "port": 8080,
+              "protocol": "http",
+              "weight": 100,
+              "enabled": true
+            },
+            {
+              "id": "api-3",
+              "host": "10.0.1.12",
+              "port": 8080,
+              "protocol": "http",
+              "weight": 50,
+              "enabled": false
+            }
+          ],
+          "host_header": {
+            "mode": "custom",
+            "value": "api.internal"
+          },
+          "health_check": {
+            "mode": "https",
+            "path": "/health",
+            "interval_seconds": 5,
+            "timeout_ms": 2000,
+            "expected_statuses": [200],
+            "healthy_threshold": 2,
+            "unhealthy_threshold": 3
+          }
+        },
+        {
+          "id": "default-backend",
+          "name": "Web Frontend Pool",
+          "enabled": true,
+          "conditions": [],
+          "algorithm": {
+            "type": "round_robin"
+          },
+          "targets": [
+            {
+              "id": "web-1",
+              "host": "10.0.2.10",
+              "port": 3000,
+              "protocol": "http",
+              "weight": 100,
+              "enabled": true
+            },
+            {
+              "id": "web-2",
+              "host": "10.0.2.11",
+              "port": 3000,
+              "protocol": "http",
+              "weight": 100,
+              "enabled": true
+            }
+          ],
+          "host_header": {
+            "mode": "visitor"
+          },
+          "health_check": {
+            "mode": "https",
+            "path": "/healthz",
+            "interval_seconds": 10,
+            "timeout_ms": 1000,
+            "expected_statuses": [200],
+            "healthy_threshold": 2,
+            "unhealthy_threshold": 3
+          }
+        }
+      ]
+    },
+    "logging": {
+      "enabled": true,
+      "mode": "file",
+      "file": {
+        "path": "/var/log/quayel/access.jsonl",
+        "buffer_size": 65536,
+        "flush_interval_ms": 5000
+      }
+    },
+    "auto_ssl": {
+      "enabled": true,
+      "email": "admin@example.com",
+      "domains": [
+        "demo.example.com",
+        "www.demo.example.com",
+        "api.example.com"
+      ],
+      "cert_storage_path": "/var/lib/quayel/certs",
+      "staging": false,
+      "renewal_days_before": 30
+    }
+  }
+}

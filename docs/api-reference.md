@@ -56,6 +56,7 @@ These paths can be used in the `left` field of any condition (firewall, rate lim
 | `ip.city` | string | City name | `"San Francisco"` |
 | `ip.asn` | number | Autonomous System Number | `16509` |
 | `ip.as_org` | string | ASN organization name | `"AMAZON-02"` |
+| `ip.provider` | string | Hosting/cloud provider label | `"Amazon AWS"` |
 | `ip.is_vpn` | bool | IP is a known VPN provider | `true` |
 | `ip.is_tor` | bool | IP is a Tor exit node | `false` |
 | `ip.is_datacenter` | bool | IP is from datacenter/hosting | `true` |
@@ -234,6 +235,7 @@ See [Logging](logging.md) for the complete log format.
 | Client IP | `.client_ip` | Resolved real client IP |
 | Country | `.ip_intel.country` | GeoIP country code |
 | ASN | `.ip_intel.asn` | Autonomous System Number |
+| Provider | `.ip_intel.provider` | Hosting/cloud provider label |
 | VPN | `.ip_intel.is_vpn` | VPN detection |
 | Tor | `.ip_intel.is_tor` | Tor exit detection |
 | Datacenter | `.ip_intel.is_datacenter` | Datacenter detection |

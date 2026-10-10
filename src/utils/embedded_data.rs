@@ -5,8 +5,13 @@
 // To update: copy fresh files into src/data/ and rebuild.
 //
 // Data sources:
-//   CIDR lists — compiled from on-disk lua/ directory
-//   MMDB files — downloaded from DB-IP free databases
+//   CIDR lists   — downloaded by setup.sh (VPN, Tor, proxy, Cloudflare ranges)
+//   ASN lists    — provider-asns.txt (versioned registry) + hosting-asns.txt
+//   MMDB files   — downloaded from DB-IP free databases
+//
+// Datacenter/hosting detection is ASN-based: the ASN MMDB resolves any client
+// IP to its ASN, and the ASN lists classify the network. No datacenter IP
+// ranges are shipped.
 
 // ── CIDR Lists ──────────────────────────────────────────────────────────────
 
@@ -16,17 +21,22 @@ pub const VPN_CIDRS: &str = include_str!("../data/vpn.txt");
 /// Tor exit node CIDRs from Tor Project
 pub const TOR_CIDRS: &str = include_str!("../data/tor.txt");
 
-/// Datacenter/hosting CIDRs (X4BNet + AWS + GCP + Oracle + DigitalOcean + Azure)
-pub const DATACENTER_CIDRS: &str = include_str!("../data/datacenter.txt");
-
 /// Cloudflare edge CIDRs (IPv4 + IPv6)
 pub const CLOUDFLARE_CIDRS: &str = include_str!("../data/cloudflare.txt");
 
-/// Bad/hosting ASN numbers from brianhama/bad-asn-list
-pub const HOSTING_ASNS: &str = include_str!("../data/hosting-asns.txt");
-
 /// FireHOL anonymous proxy CIDRs (empty by default)
 pub const PROXY_CIDRS: &str = include_str!("../data/proxy.txt");
+
+// ── ASN Lists ────────────────────────────────────────────────────────────────
+
+/// Datacenter/hosting provider registry — 'ASN|Label' lines (e.g. 47583|Hostinger).
+/// Versioned in the repo; add a provider with one line. Sets is_datacenter and
+/// the provider label on any request whose IP resolves to one of these ASNs.
+pub const PROVIDER_ASNS: &str = include_str!("../data/provider-asns.txt");
+
+/// Bad/hosting ASN numbers from brianhama/bad-asn-list (bare ASN per line).
+/// Requests from these ASNs are flagged is_datacenter (unlabeled).
+pub const HOSTING_ASNS: &str = include_str!("../data/hosting-asns.txt");
 
 // ── MMDB Databases ──────────────────────────────────────────────────────────
 
@@ -62,19 +72,9 @@ pub fn all_cidr_sources() -> Vec<EmbeddedCidrSource> {
             data: TOR_CIDRS,
         },
         EmbeddedCidrSource {
-            name: "datacenter.txt",
-            set_name: "datacenter",
-            data: DATACENTER_CIDRS,
-        },
-        EmbeddedCidrSource {
             name: "cloudflare.txt",
             set_name: "cloudflare",
             data: CLOUDFLARE_CIDRS,
-        },
-        EmbeddedCidrSource {
-            name: "hosting-asns.txt",
-            set_name: "hosting_asns",
-            data: HOSTING_ASNS,
         },
         EmbeddedCidrSource {
             name: "proxy.txt",
