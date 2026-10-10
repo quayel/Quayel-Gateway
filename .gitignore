@@ -87,6 +87,10 @@ config.staging.json
 config.production.json
 config.*.json
 !config.json
+# The all-rules test config IS tracked — scripts/test-all-rules.sh exercises it
+!config.all-rules.json
+# The JSON Schema doc is tracked (docs/README.md links to it)
+!docs/config.schema.json
 
 # -------------------- Profiling / Benchmarking --------------------
 perf.data

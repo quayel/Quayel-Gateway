@@ -1,0 +1,799 @@
+{
+  "gateway_id": "gw-all-rules-01",
+  "gateway_name": "all-rules",
+  "server_name": "all-rules.test",
+  "config_version": "2026-10-06-001",
+  "listen": {
+    "http": "0.0.0.0:8099",
+    "https": "0.0.0.0:8499"
+  },
+  "client_ip": {
+    "source": "header_index",
+    "header": "X-Forwarded-For",
+    "index": 0,
+    "fallback": "peer_ip"
+  },
+  "plugins": {
+    "ip_intel": {
+      "enabled": true
+    },
+    "firewall": {
+      "enabled": true,
+      "rules": [
+        {
+          "id": "fw-op-equals",
+          "name": "op equals on req.method",
+          "enabled": true,
+          "conditions": [
+            { "left": "req.path", "operator": "starts_with", "value": "/test/fw/eq", "next": "and" },
+            { "left": "req.method", "operator": "equals", "value": "DEBUG" }
+          ],
+          "action": { "type": "block", "status": 421 }
+        },
+        {
+          "id": "fw-op-not-equals",
+          "name": "op not_equals on req.scheme",
+          "enabled": true,
+          "conditions": [
+            { "left": "req.path", "operator": "starts_with", "value": "/test/fw/req", "next": "and" },
+            { "left": "req.scheme", "operator": "not_equals", "value": "https" }
+          ],
+          "action": {
+            "type": "set_request_header",
+            "headers": { "x-all-rules-not-equals": "matched" }
+          }
+        },
+        {
+          "id": "fw-op-contains",
+          "name": "op contains on req.user_agent",
+          "enabled": true,
+          "conditions": [
+            { "left": "req.path", "operator": "starts_with", "value": "/test/fw/contains", "next": "and" },
+            { "left": "req.user_agent", "operator": "contains", "value": "all-rules-probe" }
+          ],
+          "action": { "type": "block", "status": 403 }
+        },
+        {
+          "id": "fw-op-not-contains",
+          "name": "op not_contains on req.header",
+          "enabled": true,
+          "conditions": [
+            { "left": "req.path", "operator": "starts_with", "value": "/test/fw/notcontains", "next": "and" },
+            { "left": "req.header.x-probe", "operator": "not_contains", "value": "safe" }
+          ],
+          "action": { "type": "allow" }
+        },
+        {
+          "id": "fw-op-starts-with",
+          "name": "op starts_with on req.path",
+          "enabled": true,
+          "conditions": [
+            { "left": "req.path", "operator": "starts_with", "value": "/test/fw/starts" }
+          ],
+          "action": {
+            "type": "redirect",
+            "status": 301,
+            "location": "/all-rules/hit?op=starts_with"
+          }
+        },
+        {
+          "id": "fw-op-ends-with",
+          "name": "op ends_with on req.header",
+          "enabled": true,
+          "conditions": [
+            { "left": "req.path", "operator": "starts_with", "value": "/test/fw/endswith", "next": "and" },
+            { "left": "req.header.x-probe", "operator": "ends_with", "value": ".css" }
+          ],
+          "action": { "type": "block", "status": 403 }
+        },
+        {
+          "id": "fw-op-exists",
+          "name": "op exists on req.cookie",
+          "enabled": true,
+          "conditions": [
+            { "left": "req.path", "operator": "starts_with", "value": "/test/fw/exists", "next": "and" },
+            { "left": "req.cookie.session", "operator": "exists" }
+          ],
+          "action": {
+            "type": "set_response_header",
+            "headers": { "x-all-rules-exists": "matched" }
+          }
+        },
+        {
+          "id": "fw-op-not-exists",
+          "name": "op not_exists on req.cookie",
+          "enabled": true,
+          "conditions": [
+            { "left": "req.path", "operator": "starts_with", "value": "/test/fw/no-session", "next": "and" },
+            { "left": "req.cookie.session", "operator": "not_exists" }
+          ],
+          "action": { "type": "block", "status": 403 }
+        },
+        {
+          "id": "fw-op-in",
+          "name": "op in on ip.country",
+          "enabled": true,
+          "conditions": [
+            { "left": "req.path", "operator": "starts_with", "value": "/test/fw/in", "next": "and" },
+            { "left": "ip.country", "operator": "in", "value": ["XX", "YY", "ZZ"] }
+          ],
+          "action": { "type": "block", "status": 451 }
+        },
+        {
+          "id": "fw-op-not-in",
+          "name": "op not_in on req.query",
+          "enabled": true,
+          "conditions": [
+            { "left": "req.path", "operator": "starts_with", "value": "/test/fw/notin", "next": "and" },
+            { "left": "req.query.country", "operator": "not_in", "value": ["US", "CA", "GB"] }
+          ],
+          "action": { "type": "block", "status": 451 }
+        },
+        {
+          "id": "fw-op-greater-than",
+          "name": "op greater_than on ip.risk_score",
+          "enabled": true,
+          "conditions": [
+            { "left": "req.path", "operator": "starts_with", "value": "/test/fw/gt-only", "next": "and" },
+            { "left": "ip.risk_score", "operator": "greater_than", "value": 100 }
+          ],
+          "action": { "type": "block", "status": 403 }
+        },
+        {
+          "id": "fw-op-greater-than-or-equal",
+          "name": "op greater_than_or_equal on ip.asn",
+          "enabled": true,
+          "conditions": [
+            { "left": "req.path", "operator": "starts_with", "value": "/test/fw/gte-only", "next": "and" },
+            { "left": "ip.asn", "operator": "greater_than_or_equal", "value": 1 }
+          ],
+          "action": {
+            "type": "set_request_header",
+            "headers": { "x-all-rules-gte": "matched" }
+          }
+        },
+        {
+          "id": "fw-op-less-than",
+          "name": "op less_than on ip.risk_score",
+          "enabled": true,
+          "conditions": [
+            { "left": "req.path", "operator": "starts_with", "value": "/test/fw/lt-only", "next": "and" },
+            { "left": "ip.risk_score", "operator": "less_than", "value": 0 }
+          ],
+          "action": { "type": "block", "status": 403 }
+        },
+        {
+          "id": "fw-op-less-than-or-equal",
+          "name": "op less_than_or_equal on ip.asn",
+          "enabled": true,
+          "conditions": [
+            { "left": "req.path", "operator": "starts_with", "value": "/test/fw/lte-only", "next": "and" },
+            { "left": "ip.asn", "operator": "less_than_or_equal", "value": 4294967295 }
+          ],
+          "action": {
+            "type": "set_request_header",
+            "headers": { "x-all-rules-lte": "matched" }
+          }
+        },
+        {
+          "id": "fw-op-regex",
+          "name": "op regex on req.user_agent",
+          "enabled": true,
+          "conditions": [
+            { "left": "req.path", "operator": "starts_with", "value": "/test/fw/regex", "next": "and" },
+            { "left": "req.user_agent", "operator": "regex", "value": "(?i)all-rules-scanner" }
+          ],
+          "action": { "type": "block", "status": 403 }
+        },
+        {
+          "id": "fw-left-req-host",
+          "name": "left req.host equals",
+          "enabled": true,
+          "conditions": [
+            { "left": "req.host", "operator": "equals", "value": "all-rules.test" }
+          ],
+          "action": {
+            "type": "set_request_header",
+            "headers": { "x-all-rules-host": "matched" }
+          }
+        },
+        {
+          "id": "fw-left-req-ip",
+          "name": "left req.ip regex",
+          "enabled": true,
+          "conditions": [
+            { "left": "req.ip", "operator": "regex", "value": "^198\\.51\\.100\\." }
+          ],
+          "action": { "type": "block", "status": 403 }
+        },
+        {
+          "id": "fw-left-jwt",
+          "name": "left header.authorization.jwt claim equals",
+          "enabled": true,
+          "conditions": [
+            { "left": "header.authorization.jwt.data.role", "operator": "equals", "value": "admin" }
+          ],
+          "action": {
+            "type": "set_request_header",
+            "headers": { "x-all-rules-jwt": "matched" }
+          }
+        },
+        {
+          "id": "fw-http-alias-query",
+          "name": "left http.query alias equals",
+          "enabled": true,
+          "conditions": [
+            { "left": "http.query.op", "operator": "equals", "value": "alias" }
+          ],
+          "action": {
+            "type": "set_request_header",
+            "headers": { "x-all-rules-alias": "matched" }
+          }
+        },
+        {
+          "id": "fw-left-tor",
+          "name": "left ip.is_tor equals true",
+          "enabled": true,
+          "conditions": [
+            { "left": "req.path", "operator": "starts_with", "value": "/test/fw/left-tor", "next": "and" },
+            { "left": "ip.is_tor", "operator": "equals", "value": true }
+          ],
+          "action": { "type": "block", "status": 403 }
+        },
+        {
+          "id": "fw-left-vpn",
+          "name": "left ip.is_vpn equals true",
+          "enabled": true,
+          "conditions": [
+            { "left": "req.path", "operator": "starts_with", "value": "/test/fw/left-vpn", "next": "and" },
+            { "left": "ip.is_vpn", "operator": "equals", "value": true }
+          ],
+          "action": { "type": "block", "status": 403 }
+        },
+        {
+          "id": "fw-left-country",
+          "name": "left ip.country in",
+          "enabled": true,
+          "conditions": [
+            { "left": "req.path", "operator": "starts_with", "value": "/test/fw/left-country", "next": "and" },
+            { "left": "ip.country", "operator": "in", "value": ["US", "GB", "DE", "NL"] }
+          ],
+          "action": {
+            "type": "set_request_header",
+            "headers": { "x-all-rules-country": "matched" }
+          }
+        },
+        {
+          "id": "fw-left-region",
+          "name": "left ip.region not_exists (region absent in embedded DB-IP city-lite data)",
+          "enabled": true,
+          "conditions": [
+            { "left": "req.path", "operator": "starts_with", "value": "/test/fw/left-region", "next": "and" },
+            { "left": "ip.region", "operator": "not_exists" }
+          ],
+          "action": {
+            "type": "set_request_header",
+            "headers": { "x-all-rules-region": "matched" }
+          }
+        },
+        {
+          "id": "fw-left-city",
+          "name": "left ip.city not_equals",
+          "enabled": true,
+          "conditions": [
+            { "left": "req.path", "operator": "starts_with", "value": "/test/fw/left-city", "next": "and" },
+            { "left": "ip.city", "operator": "not_equals", "value": "Nowhere" }
+          ],
+          "action": {
+            "type": "set_request_header",
+            "headers": { "x-all-rules-city": "matched" }
+          }
+        },
+        {
+          "id": "fw-left-asn",
+          "name": "left ip.asn equals",
+          "enabled": true,
+          "conditions": [
+            { "left": "req.path", "operator": "starts_with", "value": "/test/fw/left-asn", "next": "and" },
+            { "left": "ip.asn", "operator": "equals", "value": 15169 }
+          ],
+          "action": {
+            "type": "set_request_header",
+            "headers": { "x-all-rules-asn": "matched" }
+          }
+        },
+        {
+          "id": "fw-left-as-org",
+          "name": "left ip.as_org regex",
+          "enabled": true,
+          "conditions": [
+            { "left": "req.path", "operator": "starts_with", "value": "/test/fw/left-as-org", "next": "and" },
+            { "left": "ip.as_org", "operator": "regex", "value": "(?i)google" }
+          ],
+          "action": {
+            "type": "set_request_header",
+            "headers": { "x-all-rules-as-org": "matched" }
+          }
+        },
+        {
+          "id": "fw-left-provider",
+          "name": "left ip.provider equals",
+          "enabled": true,
+          "conditions": [
+            { "left": "req.path", "operator": "starts_with", "value": "/test/fw/left-provider", "next": "and" },
+            { "left": "ip.provider", "operator": "equals", "value": "Google Cloud" }
+          ],
+          "action": {
+            "type": "set_request_header",
+            "headers": { "x-all-rules-provider": "matched" }
+          }
+        },
+        {
+          "id": "fw-left-is-datacenter",
+          "name": "left ip.is_datacenter equals true",
+          "enabled": true,
+          "conditions": [
+            { "left": "req.path", "operator": "starts_with", "value": "/test/fw/left-dc", "next": "and" },
+            { "left": "ip.is_datacenter", "operator": "equals", "value": true }
+          ],
+          "action": {
+            "type": "set_request_header",
+            "headers": { "x-all-rules-datacenter": "matched" }
+          }
+        },
+        {
+          "id": "fw-left-is-proxy",
+          "name": "left ip.is_proxy equals true",
+          "enabled": true,
+          "conditions": [
+            { "left": "req.path", "operator": "starts_with", "value": "/test/fw/left-proxy", "next": "and" },
+            { "left": "ip.is_proxy", "operator": "equals", "value": true }
+          ],
+          "action": { "type": "block", "status": 403 }
+        },
+        {
+          "id": "fw-left-is-mobile",
+          "name": "left ip.is_mobile not_equals true",
+          "enabled": true,
+          "conditions": [
+            { "left": "req.path", "operator": "starts_with", "value": "/test/fw/left-mobile", "next": "and" },
+            { "left": "ip.is_mobile", "operator": "not_equals", "value": true }
+          ],
+          "action": {
+            "type": "set_request_header",
+            "headers": { "x-all-rules-mobile": "matched" }
+          }
+        },
+        {
+          "id": "fw-left-is-residential",
+          "name": "left ip.is_residential equals true",
+          "enabled": true,
+          "conditions": [
+            { "left": "req.path", "operator": "starts_with", "value": "/test/fw/left-residential", "next": "and" },
+            { "left": "ip.is_residential", "operator": "equals", "value": true }
+          ],
+          "action": { "type": "block", "status": 403 }
+        },
+        {
+          "id": "fw-left-is-residential-proxy",
+          "name": "left ip.is_residential_proxy equals true",
+          "enabled": true,
+          "conditions": [
+            { "left": "req.path", "operator": "starts_with", "value": "/test/fw/left-resproxy", "next": "and" },
+            { "left": "ip.is_residential_proxy", "operator": "equals", "value": true }
+          ],
+          "action": { "type": "block", "status": 403 }
+        },
+        {
+          "id": "fw-left-network-type",
+          "name": "left ip.network_type in",
+          "enabled": true,
+          "conditions": [
+            { "left": "req.path", "operator": "starts_with", "value": "/test/fw/left-net", "next": "and" },
+            { "left": "ip.network_type", "operator": "in", "value": ["datacenter", "mobile", "residential", "residential_proxy"] }
+          ],
+          "action": {
+            "type": "set_request_header",
+            "headers": { "x-all-rules-network-type": "matched" }
+          }
+        },
+        {
+          "id": "fw-logic-or",
+          "name": "OR chain (method OR user_agent OR header)",
+          "enabled": true,
+          "conditions": [
+            { "left": "req.method", "operator": "equals", "value": "TRACE", "next": "or" },
+            { "left": "req.user_agent", "operator": "contains", "value": "all-rules-or-probe", "next": "or" },
+            { "left": "req.header.x-force", "operator": "equals", "value": "or-match" }
+          ],
+          "action": { "type": "block", "status": 403 }
+        },
+        {
+          "id": "fw-logic-mixed",
+          "name": "Mixed AND/OR (path AND method) OR user_agent",
+          "enabled": true,
+          "conditions": [
+            { "left": "req.path", "operator": "starts_with", "value": "/test/fw/mixed", "next": "and" },
+            { "left": "req.method", "operator": "equals", "value": "PUT", "next": "or" },
+            { "left": "req.user_agent", "operator": "contains", "value": "all-rules-mixed-probe" }
+          ],
+          "action": { "type": "block", "status": 421 }
+        },
+        {
+          "id": "fw-probe-inject",
+          "name": "Probe A: inject x-all-rules-probe for RL-key visibility test",
+          "enabled": true,
+          "conditions": [
+            { "left": "req.path", "operator": "equals", "value": "/test/probe/inject" }
+          ],
+          "action": {
+            "type": "set_request_header",
+            "headers": { "x-all-rules-probe": "fw-probe-inject" }
+          }
+        },
+        {
+          "id": "fw-probe-inject-b",
+          "name": "Probe B: inject distinct x-all-rules-probe value",
+          "enabled": true,
+          "conditions": [
+            { "left": "req.path", "operator": "equals", "value": "/test/probe/inject-b" }
+          ],
+          "action": {
+            "type": "set_request_header",
+            "headers": { "x-all-rules-probe": "fw-probe-inject-b" }
+          }
+        },
+        {
+          "id": "fw-left-req-peer-ip",
+          "name": "left req.peer_ip regex (last: set_request_header rules short-circuit)",
+          "enabled": true,
+          "conditions": [
+            { "left": "req.peer_ip", "operator": "regex", "value": "^(127\\.0\\.0\\.1|::1)$" }
+          ],
+          "action": {
+            "type": "set_request_header",
+            "headers": { "x-all-rules-peer-ip": "matched" }
+          }
+        }
+      ]
+    },
+    "rate_limiting": {
+      "enabled": true,
+      "rules": [
+        {
+          "id": "rl-global",
+          "name": "Global rate limit (no conditions)",
+          "enabled": true,
+          "conditions": [],
+          "key": "req.client_ip",
+          "limit": 10000,
+          "window_seconds": 60,
+          "action": { "type": "block", "status": 429 }
+        },
+        {
+          "id": "rl-single-key",
+          "name": "Single key rate limit (req.ip)",
+          "enabled": true,
+          "conditions": [
+            { "left": "req.path", "operator": "equals", "value": "/test/rl/single" }
+          ],
+          "key": "req.ip",
+          "limit": 3,
+          "window_seconds": 60,
+          "action": { "type": "block", "status": 429 }
+        },
+        {
+          "id": "rl-composite-key",
+          "name": "Composite key rate limit (client_ip + API key)",
+          "enabled": true,
+          "conditions": [
+            { "left": "req.path", "operator": "starts_with", "value": "/test/rl/composite", "next": "and" },
+            { "left": "req.method", "operator": "equals", "value": "GET" }
+          ],
+          "key": ["req.client_ip", "req.header.x-api-key"],
+          "limit": 5,
+          "window_seconds": 60,
+          "action": { "type": "block", "status": 429 }
+        },
+        {
+          "id": "rl-jwt-key",
+          "name": "JWT claim key rate limit",
+          "enabled": true,
+          "conditions": [
+            { "left": "req.path", "operator": "starts_with", "value": "/test/rl/jwt" }
+          ],
+          "key": ["header.authorization.jwt.user_id"],
+          "limit": 2,
+          "window_seconds": 60,
+          "action": { "type": "block", "status": 429 }
+        },
+        {
+          "id": "rl-template-key",
+          "name": "Legacy template key rate limit",
+          "enabled": true,
+          "conditions": [
+            { "left": "req.path", "operator": "starts_with", "value": "/test/rl/template" }
+          ],
+          "key": "{req.client_ip}+{http.header.x-api-key}",
+          "limit": 2,
+          "window_seconds": 60,
+          "action": { "type": "block", "status": 429 }
+        },
+        {
+          "id": "rl-cookie-query-key",
+          "name": "Composite cookie + query key with in condition",
+          "enabled": true,
+          "conditions": [
+            { "left": "req.path", "operator": "starts_with", "value": "/test/rl/cookie", "next": "and" },
+            { "left": "req.query.tier", "operator": "in", "value": ["free", "trial"] }
+          ],
+          "key": ["req.cookie.session", "req.query.tier"],
+          "limit": 5,
+          "window_seconds": 60,
+          "action": { "type": "block", "status": 429 }
+        },
+        {
+          "id": "rl-ip-intel-key",
+          "name": "IP-intel condition + ip.country key",
+          "enabled": true,
+          "conditions": [
+            { "left": "req.path", "operator": "starts_with", "value": "/test/rl/intel", "next": "and" },
+            { "left": "ip.asn", "operator": "greater_than_or_equal", "value": 0 }
+          ],
+          "key": "ip.country",
+          "limit": 5,
+          "window_seconds": 60,
+          "action": { "type": "block", "status": 429 }
+        },
+        {
+          "id": "rl-probe-header-visibility",
+          "name": "Probe: keys on firewall-injected header (verifies set_request_header visibility)",
+          "enabled": true,
+          "conditions": [
+            { "left": "req.path", "operator": "starts_with", "value": "/test/probe/inject" }
+          ],
+          "key": ["req.header.x-all-rules-probe"],
+          "limit": 1,
+          "window_seconds": 60,
+          "action": { "type": "block", "status": 429 }
+        }
+      ]
+    },
+    "cache": {
+      "enabled": true,
+      "max_object_size_bytes": 10485760,
+      "rules": [
+        {
+          "id": "cache-static-custom",
+          "name": "Static assets - custom TTLs, SWR/SIE, status list",
+          "enabled": true,
+          "conditions": [
+            { "left": "req.path", "operator": "regex", "value": "^/test/cache/static/.*\\.(css|js|png|jpg)$" }
+          ],
+          "cache": "eligible",
+          "edge_ttl": { "mode": "custom", "seconds": 60 },
+          "browser_ttl": { "mode": "custom", "seconds": 30 },
+          "cache_key": { "mode": "default" },
+          "statuses": [200, 301],
+          "stale_while_revalidate": 30,
+          "stale_if_error": 60
+        },
+        {
+          "id": "cache-origin-ttls",
+          "name": "Origin-driven TTLs for GETs",
+          "enabled": true,
+          "conditions": [
+            { "left": "req.path", "operator": "starts_with", "value": "/test/cache/origin", "next": "and" },
+            { "left": "req.method", "operator": "equals", "value": "GET" }
+          ],
+          "cache": "eligible",
+          "edge_ttl": { "mode": "origin" },
+          "browser_ttl": { "mode": "origin" },
+          "cache_key": { "mode": "default" },
+          "statuses": [200]
+        },
+        {
+          "id": "cache-custom-key",
+          "name": "Variant cache key (country + variant header + method)",
+          "enabled": true,
+          "conditions": [
+            { "left": "req.path", "operator": "starts_with", "value": "/test/cache/variant" }
+          ],
+          "cache": "eligible",
+          "edge_ttl": { "mode": "custom", "seconds": 120 },
+          "browser_ttl": { "mode": "bypass" },
+          "cache_key": {
+            "mode": "custom",
+            "parts": ["ip.country", "req.header.x-variant", "req.method"]
+          },
+          "statuses": [200]
+        },
+        {
+          "id": "cache-bypass-auth",
+          "name": "Bypass cache for cookied requests",
+          "enabled": true,
+          "conditions": [
+            { "left": "req.path", "operator": "starts_with", "value": "/test/cache/private", "next": "and" },
+            { "left": "req.cookie.session", "operator": "exists" }
+          ],
+          "cache": "bypass",
+          "edge_ttl": { "mode": "custom", "seconds": 0 },
+          "browser_ttl": { "mode": "custom", "seconds": 0 },
+          "cache_key": { "mode": "default" },
+          "statuses": [200]
+        },
+        {
+          "id": "cache-operator-conditions",
+          "name": "Cache rule exercising greater_than + not_in conditions",
+          "enabled": true,
+          "conditions": [
+            { "left": "req.path", "operator": "starts_with", "value": "/test/cache/ops", "next": "and" },
+            { "left": "ip.asn", "operator": "greater_than", "value": 0, "next": "and" },
+            { "left": "req.header.x-cache-probe", "operator": "not_in", "value": ["no-cache", "no-store"] }
+          ],
+          "cache": "eligible",
+          "edge_ttl": { "mode": "custom", "seconds": 15 },
+          "browser_ttl": { "mode": "bypass" },
+          "statuses": [200]
+        }
+      ]
+    },
+    "load_balancer": {
+      "enabled": true,
+      "load_balancers": [
+        {
+          "id": "lb-round-robin",
+          "name": "Round Robin pool",
+          "enabled": true,
+          "conditions": [
+            { "left": "req.path", "operator": "starts_with", "value": "/lb/rr" }
+          ],
+          "algorithm": { "type": "round_robin" },
+          "targets": [
+            { "id": "echo-a", "host": "127.0.0.1", "port": 9099, "protocol": "http", "weight": 100, "enabled": true },
+            { "id": "echo-b", "host": "127.0.0.1", "port": 9100, "protocol": "http", "weight": 100, "enabled": true }
+          ],
+          "host_header": { "mode": "visitor" },
+          "health_check": {
+            "mode": "https",
+            "path": "/health",
+            "interval_seconds": 10,
+            "timeout_ms": 1000,
+            "expected_statuses": [200],
+            "healthy_threshold": 2,
+            "unhealthy_threshold": 3
+          }
+        },
+        {
+          "id": "lb-weighted",
+          "name": "Weighted Round Robin pool",
+          "enabled": true,
+          "conditions": [
+            { "left": "req.path", "operator": "starts_with", "value": "/lb/wrr" }
+          ],
+          "algorithm": { "type": "weighted_round_robin" },
+          "targets": [
+            { "id": "echo-a", "host": "127.0.0.1", "port": 9099, "protocol": "http", "weight": 70, "enabled": true },
+            { "id": "echo-b", "host": "127.0.0.1", "port": 9100, "protocol": "http", "weight": 30, "enabled": true }
+          ],
+          "host_header": { "mode": "custom", "value": "upstream.internal" },
+          "health_check": {
+            "mode": "accepts_connections",
+            "interval_seconds": 10,
+            "timeout_ms": 1000,
+            "healthy_threshold": 2,
+            "unhealthy_threshold": 3
+          }
+        },
+        {
+          "id": "lb-least-conn",
+          "name": "Least Connections pool",
+          "enabled": true,
+          "conditions": [
+            { "left": "req.path", "operator": "starts_with", "value": "/lb/lc" }
+          ],
+          "algorithm": { "type": "least_connections" },
+          "targets": [
+            { "id": "echo-a", "host": "127.0.0.1", "port": 9099, "protocol": "http", "weight": 100, "enabled": true }
+          ],
+          "host_header": { "mode": "target" },
+          "health_check": {
+            "mode": "off",
+            "interval_seconds": 10,
+            "timeout_ms": 1000,
+            "healthy_threshold": 2,
+            "unhealthy_threshold": 3
+          }
+        },
+        {
+          "id": "lb-fast-response",
+          "name": "Fast Response pool (incl. TLS target config)",
+          "enabled": true,
+          "conditions": [
+            { "left": "req.path", "operator": "starts_with", "value": "/lb/fast" }
+          ],
+          "algorithm": { "type": "fast_response" },
+          "targets": [
+            { "id": "echo-a", "host": "127.0.0.1", "port": 9099, "protocol": "http", "weight": 100, "enabled": true },
+            {
+              "id": "echo-tls",
+              "host": "127.0.0.1",
+              "port": 9443,
+              "protocol": "https",
+              "weight": 100,
+              "enabled": false,
+              "tls": { "verify": true, "sni": "origin.internal" }
+            }
+          ],
+          "host_header": { "mode": "visitor" },
+          "health_check": {
+            "mode": "accepts_connections",
+            "interval_seconds": 10,
+            "timeout_ms": 1000,
+            "healthy_threshold": 2,
+            "unhealthy_threshold": 3
+          }
+        },
+        {
+          "id": "lb-sticky",
+          "name": "Sticky Session pool (session key header)",
+          "enabled": true,
+          "conditions": [
+            { "left": "req.path", "operator": "starts_with", "value": "/lb/sticky" }
+          ],
+          "algorithm": { "type": "sticky_session", "key": "req.header.x-session-id" },
+          "targets": [
+            { "id": "echo-a", "host": "127.0.0.1", "port": 9099, "protocol": "http", "weight": 100, "enabled": true },
+            { "id": "echo-b", "host": "127.0.0.1", "port": 9100, "protocol": "http", "weight": 100, "enabled": true }
+          ],
+          "host_header": { "mode": "visitor" },
+          "health_check": {
+            "mode": "https",
+            "path": "/health",
+            "interval_seconds": 10,
+            "timeout_ms": 1000,
+            "expected_statuses": [200],
+            "healthy_threshold": 2,
+            "unhealthy_threshold": 3
+          }
+        },
+        {
+          "id": "lb-default",
+          "name": "Catch-all pool (requests outside /lb/*)",
+          "enabled": true,
+          "conditions": [],
+          "algorithm": { "type": "round_robin" },
+          "targets": [
+            { "id": "echo-a", "host": "127.0.0.1", "port": 9099, "protocol": "http", "weight": 100, "enabled": true },
+            { "id": "echo-b", "host": "127.0.0.1", "port": 9100, "protocol": "http", "weight": 100, "enabled": true }
+          ],
+          "host_header": { "mode": "visitor" },
+          "health_check": {
+            "mode": "accepts_connections",
+            "interval_seconds": 10,
+            "timeout_ms": 1000,
+            "healthy_threshold": 2,
+            "unhealthy_threshold": 3
+          }
+        }
+      ]
+    },
+    "logging": {
+      "enabled": true,
+      "mode": "file",
+      "file": {
+        "path": "/tmp/quayel-all-rules-access.jsonl",
+        "buffer_size": 65536,
+        "flush_interval_ms": 2000
+      }
+    },
+    "auto_ssl": {
+      "enabled": false,
+      "email": "admin@all-rules.test",
+      "domains": ["all-rules.test"],
+      "cert_storage_path": "/tmp/quayel-all-rules-certs",
+      "staging": true,
+      "renewal_days_before": 20
+    }
+  }
+}
