@@ -7,14 +7,20 @@ use crate::gateway::protection::{IpTracker, Violation};
 use crate::gateway::request_context::*;
 use crate::logging::event::LogEvent;
 use crate::logging::queue::LogQueue;
-use crate::plugins::cache::{parse_cdn_cache_control, calculate_edge_ttl, calculate_stale_while_revalidate, calculate_stale_if_error, parse_upstream_cdn_cache_control, bucket_accept_encoding, vary_is_cacheable, CacheEntry};
-use crate::plugins::transform::{apply_response_transform, replay_request_header_edits, CompiledTransform};
+use crate::plugins::cache::{
+    bucket_accept_encoding, calculate_edge_ttl, calculate_stale_if_error,
+    calculate_stale_while_revalidate, parse_cdn_cache_control, parse_upstream_cdn_cache_control,
+    vary_is_cacheable, CacheEntry,
+};
+use crate::plugins::transform::{
+    apply_response_transform, replay_request_header_edits, CompiledTransform,
+};
 use crate::plugins::{GatewayResponse, PluginFlow};
-use pingora_proxy::FailToProxy;
 use arc_swap::ArcSwap;
 use bytes::Bytes;
 use pingora_core::upstreams::peer::HttpPeer;
 use pingora_http::ResponseHeader;
+use pingora_proxy::FailToProxy;
 use pingora_proxy::{ProxyHttp, Session};
 use std::sync::Arc;
 use std::time::Duration;
@@ -30,7 +36,11 @@ pub struct GatewayState {
 }
 
 impl GatewayState {
-    pub fn new(config: CompiledConfig, log_queue: Option<LogQueue>, handle: Option<tokio::runtime::Handle>) -> Self {
+    pub fn new(
+        config: CompiledConfig,
+        log_queue: Option<LogQueue>,
+        handle: Option<tokio::runtime::Handle>,
+    ) -> Self {
         let plugin_runner = PluginRunner::new(&config);
         // Spawn background rate limiter cleanup task if handle provided
         if let Some(h) = &handle {
@@ -60,10 +70,10 @@ impl GatewayState {
             ip_tracker.spawn_cleanup_task(h);
         }
 
-        Self { 
-            config: ArcSwap::from_pointee(config), 
-            plugin_runner, 
-            log_queue, 
+        Self {
+            config: ArcSwap::from_pointee(config),
+            plugin_runner,
+            log_queue,
             auto_ssl,
             metrics: Arc::new(crate::utils::metrics::PluginMetrics::new()),
             ip_tracker,
@@ -79,17 +89,38 @@ impl QuayelGateway {
     /// Origin answered the conditional request with 304: merge its headers
     /// into the stored copy, restart the TTL and store it again. Returns the
     /// entry to serve.
-    fn refresh_after_304(&self, ctx: &RequestContext, stale: &CacheEntry, not_modified: &ResponseHeader) -> CacheEntry {
+    fn refresh_after_304(
+        &self,
+        ctx: &RequestContext,
+        stale: &CacheEntry,
+        not_modified: &ResponseHeader,
+    ) -> CacheEntry {
         // RFC 9111 §4.3.4: headers in the 304 replace the stored ones, except
         // those describing the body/framing.
-        const KEEP_STORED: &[&str] = &["content-length", "content-encoding", "content-type", "content-range", "transfer-encoding", "connection", "keep-alive"];
-        let mut headers: Vec<(String, String)> = stale.headers.iter()
-            .filter(|(k, _)| KEEP_STORED.contains(&k.as_str()) || !not_modified.headers.contains_key(k.as_str()))
+        const KEEP_STORED: &[&str] = &[
+            "content-length",
+            "content-encoding",
+            "content-type",
+            "content-range",
+            "transfer-encoding",
+            "connection",
+            "keep-alive",
+        ];
+        let mut headers: Vec<(String, String)> = stale
+            .headers
+            .iter()
+            .filter(|(k, _)| {
+                KEEP_STORED.contains(&k.as_str()) || !not_modified.headers.contains_key(k.as_str())
+            })
             .cloned()
             .collect();
         for (name, value) in not_modified.headers.iter() {
-            if KEEP_STORED.contains(&name.as_str()) { continue; }
-            if let Ok(v) = value.to_str() { headers.push((name.as_str().to_string(), v.to_string())); }
+            if KEEP_STORED.contains(&name.as_str()) {
+                continue;
+            }
+            if let Ok(v) = value.to_str() {
+                headers.push((name.as_str().to_string(), v.to_string()));
+            }
         }
 
         let mut entry = CacheEntry {
@@ -107,10 +138,15 @@ impl QuayelGateway {
                     entry.edge_ttl = edge;
                     entry.stale_while_revalidate = swr;
                     entry.stale_if_error = sie;
-                    self.state.plugin_runner.cache.store_revalidated(key_hash, entry.clone());
+                    self.state
+                        .plugin_runner
+                        .cache
+                        .store_revalidated(key_hash, entry.clone());
                 }
                 // Origin no longer allows caching: serve this once, then drop it.
-                None => { self.state.plugin_runner.cache.store.remove(key_hash); }
+                None => {
+                    self.state.plugin_runner.cache.store.remove(key_hash);
+                }
             }
         }
         entry
@@ -119,24 +155,36 @@ impl QuayelGateway {
 
 /// Error used by response_filter to hand the response over to fail_to_proxy.
 fn serve_from_cache_error() -> Box<pingora_error::Error> {
-    pingora_error::Error::explain(pingora_error::ErrorType::Custom("serve_from_cache"), "origin answer replaced by stored copy")
+    pingora_error::Error::explain(
+        pingora_error::ErrorType::Custom("serve_from_cache"),
+        "origin answer replaced by stored copy",
+    )
 }
 
 /// Edge TTL, stale-while-revalidate and stale-if-error for a response, or
 /// None when it must not be stored. Rule settings override origin headers.
-fn cache_ttls(cache: &CacheResult, headers: &[(String, String)]) -> Option<(Duration, Duration, Duration)> {
+fn cache_ttls(
+    cache: &CacheResult,
+    headers: &[(String, String)],
+) -> Option<(Duration, Duration, Duration)> {
     let cdn_cc = parse_cdn_cache_control(headers);
     if cdn_cc.no_store || cdn_cc.no_cache || cdn_cc.private {
         return None;
     }
-    let edge_ttl = calculate_edge_ttl(&cdn_cc, cache.edge_ttl_mode.unwrap_or(""), cache.edge_ttl_seconds);
+    let edge_ttl = calculate_edge_ttl(
+        &cdn_cc,
+        cache.edge_ttl_mode.unwrap_or(""),
+        cache.edge_ttl_seconds,
+    );
     if edge_ttl.is_zero() {
         return None;
     }
-    let swr = cache.stale_while_revalidate_seconds
+    let swr = cache
+        .stale_while_revalidate_seconds
         .map(Duration::from_secs)
         .unwrap_or_else(|| calculate_stale_while_revalidate(&cdn_cc));
-    let sie = cache.stale_if_error_seconds
+    let sie = cache
+        .stale_if_error_seconds
         .map(Duration::from_secs)
         .unwrap_or_else(|| calculate_stale_if_error(&cdn_cc));
     Some((edge_ttl, swr, sie))
@@ -149,15 +197,29 @@ impl ProxyHttp for QuayelGateway {
     fn new_ctx(&self) -> Self::CTX {
         let peer_ip = std::net::IpAddr::V4(std::net::Ipv4Addr::new(0, 0, 0, 0));
         RequestContext::new(
-            Arc::from(""), Arc::from(""), Arc::from(""), Arc::from(""),
-            peer_ip, peer_ip, Arc::from(""), None,
-            Arc::from("/"), Arc::from("GET"), Arc::from("http"), None, http::HeaderMap::new(),
+            Arc::from(""),
+            Arc::from(""),
+            Arc::from(""),
+            Arc::from(""),
+            peer_ip,
+            peer_ip,
+            Arc::from(""),
+            None,
+            Arc::from("/"),
+            Arc::from("GET"),
+            Arc::from("http"),
+            None,
+            http::HeaderMap::new(),
         )
     }
 
     // early_request_filter: header is parsed — apply server.timeouts
 
-    async fn early_request_filter(&self, session: &mut Session, _ctx: &mut Self::CTX) -> pingora_core::Result<()> {
+    async fn early_request_filter(
+        &self,
+        session: &mut Session,
+        _ctx: &mut Self::CTX,
+    ) -> pingora_core::Result<()> {
         if let Some(guard) = header_guard(session) {
             guard.headers_done();
         }
@@ -171,7 +233,11 @@ impl ProxyHttp for QuayelGateway {
 
     // request_filter: pipeline + short-circuit response
 
-    async fn request_filter(&self, session: &mut Session, ctx: &mut Self::CTX) -> pingora_core::Result<bool> {
+    async fn request_filter(
+        &self,
+        session: &mut Session,
+        ctx: &mut Self::CTX,
+    ) -> pingora_core::Result<bool> {
         // Check for ACME HTTP-01 challenge requests first
         // This must happen before any other processing
         let path_str = session.req_header().uri.path();
@@ -181,8 +247,12 @@ impl ProxyHttp for QuayelGateway {
                 let mut header = ResponseHeader::build(200, None)?;
                 header.insert_header("Content-Type", "text/plain")?;
                 header.insert_header("Content-Length", response.len().to_string())?;
-                session.write_response_header(Box::new(header), false).await?;
-                session.write_response_body(Some(Bytes::from(response)), true).await?;
+                session
+                    .write_response_header(Box::new(header), false)
+                    .await?;
+                session
+                    .write_response_body(Some(Bytes::from(response)), true)
+                    .await?;
                 return Ok(true); // Short-circuit — don't proxy to upstream
             }
         }
@@ -219,7 +289,8 @@ impl ProxyHttp for QuayelGateway {
         let config = self.state.config.load();
 
         // Extract client IP early — needed by all plugins
-        let peer_addr = session.client_addr()
+        let peer_addr = session
+            .client_addr()
             .and_then(|a| a.as_inet())
             .map(|inet| inet.ip())
             .unwrap_or_else(|| std::net::IpAddr::V4(std::net::Ipv4Addr::new(0, 0, 0, 0)));
@@ -242,14 +313,32 @@ impl ProxyHttp for QuayelGateway {
         // Reuse Arc<str> allocations across keep-alive requests: when the value
         // is unchanged (the common case — same client requesting the same URL),
         // this is just a comparison instead of a heap allocation.
-        set_arc_str(&mut ctx.client_ip_source, config.client_ip.header.as_deref().unwrap_or("peer_ip"));
-        set_opt_arc_str(&mut ctx.host, raw_headers.get("host").and_then(|v| v.to_str().ok()));
-        set_arc_str(&mut ctx.path, session.req_header().uri.path_and_query()
-            .map(|pq| pq.as_str())
-            .unwrap_or("/"));
+        set_arc_str(
+            &mut ctx.client_ip_source,
+            config.client_ip.header.as_deref().unwrap_or("peer_ip"),
+        );
+        set_opt_arc_str(
+            &mut ctx.host,
+            raw_headers.get("host").and_then(|v| v.to_str().ok()),
+        );
+        set_arc_str(
+            &mut ctx.path,
+            session
+                .req_header()
+                .uri
+                .path_and_query()
+                .map(|pq| pq.as_str())
+                .unwrap_or("/"),
+        );
         set_arc_str(&mut ctx.method, session.req_header().method.as_str());
-        set_arc_str(&mut ctx.scheme, resolve_scheme_from_raw(&session.req_header().uri, raw_headers));
-        set_opt_arc_str(&mut ctx.user_agent, raw_headers.get("user-agent").and_then(|v| v.to_str().ok()));
+        set_arc_str(
+            &mut ctx.scheme,
+            resolve_scheme_from_raw(&session.req_header().uri, raw_headers),
+        );
+        set_opt_arc_str(
+            &mut ctx.user_agent,
+            raw_headers.get("user-agent").and_then(|v| v.to_str().ok()),
+        );
         ctx.headers = raw_headers.clone();
 
         // Reset per-request plugin state (avoid re-allocating new struct)
@@ -290,7 +379,9 @@ impl ProxyHttp for QuayelGateway {
 
         // server.protection: bans and the per-IP request flood limit
         if let Some(protection) = &config.server.protection {
-            if let Err((violation, retry_after)) = self.state.ip_tracker.check_request(protection, client_ip) {
+            if let Err((violation, retry_after)) =
+                self.state.ip_tracker.check_request(protection, client_ip)
+            {
                 ctx.termination_phase = Some(TerminationPhase::Protection);
                 session.set_keepalive(None);
                 let resp = protection_response(429, violation, Some(retry_after));
@@ -303,12 +394,17 @@ impl ProxyHttp for QuayelGateway {
         // Chunked bodies are counted in request_body_filter.
         let max_body = config.server.max_body_bytes;
         if max_body > 0 {
-            let declared = session.req_header().headers.get(http::header::CONTENT_LENGTH)
+            let declared = session
+                .req_header()
+                .headers
+                .get(http::header::CONTENT_LENGTH)
                 .and_then(|v| v.to_str().ok())
                 .and_then(|v| v.trim().parse::<u64>().ok());
             if declared.is_some_and(|len| len > max_body) {
                 if let Some(protection) = &config.server.protection {
-                    self.state.ip_tracker.strike(protection, client_ip, Violation::BodyTooLarge);
+                    self.state
+                        .ip_tracker
+                        .strike(protection, client_ip, Violation::BodyTooLarge);
                 }
                 ctx.termination_phase = Some(TerminationPhase::Protection);
                 session.set_keepalive(None);
@@ -318,7 +414,11 @@ impl ProxyHttp for QuayelGateway {
             }
         }
 
-        let flow = self.state.plugin_runner.execute_pipeline(ctx, &config, &self.state.metrics).await;
+        let flow = self
+            .state
+            .plugin_runner
+            .execute_pipeline(ctx, &config, &self.state.metrics)
+            .await;
 
         match flow {
             PluginFlow::Respond(resp) => {
@@ -351,7 +451,11 @@ impl ProxyHttp for QuayelGateway {
             let max_body = config.server.max_body_bytes;
             if max_body > 0 && ctx.client_bytes_in > max_body {
                 if let Some(protection) = &config.server.protection {
-                    self.state.ip_tracker.strike(protection, ctx.client_ip, Violation::BodyTooLarge);
+                    self.state.ip_tracker.strike(
+                        protection,
+                        ctx.client_ip,
+                        Violation::BodyTooLarge,
+                    );
                 }
                 ctx.termination_phase = Some(TerminationPhase::Protection);
                 return Err(pingora_error::Error::explain(
@@ -365,10 +469,22 @@ impl ProxyHttp for QuayelGateway {
 
     // upstream_peer: select target from LB result
 
-    async fn upstream_peer(&self, _session: &mut Session, ctx: &mut Self::CTX) -> pingora_core::Result<Box<HttpPeer>> {
-        let target_host = ctx.load_balancer.target_host.clone().unwrap_or_else(|| Arc::from("127.0.0.1"));
+    async fn upstream_peer(
+        &self,
+        _session: &mut Session,
+        ctx: &mut Self::CTX,
+    ) -> pingora_core::Result<Box<HttpPeer>> {
+        let target_host = ctx
+            .load_balancer
+            .target_host
+            .clone()
+            .unwrap_or_else(|| Arc::from("127.0.0.1"));
         let target_port = ctx.load_balancer.target_port.unwrap_or(80);
-        let target_protocol = ctx.load_balancer.target_protocol.clone().unwrap_or_else(|| Arc::from("http"));
+        let target_protocol = ctx
+            .load_balancer
+            .target_protocol
+            .clone()
+            .unwrap_or_else(|| Arc::from("http"));
         let tls_verify = ctx.load_balancer.target_tls_verify.unwrap_or(false);
         let tls_sni = ctx.load_balancer.target_tls_sni.clone();
 
@@ -393,7 +509,12 @@ impl ProxyHttp for QuayelGateway {
 
     // upstream_request_filter: set forwarding headers
 
-    async fn upstream_request_filter(&self, session: &mut Session, upstream_request: &mut pingora_http::RequestHeader, ctx: &mut Self::CTX) -> pingora_core::Result<()> {
+    async fn upstream_request_filter(
+        &self,
+        session: &mut Session,
+        upstream_request: &mut pingora_http::RequestHeader,
+        ctx: &mut Self::CTX,
+    ) -> pingora_core::Result<()> {
         // 1. request_transform: replay the rewrite made in the pipeline
         if ctx.request_transform.path_rewritten() {
             match ctx.path.parse::<http::Uri>() {
@@ -401,7 +522,10 @@ impl ProxyHttp for QuayelGateway {
                 Err(e) => {
                     return Err(pingora_error::Error::explain(
                         pingora_error::ErrorType::InternalError,
-                        format!("request_transform produced an invalid path '{}': {e}", ctx.path),
+                        format!(
+                            "request_transform produced an invalid path '{}': {e}",
+                            ctx.path
+                        ),
                     ));
                 }
             }
@@ -414,8 +538,12 @@ impl ProxyHttp for QuayelGateway {
             upstream_request.remove_header(&http::header::IF_NONE_MATCH);
             upstream_request.remove_header(&http::header::IF_MODIFIED_SINCE);
             match bucket_accept_encoding(ctx.cache.encoding) {
-                Some(ae) => { let _ = upstream_request.insert_header(http::header::ACCEPT_ENCODING, ae); }
-                None => { upstream_request.remove_header(&http::header::ACCEPT_ENCODING); }
+                Some(ae) => {
+                    let _ = upstream_request.insert_header(http::header::ACCEPT_ENCODING, ae);
+                }
+                None => {
+                    upstream_request.remove_header(&http::header::ACCEPT_ENCODING);
+                }
             }
             // Revalidation: ask the origin whether the stored copy is still good.
             if let Some(stale) = &ctx.cache_stale {
@@ -433,19 +561,35 @@ impl ProxyHttp for QuayelGateway {
         // host the client asked for, not a rewritten one.
         let original = session.req_header();
         let _ = upstream_request.insert_header("X-Forwarded-Proto", ctx.scheme.as_ref());
-        if let Some(host) = original.headers.get(http::header::HOST).and_then(|v| v.to_str().ok()) {
-            if !host.is_empty() { let _ = upstream_request.insert_header("X-Forwarded-Host", host); }
+        if let Some(host) = original
+            .headers
+            .get(http::header::HOST)
+            .and_then(|v| v.to_str().ok())
+        {
+            if !host.is_empty() {
+                let _ = upstream_request.insert_header("X-Forwarded-Host", host);
+            }
         }
         let client_ip = ctx.client_ip.to_string();
-        let xff = match original.headers.get("x-forwarded-for").and_then(|v| v.to_str().ok()) {
-            Some(existing) if !existing.trim().is_empty() => format!("{}, {}", existing.trim(), client_ip),
+        let xff = match original
+            .headers
+            .get("x-forwarded-for")
+            .and_then(|v| v.to_str().ok())
+        {
+            Some(existing) if !existing.trim().is_empty() => {
+                format!("{}, {}", existing.trim(), client_ip)
+            }
             _ => client_ip,
         };
         let _ = upstream_request.insert_header("X-Forwarded-For", xff);
 
         // Optional X-QG-* headers (plugins.ip_intel.forward_headers). Off by default.
         let config = self.state.config.load();
-        if let Some(fh) = config.ip_intel.as_ref().and_then(|i| i.forward_headers.as_ref()) {
+        if let Some(fh) = config
+            .ip_intel
+            .as_ref()
+            .and_then(|i| i.forward_headers.as_ref())
+        {
             fh.apply(upstream_request, ctx.ip_intel.as_deref(), ctx.client_ip);
         }
         Ok(())
@@ -488,7 +632,11 @@ impl ProxyHttp for QuayelGateway {
         // every non-cacheable request (firewall block, rate limit, bypass, etc.)
         if ctx.cache_should_store {
             // Status allowed by the rule, and no Vary the key doesn't cover.
-            let status_ok = ctx.cache.statuses.as_ref().map_or(true, |s| s.contains(&status));
+            let status_ok = ctx
+                .cache
+                .statuses
+                .as_ref()
+                .map_or(true, |s| s.contains(&status));
             if !status_ok || !vary_is_cacheable(&upstream_response.headers) {
                 ctx.cache_should_store = false;
             }
@@ -529,7 +677,9 @@ impl ProxyHttp for QuayelGateway {
 
         // Everything below happens after the cache captured the origin
         // headers, so none of it is ever stored.
-        upstream_response.insert_header("Quayel-Cache-Status", ctx.cache.status.as_str()).unwrap_or(());
+        upstream_response
+            .insert_header("Quayel-Cache-Status", ctx.cache.status.as_str())
+            .unwrap_or(());
         let config = self.state.config.load();
         if let Some(rt) = &config.response_transform {
             apply_response_transform(ctx, rt, upstream_response);
@@ -574,7 +724,9 @@ impl ProxyHttp for QuayelGateway {
                 let headers = ctx.response_headers_captured.clone().unwrap_or_default();
                 let body_buf = &ctx.response_body_buffer;
 
-                let Some((edge_ttl, stale_while_revalidate, stale_if_error)) = cache_ttls(&ctx.cache, &headers) else {
+                let Some((edge_ttl, stale_while_revalidate, stale_if_error)) =
+                    cache_ttls(&ctx.cache, &headers)
+                else {
                     ctx.cache_should_store = false;
                     return Ok(None);
                 };
@@ -599,7 +751,11 @@ impl ProxyHttp for QuayelGateway {
                 // The guard drops → lock releases → concurrent requests see fresh data.
                 ctx.revalidation_guard = None;
                 // Clean up the revalidating map entry for this key.
-                self.state.plugin_runner.cache.revalidating.remove(&key_hash);
+                self.state
+                    .plugin_runner
+                    .cache
+                    .revalidating
+                    .remove(&key_hash);
 
                 ctx.cache_should_store = false;
             }
@@ -610,14 +766,22 @@ impl ProxyHttp for QuayelGateway {
 
     // fail_to_proxy: answer from cache (304 / stale-if-error), else error page
 
-    async fn fail_to_proxy(&self, session: &mut Session, e: &pingora_error::Error, ctx: &mut Self::CTX) -> FailToProxy {
+    async fn fail_to_proxy(
+        &self,
+        session: &mut Session,
+        e: &pingora_error::Error,
+        ctx: &mut Self::CTX,
+    ) -> FailToProxy {
         // response_filter chose a stored copy (304 or 5xx inside stale-if-error),
         // or the origin could not be reached at all (connect error, timeout)
         // while an entry inside its stale-if-error window is held.
         let entry = ctx.serve_from_cache.take().or_else(|| {
             let usable = session.response_written().is_none()
                 && *e.esource() == pingora_error::ErrorSource::Upstream
-                && ctx.cache_stale.as_ref().is_some_and(|s| s.is_stale_if_error());
+                && ctx
+                    .cache_stale
+                    .as_ref()
+                    .is_some_and(|s| s.is_stale_if_error());
             if usable {
                 ctx.cache.status = CacheStatus::Stale;
                 ctx.cache_stale.clone()
@@ -628,14 +792,28 @@ impl ProxyHttp for QuayelGateway {
 
         if let Some(entry) = entry {
             ctx.termination_phase = Some(TerminationPhase::Cache);
-            let resp = GatewayResponse { status: entry.status, headers: entry.headers.clone(), body: entry.body.clone() };
+            let resp = GatewayResponse {
+                status: entry.status,
+                headers: entry.headers.clone(),
+                body: entry.body.clone(),
+            };
             let config = self.state.config.load();
-            return match send_gateway_response(session, &resp, ctx, config.response_transform.as_ref()).await {
+            return match send_gateway_response(
+                session,
+                &resp,
+                ctx,
+                config.response_transform.as_ref(),
+            )
+            .await
+            {
                 Ok(()) => FailToProxy {
                     error_code: ctx.status_code.unwrap_or(resp.status),
                     can_reuse_downstream: session.is_body_done(),
                 },
-                Err(_) => FailToProxy { error_code: 0, can_reuse_downstream: false },
+                Err(_) => FailToProxy {
+                    error_code: 0,
+                    can_reuse_downstream: false,
+                },
             };
         }
 
@@ -656,17 +834,30 @@ impl ProxyHttp for QuayelGateway {
             ctx.status_code = Some(code);
             let _ = session.respond_error(code).await;
         }
-        FailToProxy { error_code: code, can_reuse_downstream: false }
+        FailToProxy {
+            error_code: code,
+            can_reuse_downstream: false,
+        }
     }
 
-    fn suppress_error_log(&self, _session: &Session, ctx: &Self::CTX, _error: &pingora_error::Error) -> bool {
+    fn suppress_error_log(
+        &self,
+        _session: &Session,
+        ctx: &Self::CTX,
+        _error: &pingora_error::Error,
+    ) -> bool {
         // Answered from cache: not a failure from the client's point of view.
         ctx.termination_phase == Some(TerminationPhase::Cache)
     }
 
     // logging: SINGLE log point
 
-    async fn logging(&self, session: &mut Session, _upstream_response: Option<&pingora_core::Error>, ctx: &mut Self::CTX) {
+    async fn logging(
+        &self,
+        session: &mut Session,
+        _upstream_response: Option<&pingora_core::Error>,
+        ctx: &mut Self::CTX,
+    ) {
         // The next bytes on this connection start a new request header. If
         // the body wasn't fully read (blocked/rejected request), close the
         // connection instead of draining an unknown amount of data.
@@ -693,8 +884,14 @@ impl ProxyHttp for QuayelGateway {
 
         // Always release LB connection — correctness required even when logging is off.
         // Moved before log_queue check to prevent connection count leak.
-        if let (Some(host), Some(port)) = (&ctx.load_balancer.target_host, ctx.load_balancer.target_port) {
-            self.state.plugin_runner.load_balancer.release_connection(host, port);
+        if let (Some(host), Some(port)) = (
+            &ctx.load_balancer.target_host,
+            ctx.load_balancer.target_port,
+        ) {
+            self.state
+                .plugin_runner
+                .load_balancer
+                .release_connection(host, port);
         }
 
         let queue = match self.state.log_queue {
@@ -720,13 +917,14 @@ async fn send_gateway_response(
     let mut header = ResponseHeader::build(resp.status, None)?;
     for (name, value) in resp.headers.iter() {
         // Framing comes from the body we send, not from the stored headers.
-        if name.eq_ignore_ascii_case("content-length") || name.eq_ignore_ascii_case("transfer-encoding") {
+        if name.eq_ignore_ascii_case("content-length")
+            || name.eq_ignore_ascii_case("transfer-encoding")
+        {
             continue;
         }
         let hname = http::header::HeaderName::from_bytes(name.as_bytes())
             .unwrap_or(http::header::HeaderName::from_static("x-quayel"));
-        let hval = http::HeaderValue::from_str(value)
-            .unwrap_or(http::HeaderValue::from_static(""));
+        let hval = http::HeaderValue::from_str(value).unwrap_or(http::HeaderValue::from_static(""));
         // append, not insert: stored responses may repeat a header (e.g. Link)
         header.append_header(hname, hval)?;
     }
@@ -754,14 +952,20 @@ async fn send_gateway_response(
         resp.body.clone()
     };
 
-    session.write_response_header(Box::new(header), false).await?;
+    session
+        .write_response_header(Box::new(header), false)
+        .await?;
     session.write_response_body(Some(body), true).await?;
 
     Ok(())
 }
 
 /// Short plain-text response for server.protection / server.limits refusals.
-fn protection_response(status: u16, violation: Violation, retry_after: Option<u64>) -> GatewayResponse {
+fn protection_response(
+    status: u16,
+    violation: Violation,
+    retry_after: Option<u64>,
+) -> GatewayResponse {
     let mut headers = vec![
         ("content-type".to_string(), "text/plain".to_string()),
         ("connection".to_string(), "close".to_string()),
@@ -773,16 +977,37 @@ fn protection_response(status: u16, violation: Violation, retry_after: Option<u6
         413 => "Request body too large\n",
         _ => "Too many requests\n",
     };
-    headers.push(("x-quayel-block-reason".to_string(), violation.as_str().to_string()));
-    GatewayResponse { status, headers: Arc::new(headers), body: Bytes::from_static(body.as_bytes()) }
+    headers.push((
+        "x-quayel-block-reason".to_string(),
+        violation.as_str().to_string(),
+    ));
+    GatewayResponse {
+        status,
+        headers: Arc::new(headers),
+        body: Bytes::from_static(body.as_bytes()),
+    }
 }
 
 // Helpers
 
-fn resolve_upstream_sni(target_host: &str, configured: Option<&str>, visitor_host: Option<&str>) -> String {
-    if let Some(sni) = configured { let sni = sni.trim(); if !sni.is_empty() { return sni.to_string(); } }
+fn resolve_upstream_sni(
+    target_host: &str,
+    configured: Option<&str>,
+    visitor_host: Option<&str>,
+) -> String {
+    if let Some(sni) = configured {
+        let sni = sni.trim();
+        if !sni.is_empty() {
+            return sni.to_string();
+        }
+    }
     if target_host.parse::<std::net::IpAddr>().is_ok() {
-        if let Some(host) = visitor_host { let host = host.trim(); if !host.is_empty() { return host.split(':').next().unwrap_or(host).to_string(); } }
+        if let Some(host) = visitor_host {
+            let host = host.trim();
+            if !host.is_empty() {
+                return host.split(':').next().unwrap_or(host).to_string();
+            }
+        }
     }
     target_host.to_string()
 }
@@ -814,35 +1039,59 @@ fn resolve_scheme_from_raw(uri: &http::Uri, headers: &http::HeaderMap) -> &'stat
         if let Some(value) = headers.get(*hdr_name).and_then(|v| v.to_str().ok()) {
             if let Some(proto) = value.split(',').next() {
                 let proto = proto.trim();
-                if proto.eq_ignore_ascii_case("http") { return "http"; }
-                if proto.eq_ignore_ascii_case("https") { return "https"; }
+                if proto.eq_ignore_ascii_case("http") {
+                    return "http";
+                }
+                if proto.eq_ignore_ascii_case("https") {
+                    return "https";
+                }
             }
         }
     }
     if let Some(scheme) = uri.scheme_str() {
-        return if scheme.eq_ignore_ascii_case("https") { "https" } else { "http" };
+        return if scheme.eq_ignore_ascii_case("https") {
+            "https"
+        } else {
+            "http"
+        };
     }
     "http"
 }
 
 /// Resolve client IP directly from raw HeaderMap — avoids full header extraction.
-fn resolve_client_ip_from_raw(config: &CompiledConfig, headers: &http::HeaderMap, peer_ip: std::net::IpAddr) -> std::net::IpAddr {
+fn resolve_client_ip_from_raw(
+    config: &CompiledConfig,
+    headers: &http::HeaderMap,
+    peer_ip: std::net::IpAddr,
+) -> std::net::IpAddr {
     match &config.client_ip.source {
         ClientIpSource::PeerIp => peer_ip,
         ClientIpSource::Header => {
             if let Some(header_name) = &config.client_ip.header {
-                if let Some(value) = headers.get(header_name.as_ref()).and_then(|v| v.to_str().ok()) {
-                    if let Ok(ip) = value.trim().parse::<std::net::IpAddr>() { return ip; }
+                if let Some(value) = headers
+                    .get(header_name.as_ref())
+                    .and_then(|v| v.to_str().ok())
+                {
+                    if let Ok(ip) = value.trim().parse::<std::net::IpAddr>() {
+                        return ip;
+                    }
                 }
             }
             peer_ip
         }
         ClientIpSource::HeaderIndex => {
-            if let (Some(header_name), Some(index)) = (&config.client_ip.header, config.client_ip.index) {
-                if let Some(value) = headers.get(header_name.as_ref()).and_then(|v| v.to_str().ok()) {
+            if let (Some(header_name), Some(index)) =
+                (&config.client_ip.header, config.client_ip.index)
+            {
+                if let Some(value) = headers
+                    .get(header_name.as_ref())
+                    .and_then(|v| v.to_str().ok())
+                {
                     // nth() over the split iterator — no Vec allocation per request
                     if let Some(part) = value.split(',').nth(index) {
-                        if let Ok(ip) = part.trim().parse::<std::net::IpAddr>() { return ip; }
+                        if let Ok(ip) = part.trim().parse::<std::net::IpAddr>() {
+                            return ip;
+                        }
                     }
                 }
             }

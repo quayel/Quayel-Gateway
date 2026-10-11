@@ -49,7 +49,10 @@ pub struct GuardedApp<A> {
 
 impl<A> GuardedApp<A> {
     pub fn new(inner: A, state: Arc<GatewayState>) -> Self {
-        Self { inner: Arc::new(inner), state }
+        Self {
+            inner: Arc::new(inner),
+            state,
+        }
     }
 }
 
@@ -58,7 +61,11 @@ impl<A> ServerApp for GuardedApp<A>
 where
     A: ServerApp + Send + Sync + 'static,
 {
-    async fn process_new(self: &Arc<Self>, stream: Stream, shutdown: &ShutdownWatch) -> Option<Stream> {
+    async fn process_new(
+        self: &Arc<Self>,
+        stream: Stream,
+        shutdown: &ShutdownWatch,
+    ) -> Option<Stream> {
         let (header_timeout, max_header_bytes, protection) = {
             let config = self.state.config.load();
             (
@@ -81,12 +88,21 @@ where
                     return None;
                 }
             }
-            strike = Some(StrikeCtx { tracker: self.state.ip_tracker.clone(), protection: p, ip });
+            strike = Some(StrikeCtx {
+                tracker: self.state.ip_tracker.clone(),
+                protection: p,
+                ip,
+            });
         }
 
         let is_h2 = matches!(stream.selected_alpn_proto(), Some(ALPN::H2));
         let stream: Stream = if !is_h2 && (header_timeout.is_some() || max_header_bytes > 0) {
-            Box::new(HeaderGuardStream::new(stream, header_timeout, max_header_bytes, strike))
+            Box::new(HeaderGuardStream::new(
+                stream,
+                header_timeout,
+                max_header_bytes,
+                strike,
+            ))
         } else {
             stream
         };
@@ -103,7 +119,10 @@ where
 
 /// The guard on this request's connection, if it has one (HTTP/1 only).
 pub fn header_guard(session: &Session) -> Option<&HeaderGuardStream> {
-    session.stream()?.as_any().downcast_ref::<HeaderGuardStream>()
+    session
+        .stream()?
+        .as_any()
+        .downcast_ref::<HeaderGuardStream>()
 }
 
 // ── Header guard stream ──────────────────────────────────────────────────────
@@ -132,7 +151,12 @@ pub struct HeaderGuardStream {
 }
 
 impl HeaderGuardStream {
-    fn new(inner: Stream, timeout: Option<Duration>, max_bytes: usize, strike: Option<StrikeCtx>) -> Self {
+    fn new(
+        inner: Stream,
+        timeout: Option<Duration>,
+        max_bytes: usize,
+        strike: Option<StrikeCtx>,
+    ) -> Self {
         // The first request's clock starts when the connection opens, so a
         // client that connects and sends nothing is also cut off.
         Self {
@@ -164,7 +188,9 @@ impl HeaderGuardStream {
             s.tracker.strike(&s.protection, s.ip, v);
         }
         match v {
-            Violation::SlowHeaders => io::Error::new(io::ErrorKind::TimedOut, "request header deadline exceeded"),
+            Violation::SlowHeaders => {
+                io::Error::new(io::ErrorKind::TimedOut, "request header deadline exceeded")
+            }
             _ => io::Error::new(io::ErrorKind::InvalidData, "request header too large"),
         }
     }
@@ -180,7 +206,11 @@ impl std::fmt::Debug for HeaderGuardStream {
 }
 
 impl AsyncRead for HeaderGuardStream {
-    fn poll_read(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut ReadBuf<'_>) -> Poll<io::Result<()>> {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
         let this = &mut *self;
         let phase = this.phase.load(Ordering::Relaxed);
 
@@ -232,7 +262,11 @@ impl AsyncRead for HeaderGuardStream {
 }
 
 impl AsyncWrite for HeaderGuardStream {
-    fn poll_write(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<io::Result<usize>> {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
         Pin::new(&mut self.inner).poll_write(cx, buf)
     }
     fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
@@ -324,13 +358,21 @@ mod tests {
     use super::*;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-    async fn guarded(timeout_ms: u64, max_bytes: usize) -> (HeaderGuardStream, tokio::net::TcpStream) {
+    async fn guarded(
+        timeout_ms: u64,
+        max_bytes: usize,
+    ) -> (HeaderGuardStream, tokio::net::TcpStream) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let client = tokio::net::TcpStream::connect(addr).await.unwrap();
         let (server, _) = listener.accept().await.unwrap();
         let stream: Stream = Box::new(pingora_core::protocols::l4::stream::Stream::from(server));
-        let g = HeaderGuardStream::new(stream, Some(Duration::from_millis(timeout_ms)), max_bytes, None);
+        let g = HeaderGuardStream::new(
+            stream,
+            Some(Duration::from_millis(timeout_ms)),
+            max_bytes,
+            None,
+        );
         (g, client)
     }
 

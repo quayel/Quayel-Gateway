@@ -385,16 +385,8 @@ fn compile_logging(c: &LoggingConfig) -> CompiledLogging {
         enabled: c.enabled,
         mode: c.mode.clone(),
         file_path: c.file.as_ref().map(|f| f.path.clone()),
-        buffer_size: c
-            .file
-            .as_ref()
-            .map(|f| f.buffer_size)
-            .unwrap_or(8192),
-        flush_interval_ms: c
-            .file
-            .as_ref()
-            .map(|f| f.flush_interval_ms)
-            .unwrap_or(1000),
+        buffer_size: c.file.as_ref().map(|f| f.buffer_size).unwrap_or(8192),
+        flush_interval_ms: c.file.as_ref().map(|f| f.flush_interval_ms).unwrap_or(1000),
     }
 }
 

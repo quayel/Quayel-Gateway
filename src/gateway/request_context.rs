@@ -2,14 +2,14 @@ use crate::config::schema::*;
 use crate::plugins::cache::CacheEntry;
 use crate::plugins::ip_intel::IpIntel;
 use crate::plugins::transform::{RequestTransformState, ResponseTransformState};
+use http::HeaderMap;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::net::IpAddr;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::OwnedMutexGuard;
-use http::HeaderMap;
 
 // Global request counter — replaces per-request UUID generation
 pub(crate) static REQUEST_COUNTER: AtomicU64 = AtomicU64::new(0);

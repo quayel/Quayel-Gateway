@@ -63,7 +63,8 @@ impl PluginMetrics {
     }
 
     pub fn record_ip_intel(&self, latency_us: u64, cache_hit: bool) {
-        self.ip_intel_total_us.fetch_add(latency_us, Ordering::Relaxed);
+        self.ip_intel_total_us
+            .fetch_add(latency_us, Ordering::Relaxed);
         self.ip_intel_count.fetch_add(1, Ordering::Relaxed);
         if cache_hit {
             self.ip_intel_cache_hits.fetch_add(1, Ordering::Relaxed);
@@ -73,12 +74,14 @@ impl PluginMetrics {
     }
 
     pub fn record_firewall(&self, latency_us: u64) {
-        self.firewall_total_us.fetch_add(latency_us, Ordering::Relaxed);
+        self.firewall_total_us
+            .fetch_add(latency_us, Ordering::Relaxed);
         self.firewall_count.fetch_add(1, Ordering::Relaxed);
     }
 
     pub fn record_rate_limit(&self, latency_us: u64) {
-        self.rate_limit_total_us.fetch_add(latency_us, Ordering::Relaxed);
+        self.rate_limit_total_us
+            .fetch_add(latency_us, Ordering::Relaxed);
         self.rate_limit_count.fetch_add(1, Ordering::Relaxed);
     }
 
@@ -98,7 +101,8 @@ impl PluginMetrics {
     }
 
     pub fn record_pipeline(&self, latency_us: u64) {
-        self.pipeline_total_us.fetch_add(latency_us, Ordering::Relaxed);
+        self.pipeline_total_us
+            .fetch_add(latency_us, Ordering::Relaxed);
         self.pipeline_count.fetch_add(1, Ordering::Relaxed);
         self.total_requests.fetch_add(1, Ordering::Relaxed);
     }
@@ -146,13 +150,21 @@ impl PluginMetrics {
 fn avg(total: &AtomicU64, count: &AtomicU64) -> u64 {
     let t = total.load(Ordering::Relaxed);
     let c = count.load(Ordering::Relaxed);
-    if c == 0 { 0 } else { t / c }
+    if c == 0 {
+        0
+    } else {
+        t / c
+    }
 }
 
 fn rate(numerator: &AtomicU64, denominator: &AtomicU64) -> f64 {
     let n = numerator.load(Ordering::Relaxed);
     let d = denominator.load(Ordering::Relaxed);
-    if d == 0 { 0.0 } else { n as f64 / d as f64 }
+    if d == 0 {
+        0.0
+    } else {
+        n as f64 / d as f64
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -179,13 +191,35 @@ impl std::fmt::Display for MetricsSnapshot {
         writeln!(f, "Total requests: {}", self.total_requests)?;
         writeln!(f, "Pipeline avg: {} μs", self.pipeline_avg_us)?;
         writeln!(f, "---")?;
-        writeln!(f, "IP Intel:  {} μs ({} calls, {:.1}% cache hit)", 
-            self.ip_intel_avg_us, self.ip_intel_count, self.ip_intel_cache_hit_rate * 100.0)?;
-        writeln!(f, "Firewall:  {} μs ({} calls)", self.firewall_avg_us, self.firewall_count)?;
-        writeln!(f, "Rate Limit:{} μs ({} calls)", self.rate_limit_avg_us, self.rate_limit_count)?;
-        writeln!(f, "LB:        {} μs ({} calls)", self.lb_avg_us, self.lb_count)?;
-        writeln!(f, "Cache:     {} μs ({} calls, {:.1}% hit rate)", 
-            self.cache_avg_us, self.cache_count, self.cache_hit_rate * 100.0)?;
+        writeln!(
+            f,
+            "IP Intel:  {} μs ({} calls, {:.1}% cache hit)",
+            self.ip_intel_avg_us,
+            self.ip_intel_count,
+            self.ip_intel_cache_hit_rate * 100.0
+        )?;
+        writeln!(
+            f,
+            "Firewall:  {} μs ({} calls)",
+            self.firewall_avg_us, self.firewall_count
+        )?;
+        writeln!(
+            f,
+            "Rate Limit:{} μs ({} calls)",
+            self.rate_limit_avg_us, self.rate_limit_count
+        )?;
+        writeln!(
+            f,
+            "LB:        {} μs ({} calls)",
+            self.lb_avg_us, self.lb_count
+        )?;
+        writeln!(
+            f,
+            "Cache:     {} μs ({} calls, {:.1}% hit rate)",
+            self.cache_avg_us,
+            self.cache_count,
+            self.cache_hit_rate * 100.0
+        )?;
         Ok(())
     }
 }

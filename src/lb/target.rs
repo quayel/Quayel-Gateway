@@ -1,5 +1,5 @@
-use crate::config::schema::*;
 use crate::config::compiler::CompiledTarget;
+use crate::config::schema::*;
 use std::sync::Arc;
 
 // ── Target ───────────────────────────────────────────────────────────────────

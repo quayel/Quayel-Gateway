@@ -1,8 +1,8 @@
 use lru::LruCache;
 use parking_lot::RwLock;
+use rustc_hash::FxHasher;
 use std::hash::{Hash, Hasher};
 use std::num::NonZeroUsize;
-use rustc_hash::FxHasher;
 
 // ── Sharded LRU Cache ────────────────────────────────────────────────────────
 // A lock-striped LRU cache that reduces contention under high concurrency.
@@ -21,7 +21,9 @@ pub struct ShardedLruCache<K: Eq + Hash + Clone, V: Clone> {
     per_shard_cap: NonZeroUsize,
 }
 
-impl<K: Eq + Hash + Clone + std::fmt::Debug, V: Clone + std::fmt::Debug> std::fmt::Debug for ShardedLruCache<K, V> {
+impl<K: Eq + Hash + Clone + std::fmt::Debug, V: Clone + std::fmt::Debug> std::fmt::Debug
+    for ShardedLruCache<K, V>
+{
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ShardedLruCache")
             .field("num_shards", &self.shards.len())
@@ -33,16 +35,17 @@ impl<K: Eq + Hash + Clone + std::fmt::Debug, V: Clone + std::fmt::Debug> std::fm
 impl<K: Eq + Hash + Clone, V: Clone> ShardedLruCache<K, V> {
     pub fn new(total_capacity: usize) -> Self {
         let num_shards = DEFAULT_NUM_SHARDS;
-        let per_shard_cap = NonZeroUsize::new(
-            (total_capacity / num_shards).max(1)
-        ).unwrap();
-        
+        let per_shard_cap = NonZeroUsize::new((total_capacity / num_shards).max(1)).unwrap();
+
         let mut shards = Vec::with_capacity(num_shards);
         for _ in 0..num_shards {
             shards.push(RwLock::new(LruCache::new(per_shard_cap)));
         }
-        
-        Self { shards, per_shard_cap }
+
+        Self {
+            shards,
+            per_shard_cap,
+        }
     }
 
     fn shard_index(&self, key: &K) -> usize {

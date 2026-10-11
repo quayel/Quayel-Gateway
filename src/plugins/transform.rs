@@ -42,8 +42,14 @@ pub struct CompiledTransformRule {
 pub enum TransformOp {
     Header(HeaderOp),
     PathSet(String),
-    PathReplacePrefix { from: String, to: String },
-    PathRegexReplace { re: regex::Regex, replacement: String },
+    PathReplacePrefix {
+        from: String,
+        to: String,
+    },
+    PathRegexReplace {
+        re: regex::Regex,
+        replacement: String,
+    },
     Query(QueryOp),
     Status(u16),
 }
@@ -123,13 +129,21 @@ impl ResponseTransformState {
 
 /// Framing headers are owned by the proxy; rewriting them would corrupt the
 /// message, so the compiler rejects them.
-const PROTECTED_HEADERS: &[&str] = &["content-length", "transfer-encoding", "connection", "upgrade"];
+const PROTECTED_HEADERS: &[&str] = &[
+    "content-length",
+    "transfer-encoding",
+    "connection",
+    "upgrade",
+];
 
 /// Forwarding headers describe the real client and are always built by the
 /// gateway from the original request, so request rules can't touch them.
 const FORWARDING_HEADERS: &[&str] = &["x-forwarded-for", "x-forwarded-proto", "x-forwarded-host"];
 
-pub fn compile_transform(c: &TransformConfig, phase: TransformPhase) -> Result<Option<CompiledTransform>, String> {
+pub fn compile_transform(
+    c: &TransformConfig,
+    phase: TransformPhase,
+) -> Result<Option<CompiledTransform>, String> {
     if !c.enabled {
         return Ok(None);
     }
@@ -138,7 +152,10 @@ pub fn compile_transform(c: &TransformConfig, phase: TransformPhase) -> Result<O
         let ops = r
             .actions
             .iter()
-            .map(|a| compile_action(a, phase).map_err(|e| format!("plugins.{}: rule '{}': {}", phase.plugin(), r.id, e)))
+            .map(|a| {
+                compile_action(a, phase)
+                    .map_err(|e| format!("plugins.{}: rule '{}': {}", phase.plugin(), r.id, e))
+            })
             .collect::<Result<Vec<_>, _>>()?;
         rules.push(CompiledTransformRule {
             id: Arc::from(r.id.as_str()),
@@ -157,7 +174,9 @@ fn compile_action(a: &TransformAction, phase: TransformPhase) -> Result<Transfor
             "set" => {
                 let value = value_str(a)?;
                 if !value.starts_with('/') {
-                    return Err(format!("path set: value must start with '/', got '{value}'"));
+                    return Err(format!(
+                        "path set: value must start with '/', got '{value}'"
+                    ));
                 }
                 Ok(TransformOp::PathSet(value))
             }
@@ -167,10 +186,16 @@ fn compile_action(a: &TransformAction, phase: TransformPhase) -> Result<Transfor
             }),
             "regex_replace" => {
                 let pattern = required(&a.pattern, "pattern")?;
-                let re = regex::Regex::new(pattern).map_err(|e| format!("path regex_replace: invalid pattern: {e}"))?;
-                Ok(TransformOp::PathRegexReplace { re, replacement: required(&a.replacement, "replacement")?.to_string() })
+                let re = regex::Regex::new(pattern)
+                    .map_err(|e| format!("path regex_replace: invalid pattern: {e}"))?;
+                Ok(TransformOp::PathRegexReplace {
+                    re,
+                    replacement: required(&a.replacement, "replacement")?.to_string(),
+                })
             }
-            _ => Err(format!("path: unknown operation '{op}' (set, replace_prefix, regex_replace)")),
+            _ => Err(format!(
+                "path: unknown operation '{op}' (set, replace_prefix, regex_replace)"
+            )),
         },
         ("query", TransformPhase::Request) => {
             let name = required(&a.name, "name")?.to_string();
@@ -178,8 +203,13 @@ fn compile_action(a: &TransformAction, phase: TransformPhase) -> Result<Transfor
                 "set" => Ok(TransformOp::Query(QueryOp::Set(name, value_str(a)?))),
                 "add" => Ok(TransformOp::Query(QueryOp::Add(name, value_str(a)?))),
                 "remove" => Ok(TransformOp::Query(QueryOp::Remove(name))),
-                "rename" => Ok(TransformOp::Query(QueryOp::Rename(name, required(&a.to, "to")?.to_string()))),
-                _ => Err(format!("query: unknown operation '{op}' (set, add, remove, rename)")),
+                "rename" => Ok(TransformOp::Query(QueryOp::Rename(
+                    name,
+                    required(&a.to, "to")?.to_string(),
+                ))),
+                _ => Err(format!(
+                    "query: unknown operation '{op}' (set, add, remove, rename)"
+                )),
             }
         }
         ("status", TransformPhase::Response) => {
@@ -196,28 +226,43 @@ fn compile_action(a: &TransformAction, phase: TransformPhase) -> Result<Transfor
                 _ => Err("status set: value must be a status code between 200 and 599".to_string()),
             }
         }
-        (t, TransformPhase::Request) => Err(format!("unknown action type '{t}' (header, path, query)")),
+        (t, TransformPhase::Request) => {
+            Err(format!("unknown action type '{t}' (header, path, query)"))
+        }
         (t, TransformPhase::Response) => Err(format!("unknown action type '{t}' (header, status)")),
     }
 }
 
-fn compile_header_op(a: &TransformAction, op: &str, phase: TransformPhase) -> Result<HeaderOp, String> {
+fn compile_header_op(
+    a: &TransformAction,
+    op: &str,
+    phase: TransformPhase,
+) -> Result<HeaderOp, String> {
     let name = header_name(required(&a.name, "name")?, phase)?;
     match op {
         "set" => Ok(HeaderOp::Set(name, header_value(&value_str(a)?)?)),
         "add" => Ok(HeaderOp::Add(name, header_value(&value_str(a)?)?)),
         "remove" => Ok(HeaderOp::Remove(name)),
-        "rename" => Ok(HeaderOp::Rename(name, header_name(required(&a.to, "to")?, phase)?)),
-        _ => Err(format!("header: unknown operation '{op}' (set, add, remove, rename)")),
+        "rename" => Ok(HeaderOp::Rename(
+            name,
+            header_name(required(&a.to, "to")?, phase)?,
+        )),
+        _ => Err(format!(
+            "header: unknown operation '{op}' (set, add, remove, rename)"
+        )),
     }
 }
 
 fn header_name(s: &str, phase: TransformPhase) -> Result<HeaderName, String> {
-    let name = HeaderName::from_bytes(s.trim().as_bytes()).map_err(|_| format!("invalid header name '{s}'"))?;
+    let name = HeaderName::from_bytes(s.trim().as_bytes())
+        .map_err(|_| format!("invalid header name '{s}'"))?;
     if PROTECTED_HEADERS.contains(&name.as_str())
         || (phase == TransformPhase::Request && FORWARDING_HEADERS.contains(&name.as_str()))
     {
-        return Err(format!("header '{}' is managed by the gateway and cannot be transformed", name));
+        return Err(format!(
+            "header '{}' is managed by the gateway and cannot be transformed",
+            name
+        ));
     }
     Ok(name)
 }
@@ -245,7 +290,8 @@ fn value_str(a: &TransformAction) -> Result<String, String> {
 /// ctx.request_transform so upstream_request_filter can replay them.
 pub fn apply_request_transform(ctx: &mut RequestContext, cfg: &CompiledTransform) {
     for rule in &cfg.rules {
-        let matched = rule.conditions.is_empty() || evaluate_conditions_with(ctx, &rule.conditions, resolve_condition_value);
+        let matched = rule.conditions.is_empty()
+            || evaluate_conditions_with(ctx, &rule.conditions, resolve_condition_value);
         if !matched {
             continue;
         }
@@ -253,40 +299,68 @@ pub fn apply_request_transform(ctx: &mut RequestContext, cfg: &CompiledTransform
         for op in &rule.ops {
             match op {
                 TransformOp::Header(h) => {
-                    if header_op_touches(h, &http::header::HOST) && ctx.request_transform.original_host.is_none() {
+                    if header_op_touches(h, &http::header::HOST)
+                        && ctx.request_transform.original_host.is_none()
+                    {
                         ctx.request_transform.original_host = Some(ctx.host.clone());
                     }
                     apply_header_op_map(&mut ctx.headers, h);
                     if header_op_touches(h, &http::header::HOST) {
-                        ctx.host = ctx.headers.get(http::header::HOST).and_then(|v| v.to_str().ok()).map(Arc::from);
+                        ctx.host = ctx
+                            .headers
+                            .get(http::header::HOST)
+                            .and_then(|v| v.to_str().ok())
+                            .map(Arc::from);
                     }
                     if header_op_touches(h, &http::header::USER_AGENT) {
-                        ctx.user_agent = ctx.headers.get(http::header::USER_AGENT).and_then(|v| v.to_str().ok()).map(Arc::from);
+                        ctx.user_agent = ctx
+                            .headers
+                            .get(http::header::USER_AGENT)
+                            .and_then(|v| v.to_str().ok())
+                            .map(Arc::from);
                     }
                     ctx.cookie_cache = None;
                     ctx.jwt_cache.clear();
                     ctx.request_transform.header_edits.push(h.clone());
                 }
-                TransformOp::PathSet(_) | TransformOp::PathReplacePrefix { .. } | TransformOp::PathRegexReplace { .. } => {
+                TransformOp::PathSet(_)
+                | TransformOp::PathReplacePrefix { .. }
+                | TransformOp::PathRegexReplace { .. } => {
                     let current = Arc::clone(&ctx.path);
                     let (path, query) = split_path(&current);
                     let new_path = match op {
                         TransformOp::PathSet(p) => p.clone(),
-                        TransformOp::PathReplacePrefix { from, to } => match path.strip_prefix(from.as_str()) {
-                            Some(rest) => format!("{to}{rest}"),
-                            None => continue,
-                        },
-                        TransformOp::PathRegexReplace { re, replacement } => re.replace(path, replacement.as_str()).into_owned(),
+                        TransformOp::PathReplacePrefix { from, to } => {
+                            match path.strip_prefix(from.as_str()) {
+                                Some(rest) => format!("{to}{rest}"),
+                                None => continue,
+                            }
+                        }
+                        TransformOp::PathRegexReplace { re, replacement } => {
+                            re.replace(path, replacement.as_str()).into_owned()
+                        }
                         _ => unreachable!(),
                     };
-                    let new_path = if new_path.starts_with('/') { new_path } else { format!("/{new_path}") };
+                    let new_path = if new_path.starts_with('/') {
+                        new_path
+                    } else {
+                        format!("/{new_path}")
+                    };
                     set_path(ctx, &new_path, query);
                 }
                 TransformOp::Query(q) => {
                     let current = Arc::clone(&ctx.path);
                     let (path, query) = split_path(&current);
                     let new_query = apply_query_op(query.unwrap_or(""), q);
-                    set_path(ctx, path, if new_query.is_empty() { None } else { Some(&new_query) });
+                    set_path(
+                        ctx,
+                        path,
+                        if new_query.is_empty() {
+                            None
+                        } else {
+                            Some(&new_query)
+                        },
+                    );
                 }
                 TransformOp::Status(_) => {}
             }
@@ -298,15 +372,25 @@ pub fn apply_request_transform(ctx: &mut RequestContext, cfg: &CompiledTransform
 pub fn replay_request_header_edits(edits: &[HeaderOp], req: &mut RequestHeader) {
     for h in edits {
         match h {
-            HeaderOp::Set(n, v) => { let _ = req.insert_header(n.clone(), v.clone()); }
-            HeaderOp::Add(n, v) => { let _ = req.append_header(n.clone(), v.clone()); }
-            HeaderOp::Remove(n) => { req.remove_header(n); }
+            HeaderOp::Set(n, v) => {
+                let _ = req.insert_header(n.clone(), v.clone());
+            }
+            HeaderOp::Add(n, v) => {
+                let _ = req.append_header(n.clone(), v.clone());
+            }
+            HeaderOp::Remove(n) => {
+                req.remove_header(n);
+            }
             HeaderOp::Rename(from, to) => {
                 let values: Vec<HeaderValue> = req.headers.get_all(from).iter().cloned().collect();
-                if values.is_empty() { continue; }
+                if values.is_empty() {
+                    continue;
+                }
                 req.remove_header(from);
                 req.remove_header(to);
-                for v in values { let _ = req.append_header(to.clone(), v); }
+                for v in values {
+                    let _ = req.append_header(to.clone(), v);
+                }
             }
         }
     }
@@ -321,15 +405,25 @@ fn header_op_touches(h: &HeaderOp, name: &HeaderName) -> bool {
 
 fn apply_header_op_map(map: &mut HeaderMap, h: &HeaderOp) {
     match h {
-        HeaderOp::Set(n, v) => { map.insert(n.clone(), v.clone()); }
-        HeaderOp::Add(n, v) => { map.append(n.clone(), v.clone()); }
-        HeaderOp::Remove(n) => { map.remove(n); }
+        HeaderOp::Set(n, v) => {
+            map.insert(n.clone(), v.clone());
+        }
+        HeaderOp::Add(n, v) => {
+            map.append(n.clone(), v.clone());
+        }
+        HeaderOp::Remove(n) => {
+            map.remove(n);
+        }
         HeaderOp::Rename(from, to) => {
             let values: Vec<HeaderValue> = map.get_all(from).iter().cloned().collect();
-            if values.is_empty() { return; }
+            if values.is_empty() {
+                return;
+            }
             map.remove(from);
             map.remove(to);
-            for v in values { map.append(to.clone(), v); }
+            for v in values {
+                map.append(to.clone(), v);
+            }
         }
     }
 }
@@ -360,26 +454,37 @@ fn set_path(ctx: &mut RequestContext, path: &str, query: Option<&str>) {
 /// pairs this op touches are rewritten. Names match on the decoded name.
 fn apply_query_op(query: &str, op: &QueryOp) -> String {
     let pairs: Vec<&str> = query.split('&').filter(|p| !p.is_empty()).collect();
-    let key_of = |pair: &str| -> String { decode_component(pair.split_once('=').map_or(pair, |(k, _)| k)) };
+    let key_of =
+        |pair: &str| -> String { decode_component(pair.split_once('=').map_or(pair, |(k, _)| k)) };
     let mut out: Vec<String> = Vec::with_capacity(pairs.len() + 1);
     match op {
         QueryOp::Set(name, value) => {
             let mut done = false;
             for p in pairs {
                 if key_of(p) == *name {
-                    if !done { out.push(encode_pair(name, value)); done = true; }
+                    if !done {
+                        out.push(encode_pair(name, value));
+                        done = true;
+                    }
                 } else {
                     out.push(p.to_string());
                 }
             }
-            if !done { out.push(encode_pair(name, value)); }
+            if !done {
+                out.push(encode_pair(name, value));
+            }
         }
         QueryOp::Add(name, value) => {
             out.extend(pairs.iter().map(|p| p.to_string()));
             out.push(encode_pair(name, value));
         }
         QueryOp::Remove(name) => {
-            out.extend(pairs.iter().filter(|p| key_of(p) != *name).map(|p| p.to_string()));
+            out.extend(
+                pairs
+                    .iter()
+                    .filter(|p| key_of(p) != *name)
+                    .map(|p| p.to_string()),
+            );
         }
         QueryOp::Rename(from, to) => {
             for p in pairs {
@@ -420,13 +525,28 @@ fn decode_component(s: &str) -> String {
     while i < bytes.len() {
         match bytes[i] {
             b'%' if i + 2 < bytes.len() => {
-                match u8::from_str_radix(std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap_or("zz"), 16) {
-                    Ok(v) => { out.push(v); i += 3; }
-                    Err(_) => { out.push(b'%'); i += 1; }
+                match u8::from_str_radix(
+                    std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap_or("zz"),
+                    16,
+                ) {
+                    Ok(v) => {
+                        out.push(v);
+                        i += 3;
+                    }
+                    Err(_) => {
+                        out.push(b'%');
+                        i += 1;
+                    }
                 }
             }
-            b'+' => { out.push(b' '); i += 1; }
-            b => { out.push(b); i += 1; }
+            b'+' => {
+                out.push(b' ');
+                i += 1;
+            }
+            b => {
+                out.push(b);
+                i += 1;
+            }
         }
     }
     String::from_utf8_lossy(&out).into_owned()
@@ -437,10 +557,16 @@ fn decode_component(s: &str) -> String {
 /// Apply response_transform rules to a response header (origin or cached).
 /// Conditions may read `resp.status` and `resp.header.<name>` in addition to
 /// every request field.
-pub fn apply_response_transform(ctx: &mut RequestContext, cfg: &CompiledTransform, resp: &mut ResponseHeader) {
+pub fn apply_response_transform(
+    ctx: &mut RequestContext,
+    cfg: &CompiledTransform,
+    resp: &mut ResponseHeader,
+) {
     for rule in &cfg.rules {
         let matched = rule.conditions.is_empty()
-            || evaluate_conditions_with(ctx, &rule.conditions, |ctx, field| resolve_response_value(ctx, resp, field));
+            || evaluate_conditions_with(ctx, &rule.conditions, |ctx, field| {
+                resolve_response_value(ctx, resp, field)
+            });
         if !matched {
             continue;
         }
@@ -448,30 +574,51 @@ pub fn apply_response_transform(ctx: &mut RequestContext, cfg: &CompiledTransfor
         for op in &rule.ops {
             match op {
                 TransformOp::Header(h) => match h {
-                    HeaderOp::Set(n, v) => { let _ = resp.insert_header(n.clone(), v.clone()); }
-                    HeaderOp::Add(n, v) => { let _ = resp.append_header(n.clone(), v.clone()); }
-                    HeaderOp::Remove(n) => { resp.remove_header(n); }
+                    HeaderOp::Set(n, v) => {
+                        let _ = resp.insert_header(n.clone(), v.clone());
+                    }
+                    HeaderOp::Add(n, v) => {
+                        let _ = resp.append_header(n.clone(), v.clone());
+                    }
+                    HeaderOp::Remove(n) => {
+                        resp.remove_header(n);
+                    }
                     HeaderOp::Rename(from, to) => {
-                        let values: Vec<HeaderValue> = resp.headers.get_all(from).iter().cloned().collect();
-                        if values.is_empty() { continue; }
+                        let values: Vec<HeaderValue> =
+                            resp.headers.get_all(from).iter().cloned().collect();
+                        if values.is_empty() {
+                            continue;
+                        }
                         resp.remove_header(from);
                         resp.remove_header(to);
-                        for v in values { let _ = resp.append_header(to.clone(), v); }
+                        for v in values {
+                            let _ = resp.append_header(to.clone(), v);
+                        }
                     }
                 },
-                TransformOp::Status(code) => { let _ = resp.set_status(*code); }
+                TransformOp::Status(code) => {
+                    let _ = resp.set_status(*code);
+                }
                 _ => {}
             }
         }
     }
 }
 
-fn resolve_response_value(ctx: &mut RequestContext, resp: &ResponseHeader, field: &str) -> Option<Value> {
+fn resolve_response_value(
+    ctx: &mut RequestContext,
+    resp: &ResponseHeader,
+    field: &str,
+) -> Option<Value> {
     if field == "resp.status" {
         return Some(Value::Number(resp.status.as_u16().into()));
     }
     if let Some(name) = field.strip_prefix("resp.header.") {
-        return resp.headers.get(name).and_then(|v| v.to_str().ok()).map(|v| Value::String(v.to_string()));
+        return resp
+            .headers
+            .get(name)
+            .and_then(|v| v.to_str().ok())
+            .map(|v| Value::String(v.to_string()));
     }
     resolve_condition_value(ctx, field)
 }
@@ -482,11 +629,26 @@ mod tests {
 
     #[test]
     fn query_ops_keep_untouched_pairs() {
-        assert_eq!(apply_query_op("a=1&b=2", &QueryOp::Set("b".into(), "x y".into())), "a=1&b=x%20y");
-        assert_eq!(apply_query_op("a=1", &QueryOp::Set("c".into(), "3".into())), "a=1&c=3");
-        assert_eq!(apply_query_op("a=1&a=2&b=2", &QueryOp::Remove("a".into())), "b=2");
-        assert_eq!(apply_query_op("a=1&b=2", &QueryOp::Rename("a".into(), "z".into())), "z=1&b=2");
-        assert_eq!(apply_query_op("a=1", &QueryOp::Add("a".into(), "2".into())), "a=1&a=2");
+        assert_eq!(
+            apply_query_op("a=1&b=2", &QueryOp::Set("b".into(), "x y".into())),
+            "a=1&b=x%20y"
+        );
+        assert_eq!(
+            apply_query_op("a=1", &QueryOp::Set("c".into(), "3".into())),
+            "a=1&c=3"
+        );
+        assert_eq!(
+            apply_query_op("a=1&a=2&b=2", &QueryOp::Remove("a".into())),
+            "b=2"
+        );
+        assert_eq!(
+            apply_query_op("a=1&b=2", &QueryOp::Rename("a".into(), "z".into())),
+            "z=1&b=2"
+        );
+        assert_eq!(
+            apply_query_op("a=1", &QueryOp::Add("a".into(), "2".into())),
+            "a=1&a=2"
+        );
         assert_eq!(apply_query_op("", &QueryOp::Remove("a".into())), "");
     }
 
@@ -500,8 +662,14 @@ mod tests {
     #[test]
     fn protected_headers_rejected() {
         let a = TransformAction {
-            action_type: "header".into(), operation: "remove".into(), name: Some("Content-Length".into()),
-            value: None, from: None, to: None, pattern: None, replacement: None,
+            action_type: "header".into(),
+            operation: "remove".into(),
+            name: Some("Content-Length".into()),
+            value: None,
+            from: None,
+            to: None,
+            pattern: None,
+            replacement: None,
         };
         assert!(compile_action(&a, TransformPhase::Response).is_err());
     }
@@ -509,43 +677,81 @@ mod tests {
     #[test]
     fn path_actions_are_request_only() {
         let a = TransformAction {
-            action_type: "path".into(), operation: "set".into(), name: None,
-            value: Some(Value::String("/x".into())), from: None, to: None, pattern: None, replacement: None,
+            action_type: "path".into(),
+            operation: "set".into(),
+            name: None,
+            value: Some(Value::String("/x".into())),
+            from: None,
+            to: None,
+            pattern: None,
+            replacement: None,
         };
         assert!(compile_action(&a, TransformPhase::Request).is_ok());
         assert!(compile_action(&a, TransformPhase::Response).is_err());
     }
 
-    fn compile(phase: TransformPhase, cfg: serde_json::Value) -> Result<Option<CompiledTransform>, String> {
+    fn compile(
+        phase: TransformPhase,
+        cfg: serde_json::Value,
+    ) -> Result<Option<CompiledTransform>, String> {
         let c: TransformConfig = serde_json::from_value(cfg).expect("config parses");
         compile_transform(&c, phase)
     }
 
-    fn compile_one(phase: TransformPhase, action: serde_json::Value) -> Result<Option<CompiledTransform>, String> {
-        compile(phase, serde_json::json!({"rules": [{"id": "r", "actions": [action]}]}))
+    fn compile_one(
+        phase: TransformPhase,
+        action: serde_json::Value,
+    ) -> Result<Option<CompiledTransform>, String> {
+        compile(
+            phase,
+            serde_json::json!({"rules": [{"id": "r", "actions": [action]}]}),
+        )
     }
 
     fn ctx(path: &str, headers: &[(&str, &str)]) -> RequestContext {
         let ip = std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST);
         let mut map = HeaderMap::new();
         for (k, v) in headers {
-            map.append(HeaderName::from_bytes(k.as_bytes()).unwrap(), HeaderValue::from_str(v).unwrap());
+            map.append(
+                HeaderName::from_bytes(k.as_bytes()).unwrap(),
+                HeaderValue::from_str(v).unwrap(),
+            );
         }
         let host = map.get("host").and_then(|v| v.to_str().ok()).map(Arc::from);
         RequestContext::new(
-            Arc::from("gw"), Arc::from("gw"), Arc::from("gw"), Arc::from("1"),
-            ip, ip, Arc::from("peer_ip"), host,
-            Arc::from(path), Arc::from("GET"), Arc::from("http"), None, map,
+            Arc::from("gw"),
+            Arc::from("gw"),
+            Arc::from("gw"),
+            Arc::from("1"),
+            ip,
+            ip,
+            Arc::from("peer_ip"),
+            host,
+            Arc::from(path),
+            Arc::from("GET"),
+            Arc::from("http"),
+            None,
+            map,
         )
     }
 
     fn request(rules: serde_json::Value, c: &mut RequestContext) {
-        let cfg = compile(TransformPhase::Request, serde_json::json!({ "rules": rules })).unwrap().unwrap();
+        let cfg = compile(
+            TransformPhase::Request,
+            serde_json::json!({ "rules": rules }),
+        )
+        .unwrap()
+        .unwrap();
         apply_request_transform(c, &cfg);
     }
 
     fn response(rules: serde_json::Value, c: &mut RequestContext, resp: &mut ResponseHeader) {
-        let cfg = compile(TransformPhase::Response, serde_json::json!({ "rules": rules })).unwrap().unwrap();
+        let cfg = compile(
+            TransformPhase::Response,
+            serde_json::json!({ "rules": rules }),
+        )
+        .unwrap()
+        .unwrap();
         apply_response_transform(c, &cfg, resp);
     }
 
@@ -555,43 +761,133 @@ mod tests {
         let req = TransformPhase::Request;
         let res = TransformPhase::Response;
         let bad = [
-            (req, json!({"type": "path", "operation": "regex_replace", "pattern": "([", "replacement": "x"})),
-            (req, json!({"type": "path", "operation": "set", "value": "no-slash"})),
-            (req, json!({"type": "path", "operation": "replace_prefix", "from": "/a"})),
+            (
+                req,
+                json!({"type": "path", "operation": "regex_replace", "pattern": "([", "replacement": "x"}),
+            ),
+            (
+                req,
+                json!({"type": "path", "operation": "set", "value": "no-slash"}),
+            ),
+            (
+                req,
+                json!({"type": "path", "operation": "replace_prefix", "from": "/a"}),
+            ),
             (req, json!({"type": "path", "operation": "strip"})),
-            (req, json!({"type": "query", "operation": "set", "name": "a"})),
-            (req, json!({"type": "query", "operation": "rename", "name": "a"})),
-            (req, json!({"type": "status", "operation": "set", "value": 418})),
-            (req, json!({"type": "body", "operation": "set", "value": "x"})),
-            (req, json!({"type": "header", "operation": "set", "value": "x"})),
-            (req, json!({"type": "header", "operation": "set", "name": "bad name", "value": "x"})),
-            (req, json!({"type": "header", "operation": "set", "name": "x-a", "value": "a\nb"})),
-            (req, json!({"type": "header", "operation": "append", "name": "x-a", "value": "x"})),
-            (req, json!({"type": "header", "operation": "rename", "name": "x-a", "to": "Transfer-Encoding"})),
-            (req, json!({"type": "header", "operation": "set", "name": "X-Forwarded-For", "value": "1.2.3.4"})),
-            (req, json!({"type": "header", "operation": "add", "name": "x-forwarded-for", "value": "1.2.3.4"})),
-            (req, json!({"type": "header", "operation": "remove", "name": "X-Forwarded-For"})),
-            (req, json!({"type": "header", "operation": "rename", "name": "X-Forwarded-For", "to": "x-a"})),
-            (req, json!({"type": "header", "operation": "rename", "name": "x-a", "to": "X-Forwarded-For"})),
-            (req, json!({"type": "header", "operation": "set", "name": "X-Forwarded-Proto", "value": "https"})),
-            (req, json!({"type": "header", "operation": "set", "name": "X-Forwarded-Host", "value": "x"})),
-            (res, json!({"type": "query", "operation": "remove", "name": "a"})),
-            (res, json!({"type": "status", "operation": "set", "value": 199})),
-            (res, json!({"type": "status", "operation": "set", "value": 600})),
-            (res, json!({"type": "status", "operation": "set", "value": "abc"})),
-            (res, json!({"type": "status", "operation": "replace", "value": 404})),
+            (
+                req,
+                json!({"type": "query", "operation": "set", "name": "a"}),
+            ),
+            (
+                req,
+                json!({"type": "query", "operation": "rename", "name": "a"}),
+            ),
+            (
+                req,
+                json!({"type": "status", "operation": "set", "value": 418}),
+            ),
+            (
+                req,
+                json!({"type": "body", "operation": "set", "value": "x"}),
+            ),
+            (
+                req,
+                json!({"type": "header", "operation": "set", "value": "x"}),
+            ),
+            (
+                req,
+                json!({"type": "header", "operation": "set", "name": "bad name", "value": "x"}),
+            ),
+            (
+                req,
+                json!({"type": "header", "operation": "set", "name": "x-a", "value": "a\nb"}),
+            ),
+            (
+                req,
+                json!({"type": "header", "operation": "append", "name": "x-a", "value": "x"}),
+            ),
+            (
+                req,
+                json!({"type": "header", "operation": "rename", "name": "x-a", "to": "Transfer-Encoding"}),
+            ),
+            (
+                req,
+                json!({"type": "header", "operation": "set", "name": "X-Forwarded-For", "value": "1.2.3.4"}),
+            ),
+            (
+                req,
+                json!({"type": "header", "operation": "add", "name": "x-forwarded-for", "value": "1.2.3.4"}),
+            ),
+            (
+                req,
+                json!({"type": "header", "operation": "remove", "name": "X-Forwarded-For"}),
+            ),
+            (
+                req,
+                json!({"type": "header", "operation": "rename", "name": "X-Forwarded-For", "to": "x-a"}),
+            ),
+            (
+                req,
+                json!({"type": "header", "operation": "rename", "name": "x-a", "to": "X-Forwarded-For"}),
+            ),
+            (
+                req,
+                json!({"type": "header", "operation": "set", "name": "X-Forwarded-Proto", "value": "https"}),
+            ),
+            (
+                req,
+                json!({"type": "header", "operation": "set", "name": "X-Forwarded-Host", "value": "x"}),
+            ),
+            (
+                res,
+                json!({"type": "query", "operation": "remove", "name": "a"}),
+            ),
+            (
+                res,
+                json!({"type": "status", "operation": "set", "value": 199}),
+            ),
+            (
+                res,
+                json!({"type": "status", "operation": "set", "value": 600}),
+            ),
+            (
+                res,
+                json!({"type": "status", "operation": "set", "value": "abc"}),
+            ),
+            (
+                res,
+                json!({"type": "status", "operation": "replace", "value": 404}),
+            ),
         ];
         for (phase, action) in bad {
-            assert!(compile_one(phase, action.clone()).is_err(), "{phase:?} should reject {action}");
+            assert!(
+                compile_one(phase, action.clone()).is_err(),
+                "{phase:?} should reject {action}"
+            );
         }
-        let err = compile_one(req, json!({"type": "path", "operation": "set", "value": "x"})).unwrap_err();
-        assert!(err.starts_with("plugins.request_transform: rule 'r':"), "{err}");
-        assert!(compile_one(res, json!({"type": "status", "operation": "set", "value": "503"})).is_ok());
+        let err = compile_one(
+            req,
+            json!({"type": "path", "operation": "set", "value": "x"}),
+        )
+        .unwrap_err();
+        assert!(
+            err.starts_with("plugins.request_transform: rule 'r':"),
+            "{err}"
+        );
+        assert!(compile_one(
+            res,
+            json!({"type": "status", "operation": "set", "value": "503"})
+        )
+        .is_ok());
     }
 
     #[test]
     fn compile_skips_disabled() {
-        let off = compile(TransformPhase::Request, serde_json::json!({"enabled": false, "rules": []})).unwrap();
+        let off = compile(
+            TransformPhase::Request,
+            serde_json::json!({"enabled": false, "rules": []}),
+        )
+        .unwrap();
         assert!(off.is_none());
         let cfg = compile(TransformPhase::Request, serde_json::json!({"rules": [
             {"id": "on", "actions": []},
@@ -607,54 +903,102 @@ mod tests {
     fn request_path_ops() {
         use serde_json::json;
         let mut c = ctx("/api/users?x=1", &[]);
-        request(json!([{"id": "a", "actions": [{"type": "path", "operation": "replace_prefix", "from": "/api", "to": "/v1"}]}]), &mut c);
+        request(
+            json!([{"id": "a", "actions": [{"type": "path", "operation": "replace_prefix", "from": "/api", "to": "/v1"}]}]),
+            &mut c,
+        );
         assert_eq!(&*c.path, "/v1/users?x=1");
-        assert_eq!(c.request_transform.original_path.as_deref(), Some("/api/users?x=1"));
+        assert_eq!(
+            c.request_transform.original_path.as_deref(),
+            Some("/api/users?x=1")
+        );
 
         let mut c = ctx("/other", &[]);
-        request(json!([{"id": "a", "actions": [{"type": "path", "operation": "replace_prefix", "from": "/api", "to": "/v1"}]}]), &mut c);
+        request(
+            json!([{"id": "a", "actions": [{"type": "path", "operation": "replace_prefix", "from": "/api", "to": "/v1"}]}]),
+            &mut c,
+        );
         assert_eq!(&*c.path, "/other");
         assert!(!c.request_transform.path_rewritten());
 
         let mut c = ctx("/u/42/profile?q=1", &[]);
-        request(json!([{"id": "a", "actions": [{"type": "path", "operation": "regex_replace", "pattern": "^/u/(\\d+)/", "replacement": "/users/$1/"}]}]), &mut c);
+        request(
+            json!([{"id": "a", "actions": [{"type": "path", "operation": "regex_replace", "pattern": "^/u/(\\d+)/", "replacement": "/users/$1/"}]}]),
+            &mut c,
+        );
         assert_eq!(&*c.path, "/users/42/profile?q=1");
 
         let mut c = ctx("/anything?q=1", &[]);
-        request(json!([{"id": "a", "actions": [{"type": "path", "operation": "set", "value": "/fixed"}]}]), &mut c);
+        request(
+            json!([{"id": "a", "actions": [{"type": "path", "operation": "set", "value": "/fixed"}]}]),
+            &mut c,
+        );
         assert_eq!(&*c.path, "/fixed?q=1");
 
         // A rewrite that drops the leading slash is repaired.
         let mut c = ctx("/strip/me", &[]);
-        request(json!([{"id": "a", "actions": [{"type": "path", "operation": "replace_prefix", "from": "/strip/", "to": ""}]}]), &mut c);
+        request(
+            json!([{"id": "a", "actions": [{"type": "path", "operation": "replace_prefix", "from": "/strip/", "to": ""}]}]),
+            &mut c,
+        );
         assert_eq!(&*c.path, "/me");
 
         // Removing the last query pair drops the '?'.
         let mut c = ctx("/p?only=1", &[]);
-        request(json!([{"id": "a", "actions": [{"type": "query", "operation": "remove", "name": "only"}]}]), &mut c);
+        request(
+            json!([{"id": "a", "actions": [{"type": "query", "operation": "remove", "name": "only"}]}]),
+            &mut c,
+        );
         assert_eq!(&*c.path, "/p");
     }
 
     #[test]
     fn request_header_ops_update_ctx_and_replay() {
         use serde_json::json;
-        let mut c = ctx("/", &[("host", "a.example"), ("x-old", "1"), ("x-old", "2"), ("x-drop", "y")]);
-        request(json!([{"id": "a", "actions": [
-            {"type": "header", "operation": "set", "name": "Host", "value": "b.internal"},
-            {"type": "header", "operation": "add", "name": "x-multi", "value": "one"},
-            {"type": "header", "operation": "add", "name": "x-multi", "value": "two"},
-            {"type": "header", "operation": "rename", "name": "x-old", "to": "x-new"},
-            {"type": "header", "operation": "remove", "name": "x-drop"},
-            {"type": "header", "operation": "rename", "name": "x-missing", "to": "x-never"},
-        ]}]), &mut c);
+        let mut c = ctx(
+            "/",
+            &[
+                ("host", "a.example"),
+                ("x-old", "1"),
+                ("x-old", "2"),
+                ("x-drop", "y"),
+            ],
+        );
+        request(
+            json!([{"id": "a", "actions": [
+                {"type": "header", "operation": "set", "name": "Host", "value": "b.internal"},
+                {"type": "header", "operation": "add", "name": "x-multi", "value": "one"},
+                {"type": "header", "operation": "add", "name": "x-multi", "value": "two"},
+                {"type": "header", "operation": "rename", "name": "x-old", "to": "x-new"},
+                {"type": "header", "operation": "remove", "name": "x-drop"},
+                {"type": "header", "operation": "rename", "name": "x-missing", "to": "x-never"},
+            ]}]),
+            &mut c,
+        );
         assert_eq!(c.host.as_deref(), Some("b.internal"));
         assert_eq!(c.headers.get_all("x-multi").iter().count(), 2);
-        assert_eq!(c.headers.get_all("x-new").iter().map(|v| v.to_str().unwrap()).collect::<Vec<_>>(), ["1", "2"]);
-        assert!(c.headers.get("x-old").is_none() && c.headers.get("x-drop").is_none() && c.headers.get("x-never").is_none());
+        assert_eq!(
+            c.headers
+                .get_all("x-new")
+                .iter()
+                .map(|v| v.to_str().unwrap())
+                .collect::<Vec<_>>(),
+            ["1", "2"]
+        );
+        assert!(
+            c.headers.get("x-old").is_none()
+                && c.headers.get("x-drop").is_none()
+                && c.headers.get("x-never").is_none()
+        );
 
         // The same edits replayed on the upstream request give the same result.
         let mut up = RequestHeader::build("GET", b"/", None).unwrap();
-        for (k, v) in [("host", "a.example"), ("x-old", "1"), ("x-old", "2"), ("x-drop", "y")] {
+        for (k, v) in [
+            ("host", "a.example"),
+            ("x-old", "1"),
+            ("x-old", "2"),
+            ("x-drop", "y"),
+        ] {
             up.append_header(k, v).unwrap();
         }
         replay_request_header_edits(&c.request_transform.header_edits, &mut up);
@@ -696,23 +1040,37 @@ mod tests {
         use crate::logging::event::LogEvent;
         use serde_json::json;
         let mut c = ctx("/api/a?x=1", &[("host", "public.example")]);
-        request(json!([{"id": "rw", "actions": [
-            {"type": "path", "operation": "replace_prefix", "from": "/api", "to": "/v1"},
-            {"type": "header", "operation": "set", "name": "Host", "value": "internal.test"},
-        ]}]), &mut c);
+        request(
+            json!([{"id": "rw", "actions": [
+                {"type": "path", "operation": "replace_prefix", "from": "/api", "to": "/v1"},
+                {"type": "header", "operation": "set", "name": "Host", "value": "internal.test"},
+            ]}]),
+            &mut c,
+        );
         let mut resp = ResponseHeader::build(200, None).unwrap();
-        response(json!([{"id": "rs", "actions": [{"type": "header", "operation": "set", "name": "x-a", "value": "1"}]}]), &mut c, &mut resp);
+        response(
+            json!([{"id": "rs", "actions": [{"type": "header", "operation": "set", "name": "x-a", "value": "1"}]}]),
+            &mut c,
+            &mut resp,
+        );
 
         let ev = serde_json::to_value(LogEvent::from_context(&c)).unwrap();
         assert_eq!(ev["path"], "/api/a?x=1");
         assert_eq!(ev["host"], "public.example");
-        assert_eq!(ev["request_transform"], json!({"rules": ["rw"], "path": "/v1/a?x=1", "host": "internal.test"}));
+        assert_eq!(
+            ev["request_transform"],
+            json!({"rules": ["rw"], "path": "/v1/a?x=1", "host": "internal.test"})
+        );
         assert_eq!(ev["response_transform"], json!({"rules": ["rs"]}));
 
         // No rule matched: nothing rewritten, empty lists.
-        let ev = serde_json::to_value(LogEvent::from_context(&ctx("/p", &[("host", "h")]))).unwrap();
+        let ev =
+            serde_json::to_value(LogEvent::from_context(&ctx("/p", &[("host", "h")]))).unwrap();
         assert_eq!(ev["path"], "/p");
-        assert_eq!(ev["request_transform"], json!({"rules": [], "path": null, "host": null}));
+        assert_eq!(
+            ev["request_transform"],
+            json!({"rules": [], "path": null, "host": null})
+        );
         assert_eq!(ev["response_transform"], json!({"rules": []}));
     }
 
@@ -737,7 +1095,8 @@ mod tests {
         resp.append_header("server", "nginx").unwrap();
         resp.append_header("x-upstream-id", "abc").unwrap();
         resp.append_header("set-cookie", "a=1").unwrap();
-        resp.append_header("content-type", "application/json").unwrap();
+        resp.append_header("content-type", "application/json")
+            .unwrap();
         let mut c = ctx("/api", &[]);
         response(rules.clone(), &mut c, &mut resp);
         assert_eq!(resp.status.as_u16(), 410);

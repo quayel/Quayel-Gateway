@@ -42,8 +42,13 @@ fn parse_workers_from_args() -> (Option<usize>, Vec<String>) {
             println!("  --help, -h      Show this help message");
             println!();
             println!("Arguments:");
-            println!("  CONFIG_PATH     Path to the config file. If omitted, the first that exists of:");
-            println!("                    $QUAYEL_GATEWAY_CONFIG, {}, ./config.json", DEFAULT_CONFIG_PATH);
+            println!(
+                "  CONFIG_PATH     Path to the config file. If omitted, the first that exists of:"
+            );
+            println!(
+                "                    $QUAYEL_GATEWAY_CONFIG, {}, ./config.json",
+                DEFAULT_CONFIG_PATH
+            );
             std::process::exit(0);
         }
         if args[i] == "--version" || args[i] == "-V" {
@@ -116,15 +121,14 @@ fn main() {
     tracing::info!("Starting Quayel Gateway {}...", env!("CARGO_PKG_VERSION"));
 
     // Load configuration — positional arg, $QUAYEL_GATEWAY_CONFIG, system path, ./config.json
-    let config_path = match resolve_config_path(
-        remaining_args.into_iter().find(|a| !a.starts_with("--")),
-    ) {
-        Ok(p) => p,
-        Err(e) => {
-            tracing::error!("{}", e);
-            std::process::exit(1);
-        }
-    };
+    let config_path =
+        match resolve_config_path(remaining_args.into_iter().find(|a| !a.starts_with("--"))) {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::error!("{}", e);
+                std::process::exit(1);
+            }
+        };
     tracing::info!("Config file: {}", config_path);
 
     let raw_config = match load_config(&config_path) {
@@ -155,7 +159,9 @@ fn main() {
         (Some(n), _) => (n, "from --workers"),
         (None, Some(n)) => (n, "from server.workers"),
         (None, None) => (
-            std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4),
+            std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(4),
             "auto-detected",
         ),
     };
@@ -208,12 +214,19 @@ fn main() {
     // When logging.enabled = false, log_queue = None → no file opened, no LogEvent built per request
     let log_queue = if let Some(ref logging_config) = compiled.logging {
         if logging_config.enabled {
-            let log_path = logging_config.file_path.clone()
+            let log_path = logging_config
+                .file_path
+                .clone()
                 .unwrap_or_else(|| "/var/log/quayel/access.jsonl".to_string());
             let buffer_size = logging_config.buffer_size;
             let flush_interval_ms = logging_config.flush_interval_ms;
 
-            tracing::info!("Logging enabled: file={}, buffer={}, flush_ms={}", log_path, buffer_size, flush_interval_ms);
+            tracing::info!(
+                "Logging enabled: file={}, buffer={}, flush_ms={}",
+                log_path,
+                buffer_size,
+                flush_interval_ms
+            );
 
             Some(LogQueue::new(
                 log_path,
@@ -231,12 +244,21 @@ fn main() {
     };
 
     // Create gateway state — IP intel data is embedded in the binary
-    let state = Arc::new(GatewayState::new(compiled, log_queue, Some(bg_handle.clone())));
+    let state = Arc::new(GatewayState::new(
+        compiled,
+        log_queue,
+        Some(bg_handle.clone()),
+    ));
 
     // Create HTTP proxy service
     tracing::info!("Listening on {}", listen_addr);
 
-    let mut proxy = http_proxy(&server.configuration, QuayelGateway { state: state.clone() });
+    let mut proxy = http_proxy(
+        &server.configuration,
+        QuayelGateway {
+            state: state.clone(),
+        },
+    );
     let mut server_options = HttpServerOptions::default();
     server_options.keepalive_request_limit = state.config.load().server.max_requests_per_connection;
     proxy.server_options = Some(server_options);
@@ -251,7 +273,11 @@ fn main() {
 
     // Start HTTPS listener with Auto-SSL if configured
     if let Some(ref auto_ssl_manager) = state.auto_ssl {
-        let https_addr = state.config.load().listen_https.clone()
+        let https_addr = state
+            .config
+            .load()
+            .listen_https
+            .clone()
             .unwrap_or_else(|| DEFAULT_HTTPS_LISTEN.to_string());
 
         tracing::info!("Auto-SSL enabled — HTTPS listening on {}", https_addr);
@@ -263,9 +289,8 @@ fn main() {
         let mut tls_settings = pingora_core::listeners::tls::TlsSettings::intermediate("", "")
             .unwrap_or_else(|_| {
                 // Fallback: create minimal settings
-                pingora_core::listeners::tls::TlsSettings::intermediate(
-                    "/dev/null", "/dev/null"
-                ).unwrap()
+                pingora_core::listeners::tls::TlsSettings::intermediate("/dev/null", "/dev/null")
+                    .unwrap()
             });
         tls_settings.set_cert_resolver(sni_resolver);
 
@@ -337,14 +362,21 @@ struct SniCertResolver {
 
 impl SniCertResolver {
     fn new(auto_ssl: Arc<AutoSslManager>) -> Self {
-        let fallback_cert = auto_ssl.generate_fallback_cert()
+        let fallback_cert = auto_ssl
+            .generate_fallback_cert()
             .expect("Failed to generate fallback certificate");
-        Self { auto_ssl, fallback_cert }
+        Self {
+            auto_ssl,
+            fallback_cert,
+        }
     }
 }
 
 impl rustls::server::ResolvesServerCert for SniCertResolver {
-    fn resolve(&self, client_hello: rustls::server::ClientHello) -> Option<Arc<rustls::sign::CertifiedKey>> {
+    fn resolve(
+        &self,
+        client_hello: rustls::server::ClientHello,
+    ) -> Option<Arc<rustls::sign::CertifiedKey>> {
         // Get the SNI hostname
         let server_name = client_hello.server_name()?;
         let domain = server_name.to_string();

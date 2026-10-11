@@ -145,44 +145,94 @@ pub struct BanConfig {
 
 // Defaults come from the serde attributes so there is one source of truth.
 impl Default for ServerConfig {
-    fn default() -> Self { serde_json::from_str("{}").expect("ServerConfig defaults") }
+    fn default() -> Self {
+        serde_json::from_str("{}").expect("ServerConfig defaults")
+    }
 }
 impl Default for TimeoutsConfig {
-    fn default() -> Self { serde_json::from_str("{}").expect("TimeoutsConfig defaults") }
+    fn default() -> Self {
+        serde_json::from_str("{}").expect("TimeoutsConfig defaults")
+    }
 }
 impl Default for LimitsConfig {
-    fn default() -> Self { serde_json::from_str("{}").expect("LimitsConfig defaults") }
+    fn default() -> Self {
+        serde_json::from_str("{}").expect("LimitsConfig defaults")
+    }
 }
 impl Default for ProtectionConfig {
-    fn default() -> Self { serde_json::from_str("{}").expect("ProtectionConfig defaults") }
+    fn default() -> Self {
+        serde_json::from_str("{}").expect("ProtectionConfig defaults")
+    }
 }
 impl Default for BanConfig {
-    fn default() -> Self { serde_json::from_str("{}").expect("BanConfig defaults") }
+    fn default() -> Self {
+        serde_json::from_str("{}").expect("BanConfig defaults")
+    }
 }
 
-fn default_header_secs() -> u64 { 10 }
-fn default_keepalive_secs() -> u64 { 60 }
-fn default_body_read_secs() -> u64 { 30 }
-fn default_response_write_secs() -> u64 { 60 }
-fn default_upstream_connect_secs() -> u64 { 5 }
-fn default_upstream_total_connect_secs() -> u64 { 10 }
-fn default_upstream_read_secs() -> u64 { 60 }
-fn default_upstream_write_secs() -> u64 { 30 }
-fn default_upstream_idle_secs() -> u64 { 30 }
-fn default_graceful_shutdown_secs() -> u64 { 5 }
-fn default_max_header_bytes() -> usize { 32 * 1024 }
-fn default_max_body_bytes() -> u64 { 100 * 1024 * 1024 }
-fn default_max_requests_per_connection() -> u32 { 10_000 }
-fn default_upstream_keepalive_pool_size() -> usize { 1024 }
+fn default_header_secs() -> u64 {
+    10
+}
+fn default_keepalive_secs() -> u64 {
+    60
+}
+fn default_body_read_secs() -> u64 {
+    30
+}
+fn default_response_write_secs() -> u64 {
+    60
+}
+fn default_upstream_connect_secs() -> u64 {
+    5
+}
+fn default_upstream_total_connect_secs() -> u64 {
+    10
+}
+fn default_upstream_read_secs() -> u64 {
+    60
+}
+fn default_upstream_write_secs() -> u64 {
+    30
+}
+fn default_upstream_idle_secs() -> u64 {
+    30
+}
+fn default_graceful_shutdown_secs() -> u64 {
+    5
+}
+fn default_max_header_bytes() -> usize {
+    32 * 1024
+}
+fn default_max_body_bytes() -> u64 {
+    100 * 1024 * 1024
+}
+fn default_max_requests_per_connection() -> u32 {
+    10_000
+}
+fn default_upstream_keepalive_pool_size() -> usize {
+    1024
+}
 fn default_exempt_ips() -> Vec<String> {
     vec!["127.0.0.0/8".to_string(), "::1/128".to_string()]
 }
-fn default_max_connections_per_ip() -> u32 { 256 }
-fn default_max_new_connections_per_ip_per_sec() -> u32 { 100 }
-fn default_max_requests_per_ip_per_sec() -> u32 { 500 }
-fn default_ban_strikes() -> u32 { 50 }
-fn default_ban_window_secs() -> u64 { 60 }
-fn default_ban_duration_secs() -> u64 { 600 }
+fn default_max_connections_per_ip() -> u32 {
+    256
+}
+fn default_max_new_connections_per_ip_per_sec() -> u32 {
+    100
+}
+fn default_max_requests_per_ip_per_sec() -> u32 {
+    500
+}
+fn default_ban_strikes() -> u32 {
+    50
+}
+fn default_ban_window_secs() -> u64 {
+    60
+}
+fn default_ban_duration_secs() -> u64 {
+    600
+}
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ListenConfig {

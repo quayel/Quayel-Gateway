@@ -1,6 +1,6 @@
 use crate::condition::CompiledCondition;
-use crate::config::schema::*;
 use crate::config::compiler::CompiledConfig;
+use crate::config::schema::*;
 use crate::gateway::request_context::*;
 use crate::plugins::{GatewayResponse, PluginFlow};
 use bytes::Bytes;
@@ -63,11 +63,7 @@ impl FirewallPlugin {
                         });
                     }
                     FirewallActionType::Redirect => {
-                        let location = rule
-                            .action
-                            .location
-                            .as_deref()
-                            .unwrap_or("/");
+                        let location = rule.action.location.as_deref().unwrap_or("/");
                         let status = rule.action.status.unwrap_or(302);
 
                         return PluginFlow::Respond(GatewayResponse {
@@ -111,7 +107,11 @@ pub fn evaluate_conditions(ctx: &mut RequestContext, conditions: &[CompiledCondi
 
 /// Same as `evaluate_conditions`, with a custom field resolver (response_transform
 /// uses this to add `resp.*` fields).
-pub fn evaluate_conditions_with<F>(ctx: &mut RequestContext, conditions: &[CompiledCondition], mut resolve: F) -> bool
+pub fn evaluate_conditions_with<F>(
+    ctx: &mut RequestContext,
+    conditions: &[CompiledCondition],
+    mut resolve: F,
+) -> bool
 where
     F: FnMut(&mut RequestContext, &str) -> Option<Value>,
 {
@@ -166,80 +166,58 @@ pub fn evaluate_single_condition(left_value: Option<Value>, condition: &Compiled
             (None, None) => false,
             _ => true,
         },
-        Operator::Contains => {
-            match (&left_value, &condition.value) {
-                (Some(Value::String(s)), Some(Value::String(pattern))) => s.contains(pattern.as_str()),
-                _ => false,
+        Operator::Contains => match (&left_value, &condition.value) {
+            (Some(Value::String(s)), Some(Value::String(pattern))) => s.contains(pattern.as_str()),
+            _ => false,
+        },
+        Operator::NotContains => match (&left_value, &condition.value) {
+            (Some(Value::String(s)), Some(Value::String(pattern))) => !s.contains(pattern.as_str()),
+            _ => true,
+        },
+        Operator::StartsWith => match (&left_value, &condition.value) {
+            (Some(Value::String(s)), Some(Value::String(prefix))) => s.starts_with(prefix.as_str()),
+            _ => false,
+        },
+        Operator::EndsWith => match (&left_value, &condition.value) {
+            (Some(Value::String(s)), Some(Value::String(suffix))) => s.ends_with(suffix.as_str()),
+            _ => false,
+        },
+        Operator::In => match (&left_value, &condition.value) {
+            (Some(val), Some(Value::Array(arr))) => arr.iter().any(|item| values_equal(val, item)),
+            _ => false,
+        },
+        Operator::NotIn => match (&left_value, &condition.value) {
+            (Some(val), Some(Value::Array(arr))) => !arr.iter().any(|item| values_equal(val, item)),
+            _ => true,
+        },
+        Operator::GreaterThan => match (&left_value, &condition.value) {
+            (Some(Value::Number(l)), Some(Value::Number(r))) => {
+                l.as_f64().unwrap_or(0.0) > r.as_f64().unwrap_or(0.0)
             }
-        }
-        Operator::NotContains => {
-            match (&left_value, &condition.value) {
-                (Some(Value::String(s)), Some(Value::String(pattern))) => !s.contains(pattern.as_str()),
-                _ => true,
+            _ => false,
+        },
+        Operator::GreaterThanOrEqual => match (&left_value, &condition.value) {
+            (Some(Value::Number(l)), Some(Value::Number(r))) => {
+                l.as_f64().unwrap_or(0.0) >= r.as_f64().unwrap_or(0.0)
             }
-        }
-        Operator::StartsWith => {
-            match (&left_value, &condition.value) {
-                (Some(Value::String(s)), Some(Value::String(prefix))) => s.starts_with(prefix.as_str()),
-                _ => false,
+            _ => false,
+        },
+        Operator::LessThan => match (&left_value, &condition.value) {
+            (Some(Value::Number(l)), Some(Value::Number(r))) => {
+                l.as_f64().unwrap_or(0.0) < r.as_f64().unwrap_or(0.0)
             }
-        }
-        Operator::EndsWith => {
-            match (&left_value, &condition.value) {
-                (Some(Value::String(s)), Some(Value::String(suffix))) => s.ends_with(suffix.as_str()),
-                _ => false,
+            _ => false,
+        },
+        Operator::LessThanOrEqual => match (&left_value, &condition.value) {
+            (Some(Value::Number(l)), Some(Value::Number(r))) => {
+                l.as_f64().unwrap_or(0.0) <= r.as_f64().unwrap_or(0.0)
             }
-        }
-        Operator::In => {
-            match (&left_value, &condition.value) {
-                (Some(val), Some(Value::Array(arr))) => arr.iter().any(|item| values_equal(val, item)),
-                _ => false,
-            }
-        }
-        Operator::NotIn => {
-            match (&left_value, &condition.value) {
-                (Some(val), Some(Value::Array(arr))) => !arr.iter().any(|item| values_equal(val, item)),
-                _ => true,
-            }
-        }
-        Operator::GreaterThan => {
-            match (&left_value, &condition.value) {
-                (Some(Value::Number(l)), Some(Value::Number(r))) => {
-                    l.as_f64().unwrap_or(0.0) > r.as_f64().unwrap_or(0.0)
-                }
-                _ => false,
-            }
-        }
-        Operator::GreaterThanOrEqual => {
-            match (&left_value, &condition.value) {
-                (Some(Value::Number(l)), Some(Value::Number(r))) => {
-                    l.as_f64().unwrap_or(0.0) >= r.as_f64().unwrap_or(0.0)
-                }
-                _ => false,
-            }
-        }
-        Operator::LessThan => {
-            match (&left_value, &condition.value) {
-                (Some(Value::Number(l)), Some(Value::Number(r))) => {
-                    l.as_f64().unwrap_or(0.0) < r.as_f64().unwrap_or(0.0)
-                }
-                _ => false,
-            }
-        }
-        Operator::LessThanOrEqual => {
-            match (&left_value, &condition.value) {
-                (Some(Value::Number(l)), Some(Value::Number(r))) => {
-                    l.as_f64().unwrap_or(0.0) <= r.as_f64().unwrap_or(0.0)
-                }
-                _ => false,
-            }
-        }
-        Operator::Regex => {
-            match (&left_value, &condition.compiled_regex) {
-                (Some(Value::String(s)), Some(re)) => re.is_match(s),
-                _ => false,
-            }
-        }
+            _ => false,
+        },
+        Operator::Regex => match (&left_value, &condition.compiled_regex) {
+            (Some(Value::String(s)), Some(re)) => re.is_match(s),
+            _ => false,
+        },
     }
 }
 
@@ -249,12 +227,16 @@ fn values_equal(a: &Value, b: &Value) -> bool {
         (Value::Number(n1), Value::Number(n2)) => n1.as_f64() == n2.as_f64(),
         (Value::Bool(b1), Value::Bool(b2)) => b1 == b2,
         (Value::Null, Value::Null) => true,
-        (Value::String(s), Value::Number(n)) => {
-            s.parse::<f64>().ok().map(|f| f == n.as_f64().unwrap_or(f64::NAN)).unwrap_or(false)
-        }
-        (Value::Number(n), Value::String(s)) => {
-            s.parse::<f64>().ok().map(|f| f == n.as_f64().unwrap_or(f64::NAN)).unwrap_or(false)
-        }
+        (Value::String(s), Value::Number(n)) => s
+            .parse::<f64>()
+            .ok()
+            .map(|f| f == n.as_f64().unwrap_or(f64::NAN))
+            .unwrap_or(false),
+        (Value::Number(n), Value::String(s)) => s
+            .parse::<f64>()
+            .ok()
+            .map(|f| f == n.as_f64().unwrap_or(f64::NAN))
+            .unwrap_or(false),
         _ => false,
     }
 }
@@ -283,11 +265,8 @@ fn percent_decode(s: &str) -> String {
         if b == b'%' {
             let hex1 = chars.next().unwrap_or(b'0');
             let hex2 = chars.next().unwrap_or(b'0');
-            let val = u8::from_str_radix(
-                std::str::from_utf8(&[hex1, hex2]).unwrap_or("00"),
-                16,
-            )
-            .unwrap_or(0);
+            let val = u8::from_str_radix(std::str::from_utf8(&[hex1, hex2]).unwrap_or("00"), 16)
+                .unwrap_or(0);
             result.push(val as char);
         } else if b == b'+' {
             result.push(' ');
@@ -360,8 +339,8 @@ fn decode_jwt_payload_cached(ctx: &mut RequestContext, token: &str) -> Option<Va
     let payload_b64 = parts[1];
 
     // Base64url decode (URL-safe, no padding)
-    use base64::Engine;
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use base64::Engine;
     let payload_bytes = URL_SAFE_NO_PAD.decode(payload_b64).ok()?;
 
     let payload: Value = serde_json::from_slice(&payload_bytes).ok()?;
@@ -388,8 +367,7 @@ fn resolve_header_deep(ctx: &mut RequestContext, rest: &str) -> Option<Value> {
         let claim_path = &rest[jwt_pos + 5..]; // skip ".jwt."
 
         // Get the header value — HeaderMap get is case-insensitive
-        let token = ctx.headers.get(header_name)
-            .and_then(|v| v.to_str().ok())?;
+        let token = ctx.headers.get(header_name).and_then(|v| v.to_str().ok())?;
 
         // Strip "Bearer " prefix if present
         let token = token.strip_prefix("Bearer ").unwrap_or(token).to_string();
@@ -399,7 +377,8 @@ fn resolve_header_deep(ctx: &mut RequestContext, rest: &str) -> Option<Value> {
         navigate_json_path(&payload, claim_path)
     } else {
         // Simple header access (no JWT) — case-insensitive via HeaderMap
-        ctx.headers.get(rest)
+        ctx.headers
+            .get(rest)
             .and_then(|v| v.to_str().ok())
             .map(|v| Value::String(v.to_string()))
     }
@@ -410,10 +389,7 @@ fn resolve_header_deep(ctx: &mut RequestContext, rest: &str) -> Option<Value> {
 /// Resolve a condition path value from request context.
 pub fn resolve_condition_value(ctx: &mut RequestContext, path: &str) -> Option<Value> {
     match path {
-        "http.host" | "req.host" => ctx
-            .host
-            .as_ref()
-            .map(|h| Value::String(h.to_string())),
+        "http.host" | "req.host" => ctx.host.as_ref().map(|h| Value::String(h.to_string())),
         "http.path" | "req.path" => Some(Value::String(ctx.path.to_string())),
         "http.method" | "req.method" => Some(Value::String(ctx.method.to_string())),
         "http.scheme" | "req.scheme" => Some(Value::String(ctx.scheme.to_string())),
@@ -432,13 +408,28 @@ pub fn resolve_condition_value(ctx: &mut RequestContext, path: &str) -> Option<V
         "ip.provider" => ctx.ip_intel.as_ref().and_then(|i| i.get_field("provider")),
         "ip.is_vpn" => ctx.ip_intel.as_ref().and_then(|i| i.get_field("is_vpn")),
         "ip.is_proxy" => ctx.ip_intel.as_ref().and_then(|i| i.get_field("is_proxy")),
-        "ip.is_datacenter" => ctx.ip_intel.as_ref().and_then(|i| i.get_field("is_datacenter")),
+        "ip.is_datacenter" => ctx
+            .ip_intel
+            .as_ref()
+            .and_then(|i| i.get_field("is_datacenter")),
         "ip.is_mobile" => ctx.ip_intel.as_ref().and_then(|i| i.get_field("is_mobile")),
-        "ip.is_residential" => ctx.ip_intel.as_ref().and_then(|i| i.get_field("is_residential")),
-        "ip.is_residential_proxy" => ctx.ip_intel.as_ref().and_then(|i| i.get_field("is_residential_proxy")),
+        "ip.is_residential" => ctx
+            .ip_intel
+            .as_ref()
+            .and_then(|i| i.get_field("is_residential")),
+        "ip.is_residential_proxy" => ctx
+            .ip_intel
+            .as_ref()
+            .and_then(|i| i.get_field("is_residential_proxy")),
         "ip.is_tor" => ctx.ip_intel.as_ref().and_then(|i| i.get_field("is_tor")),
-        "ip.network_type" => ctx.ip_intel.as_ref().and_then(|i| i.get_field("network_type")),
-        "ip.risk_score" => ctx.ip_intel.as_ref().and_then(|i| i.get_field("risk_score")),
+        "ip.network_type" => ctx
+            .ip_intel
+            .as_ref()
+            .and_then(|i| i.get_field("network_type")),
+        "ip.risk_score" => ctx
+            .ip_intel
+            .as_ref()
+            .and_then(|i| i.get_field("risk_score")),
 
         // Deep header paths — supports JWT extraction:
         //   "header.token.jwt.user_id" → header "token", decode JWT, extract claim "user_id"

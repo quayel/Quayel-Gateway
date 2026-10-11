@@ -5,8 +5,8 @@ use crate::plugins::{GatewayResponse, PluginFlow};
 use bytes::Bytes;
 use dashmap::DashMap;
 use std::fmt::Write as _;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::Instant;
 
 // Rate Limiting Plugin
@@ -73,7 +73,8 @@ impl WindowCounter {
         let start_ms = self.window_start_ms.load(Ordering::Relaxed);
 
         if now_ms.saturating_sub(start_ms) >= self.window_seconds * 1000 {
-            if self.window_start_ms
+            if self
+                .window_start_ms
                 .compare_exchange(start_ms, now_ms, Ordering::AcqRel, Ordering::Relaxed)
                 .is_ok()
             {
@@ -114,7 +115,8 @@ impl RateLimitPlugin {
 
     /// Remove expired counters to prevent unbounded memory growth.
     fn cleanup_expired(&self) {
-        self.counters.retain(|_, counter| !counter.is_expired_for_cleanup());
+        self.counters
+            .retain(|_, counter| !counter.is_expired_for_cleanup());
     }
 
     /// Spawn a background tokio task that periodically cleans up expired
@@ -126,9 +128,8 @@ impl RateLimitPlugin {
     pub fn spawn_cleanup_task(&self, handle: &tokio::runtime::Handle) {
         let counters = Arc::clone(&self.counters);
         handle.spawn(async move {
-            let mut interval = tokio::time::interval(
-                std::time::Duration::from_secs(RL_CLEANUP_INTERVAL_SECS)
-            );
+            let mut interval =
+                tokio::time::interval(std::time::Duration::from_secs(RL_CLEANUP_INTERVAL_SECS));
             // Skip the first immediate tick
             interval.tick().await;
             loop {
@@ -174,7 +175,8 @@ impl RateLimitPlugin {
                 (count, remaining)
             } else {
                 // Cold path: insert new counter (exclusive lock, but rare)
-                let counter = self.counters
+                let counter = self
+                    .counters
                     .entry(rl_key)
                     .or_insert_with(|| WindowCounter::new(rule.window_seconds));
                 let count = counter.increment();
@@ -250,20 +252,43 @@ fn resolve_rate_limit_key_into(ctx: &mut RequestContext, key_parts: &[String], o
         // Fast paths for plain scalar fields — writes directly into `out`
         // without allocating a serde_json::Value::String.
         match part.as_str() {
-            "req.client_ip" | "http.ip" | "req.ip" => { let _ = write!(out, "{}", ctx.client_ip); return; }
-            "req.peer_ip" | "http.peer_ip" => { let _ = write!(out, "{}", ctx.peer_ip); return; }
-            "req.path" | "http.path" => { out.push_str(&ctx.path); return; }
-            "req.method" | "http.method" => { out.push_str(&ctx.method); return; }
-            "req.scheme" | "http.scheme" => { out.push_str(&ctx.scheme); return; }
-            "req.host" | "http.host" => { out.push_str(ctx.host.as_deref().unwrap_or("unknown")); return; }
-            "req.user_agent" | "http.user_agent" => { out.push_str(ctx.user_agent.as_deref().unwrap_or("unknown")); return; }
+            "req.client_ip" | "http.ip" | "req.ip" => {
+                let _ = write!(out, "{}", ctx.client_ip);
+                return;
+            }
+            "req.peer_ip" | "http.peer_ip" => {
+                let _ = write!(out, "{}", ctx.peer_ip);
+                return;
+            }
+            "req.path" | "http.path" => {
+                out.push_str(&ctx.path);
+                return;
+            }
+            "req.method" | "http.method" => {
+                out.push_str(&ctx.method);
+                return;
+            }
+            "req.scheme" | "http.scheme" => {
+                out.push_str(&ctx.scheme);
+                return;
+            }
+            "req.host" | "http.host" => {
+                out.push_str(ctx.host.as_deref().unwrap_or("unknown"));
+                return;
+            }
+            "req.user_agent" | "http.user_agent" => {
+                out.push_str(ctx.user_agent.as_deref().unwrap_or("unknown"));
+                return;
+            }
             _ => {}
         }
 
         // Simple single-field resolution (fast path, no separator)
         match resolve_condition_value(ctx, part) {
             Some(serde_json::Value::String(s)) => out.push_str(&s),
-            Some(other) => { let _ = write!(out, "{:?}", other); }
+            Some(other) => {
+                let _ = write!(out, "{:?}", other);
+            }
             None => out.push_str("unknown"),
         }
         return;
@@ -271,10 +296,14 @@ fn resolve_rate_limit_key_into(ctx: &mut RequestContext, key_parts: &[String], o
 
     // Composite key: resolve each part and join with ":"
     for (i, part) in key_parts.iter().enumerate() {
-        if i > 0 { out.push(':'); }
+        if i > 0 {
+            out.push(':');
+        }
         match resolve_condition_value(ctx, part) {
             Some(serde_json::Value::String(s)) => out.push_str(&s),
-            Some(other) => { let _ = write!(out, "{:?}", other); }
+            Some(other) => {
+                let _ = write!(out, "{:?}", other);
+            }
             None => out.push_str("unknown"),
         }
     }

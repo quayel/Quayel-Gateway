@@ -1,9 +1,9 @@
-use crate::config::schema::*;
 use crate::config::compiler::CompiledConfig;
+use crate::config::schema::*;
 use crate::gateway::request_context::*;
-use bytes::Bytes;
 use crate::plugins::firewall::{evaluate_conditions, resolve_condition_value};
 use crate::plugins::{GatewayResponse, PluginFlow};
+use bytes::Bytes;
 use dashmap::DashMap;
 use rustc_hash::FxHasher;
 use std::hash::{Hash, Hasher};
@@ -54,10 +54,13 @@ impl CacheEntry {
         // Fully expired = past edge_ttl + the longer of the two stale windows.
         // Between the end of SWR and the end of SIE the entry is kept only as
         // an error fallback (CacheLookup::Expired).
-        self.stored_at.elapsed() >= self.edge_ttl + self.stale_while_revalidate.max(self.stale_if_error)
+        self.stored_at.elapsed()
+            >= self.edge_ttl + self.stale_while_revalidate.max(self.stale_if_error)
     }
     pub fn is_stale_if_error(&self) -> bool {
-        if self.stale_if_error.is_zero() { return false; }
+        if self.stale_if_error.is_zero() {
+            return false;
+        }
         let age = self.stored_at.elapsed();
         age >= self.edge_ttl && age < self.edge_ttl + self.stale_if_error
     }
@@ -66,11 +69,16 @@ impl CacheEntry {
     /// This is where revalidation (lock mechanism) is allowed.
     /// Header value from the stored response (names are stored lowercase).
     pub fn header(&self, name: &str) -> Option<&str> {
-        self.headers.iter().find(|(k, _)| k == name).map(|(_, v)| v.as_str())
+        self.headers
+            .iter()
+            .find(|(k, _)| k == name)
+            .map(|(_, v)| v.as_str())
     }
 
     pub fn is_stale_revalidatable(&self) -> bool {
-        if self.stale_while_revalidate.is_zero() { return false; }
+        if self.stale_while_revalidate.is_zero() {
+            return false;
+        }
         let age = self.stored_at.elapsed();
         age >= self.edge_ttl && age < self.edge_ttl + self.stale_while_revalidate
     }
@@ -95,7 +103,11 @@ impl CachePlugin {
         }
     }
 
-    pub async fn execute(&self, ctx: &mut RequestContext, config: &Arc<CompiledConfig>) -> PluginFlow {
+    pub async fn execute(
+        &self,
+        ctx: &mut RequestContext,
+        config: &Arc<CompiledConfig>,
+    ) -> PluginFlow {
         let cache_config = match &config.cache {
             Some(c) if c.enabled => c,
             _ => return PluginFlow::Continue,
@@ -107,14 +119,19 @@ impl CachePlugin {
         }
         // HEAD can be served from cache but never fills it (no body to store).
         // Range requests are passed through and not stored either.
-        let can_store = ctx.method.as_ref() == "GET" && !ctx.headers.contains_key(http::header::RANGE);
+        let can_store =
+            ctx.method.as_ref() == "GET" && !ctx.headers.contains_key(http::header::RANGE);
 
         for rule in &cache_config.rules {
-            if !rule.enabled { continue; }
+            if !rule.enabled {
+                continue;
+            }
 
             // Fast-path: empty conditions always match (skip evaluate_conditions overhead)
             let matched = rule.conditions.is_empty() || evaluate_conditions(ctx, &rule.conditions);
-            if !matched { continue; }
+            if !matched {
+                continue;
+            }
 
             // Reuse the rule_id String allocation across requests (same rule matches
             // every request) — comparison instead of a heap allocation.
@@ -144,7 +161,9 @@ impl CachePlugin {
                 ctx.cache.stale_while_revalidate_seconds = rule.stale_while_revalidate;
                 ctx.cache.stale_if_error_seconds = rule.stale_if_error;
                 // Cache max_object_size_bytes once — avoids arc_swap::load() per body chunk
-                ctx.cache.max_object_size_bytes = config.cache.as_ref()
+                ctx.cache.max_object_size_bytes = config
+                    .cache
+                    .as_ref()
                     .map(|c| c.max_object_size_bytes)
                     .unwrap_or(10 * 1024 * 1024);
                 ctx.cache.statuses = Some(Arc::clone(&rule.statuses));
@@ -156,7 +175,9 @@ impl CachePlugin {
                     ctx.cache.status = CacheStatus::Hit;
                     ctx.cache.key_hash = Some(kh);
                     return PluginFlow::Respond(GatewayResponse {
-                        status: entry.status, headers: entry.headers.clone(), body: entry.body.clone(),
+                        status: entry.status,
+                        headers: entry.headers.clone(),
+                        body: entry.body.clone(),
                     });
                 }
                 CacheLookup::HitRevalidating(entry) => {
@@ -165,12 +186,15 @@ impl CachePlugin {
                     ctx.cache.status = CacheStatus::Revalidating;
                     ctx.cache.key_hash = Some(kh);
                     return PluginFlow::Respond(GatewayResponse {
-                        status: entry.status, headers: entry.headers.clone(), body: entry.body.clone(),
+                        status: entry.status,
+                        headers: entry.headers.clone(),
+                        body: entry.body.clone(),
                     });
                 }
                 CacheLookup::Stale(entry) => {
                     // Entry is stale and nobody is refreshing. Try to become the refresh request.
-                    let lock_arc = self.revalidating
+                    let lock_arc = self
+                        .revalidating
                         .entry(kh.clone())
                         .or_insert_with(|| Arc::new(Mutex::new(())))
                         .value()
@@ -194,7 +218,9 @@ impl CachePlugin {
                             ctx.cache.status = CacheStatus::Stale;
                             ctx.cache.key_hash = Some(kh);
                             return PluginFlow::Respond(GatewayResponse {
-                                status: entry.status, headers: entry.headers.clone(), body: entry.body.clone(),
+                                status: entry.status,
+                                headers: entry.headers.clone(),
+                                body: entry.body.clone(),
                             });
                         }
                     }
@@ -228,7 +254,9 @@ impl CachePlugin {
         };
 
         // Fresh → cache hit
-        if entry.is_fresh() { return CacheLookup::Hit(entry); }
+        if entry.is_fresh() {
+            return CacheLookup::Hit(entry);
+        }
 
         // Entry is stale (past edge_ttl). Check if it's fully expired first.
         // Fully expired = past edge_ttl + stale_while_revalidate
@@ -258,26 +286,62 @@ impl CachePlugin {
 
     pub fn get_stale_if_error(&self, kh: &str) -> Option<CacheEntry> {
         let entry = self.store.get(kh)?.clone();
-        if entry.is_fully_expired() { return None; }
-        if entry.is_stale_if_error() { return Some(entry); }
+        if entry.is_fully_expired() {
+            return None;
+        }
+        if entry.is_stale_if_error() {
+            return Some(entry);
+        }
         None
     }
 
-    pub fn store(&self, kh: &str, status: u16, headers: &[(String, String)], body: &[u8],
-                  edge_ttl: Duration, swr: Duration, sie: Duration,
-                  max_object_size_bytes: usize) -> bool {
-        if body.is_empty() { return false; }
-        if body.len() > max_object_size_bytes { return false; }
-        if headers.iter().any(|(k, _)| k.eq_ignore_ascii_case("set-cookie")) { return false; }
-        if let Some(cc) = headers.iter().find(|(k, _)| k.eq_ignore_ascii_case("cache-control")) {
-            let v = cc.1.to_lowercase();
-            if v.contains("no-store") || v.contains("private") { return false; }
+    pub fn store(
+        &self,
+        kh: &str,
+        status: u16,
+        headers: &[(String, String)],
+        body: &[u8],
+        edge_ttl: Duration,
+        swr: Duration,
+        sie: Duration,
+        max_object_size_bytes: usize,
+    ) -> bool {
+        if body.is_empty() {
+            return false;
         }
-        if edge_ttl.is_zero() { return false; }
-        self.store.insert(kh.to_string(), CacheEntry {
-            status, headers: Arc::new(headers.to_vec()), body: Bytes::copy_from_slice(body),
-            stored_at: Instant::now(), edge_ttl, stale_while_revalidate: swr, stale_if_error: sie,
-        });
+        if body.len() > max_object_size_bytes {
+            return false;
+        }
+        if headers
+            .iter()
+            .any(|(k, _)| k.eq_ignore_ascii_case("set-cookie"))
+        {
+            return false;
+        }
+        if let Some(cc) = headers
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case("cache-control"))
+        {
+            let v = cc.1.to_lowercase();
+            if v.contains("no-store") || v.contains("private") {
+                return false;
+            }
+        }
+        if edge_ttl.is_zero() {
+            return false;
+        }
+        self.store.insert(
+            kh.to_string(),
+            CacheEntry {
+                status,
+                headers: Arc::new(headers.to_vec()),
+                body: Bytes::copy_from_slice(body),
+                stored_at: Instant::now(),
+                edge_ttl,
+                stale_while_revalidate: swr,
+                stale_if_error: sie,
+            },
+        );
         true
     }
 
@@ -335,7 +399,10 @@ pub fn parse_upstream_cdn_cache_control(headers: &http::HeaderMap) -> CdnCacheCo
     let mut cdn = CdnCacheControl::default();
 
     // Priority 1: CDN-specific header (quayel-cdn-cache-control)
-    if let Some(value) = headers.get("quayel-cdn-cache-control").and_then(|v| v.to_str().ok()) {
+    if let Some(value) = headers
+        .get("quayel-cdn-cache-control")
+        .and_then(|v| v.to_str().ok())
+    {
         parse_cc_value(value, &mut cdn);
         return cdn;
     }
@@ -351,38 +418,66 @@ pub fn parse_upstream_cdn_cache_control(headers: &http::HeaderMap) -> CdnCacheCo
 fn parse_cc_value(value: &str, cdn: &mut CdnCacheControl) {
     for part in value.split(',') {
         let part = part.trim().to_lowercase();
-        if part == "no-store" { cdn.no_store = true; }
-        else if part == "no-cache" { cdn.no_cache = true; }
-        else if part == "private" { cdn.private = true; }
-        else if part == "public" { }
-        else if let Some(v) = parse_directive(&part, "s-maxage") { cdn.s_maxage = Some(v); }
-        else if let Some(v) = parse_directive(&part, "max-age") { cdn.max_age = Some(v); }
-        else if let Some(v) = parse_directive(&part, "stale-while-revalidate") { cdn.stale_while_revalidate = Some(v); }
-        else if let Some(v) = parse_directive(&part, "stale-if-error") { cdn.stale_if_error = Some(v); }
+        if part == "no-store" {
+            cdn.no_store = true;
+        } else if part == "no-cache" {
+            cdn.no_cache = true;
+        } else if part == "private" {
+            cdn.private = true;
+        } else if part == "public" {
+        } else if let Some(v) = parse_directive(&part, "s-maxage") {
+            cdn.s_maxage = Some(v);
+        } else if let Some(v) = parse_directive(&part, "max-age") {
+            cdn.max_age = Some(v);
+        } else if let Some(v) = parse_directive(&part, "stale-while-revalidate") {
+            cdn.stale_while_revalidate = Some(v);
+        } else if let Some(v) = parse_directive(&part, "stale-if-error") {
+            cdn.stale_if_error = Some(v);
+        }
     }
 }
 
 pub fn calculate_edge_ttl(cdn: &CdnCacheControl, mode: &str, seconds: Option<u64>) -> Duration {
-    if mode == "custom" { if let Some(s) = seconds { return Duration::from_secs(s); } }
-    if let Some(s) = cdn.s_maxage { return Duration::from_secs(s); }
-    if let Some(s) = cdn.max_age { return Duration::from_secs(s); }
-    if let Some(s) = seconds { return Duration::from_secs(s); }
+    if mode == "custom" {
+        if let Some(s) = seconds {
+            return Duration::from_secs(s);
+        }
+    }
+    if let Some(s) = cdn.s_maxage {
+        return Duration::from_secs(s);
+    }
+    if let Some(s) = cdn.max_age {
+        return Duration::from_secs(s);
+    }
+    if let Some(s) = seconds {
+        return Duration::from_secs(s);
+    }
     Duration::ZERO
 }
 
 pub fn calculate_stale_while_revalidate(cdn: &CdnCacheControl) -> Duration {
-    cdn.stale_while_revalidate.map(Duration::from_secs).unwrap_or(Duration::ZERO)
+    cdn.stale_while_revalidate
+        .map(Duration::from_secs)
+        .unwrap_or(Duration::ZERO)
 }
 
 pub fn calculate_stale_if_error(cdn: &CdnCacheControl) -> Duration {
-    cdn.stale_if_error.map(Duration::from_secs).unwrap_or(Duration::ZERO)
+    cdn.stale_if_error
+        .map(Duration::from_secs)
+        .unwrap_or(Duration::ZERO)
 }
 
 pub fn parse_origin_ttl(headers: &[(String, String)]) -> Option<Duration> {
     let cdn = parse_cdn_cache_control(headers);
-    if cdn.no_store || cdn.no_cache || cdn.private { return Some(Duration::ZERO); }
-    if let Some(s) = cdn.s_maxage { return Some(Duration::from_secs(s)); }
-    if let Some(s) = cdn.max_age { return Some(Duration::from_secs(s)); }
+    if cdn.no_store || cdn.no_cache || cdn.private {
+        return Some(Duration::ZERO);
+    }
+    if let Some(s) = cdn.s_maxage {
+        return Some(Duration::from_secs(s));
+    }
+    if let Some(s) = cdn.max_age {
+        return Some(Duration::from_secs(s));
+    }
     None
 }
 
@@ -391,7 +486,9 @@ fn parse_directive(value: &str, directive: &str) -> Option<u64> {
         let part = part.trim();
         if let Some(rest) = part.strip_prefix(directive) {
             let rest = rest.trim().strip_prefix('=').unwrap_or("").trim();
-            if let Ok(secs) = rest.parse::<u64>() { return Some(secs); }
+            if let Ok(secs) = rest.parse::<u64>() {
+                return Some(secs);
+            }
         }
     }
     None
@@ -425,26 +522,61 @@ fn make_cache_key_hash(ctx: &mut RequestContext, kc: &CacheKeyConfig, out: &mut 
                 // Fast path for plain scalar fields — hashes the underlying value
                 // directly instead of allocating a serde_json::Value::String.
                 match p.as_str() {
-                    "req.path" | "http.path" => { "|".hash(&mut hasher); ctx.path.hash(&mut hasher); continue; }
-                    "req.host" | "http.host" => {
-                        if let Some(h) = &ctx.host { "|".hash(&mut hasher); h.hash(&mut hasher); }
+                    "req.path" | "http.path" => {
+                        "|".hash(&mut hasher);
+                        ctx.path.hash(&mut hasher);
                         continue;
                     }
-                    "req.method" | "http.method" => { "|".hash(&mut hasher); ctx.method.hash(&mut hasher); continue; }
-                    "req.scheme" | "http.scheme" => { "|".hash(&mut hasher); ctx.scheme.hash(&mut hasher); continue; }
-                    "req.ip" | "http.ip" => { "|".hash(&mut hasher); ctx.client_ip.hash(&mut hasher); continue; }
-                    "req.peer_ip" | "http.peer_ip" => { "|".hash(&mut hasher); ctx.peer_ip.hash(&mut hasher); continue; }
+                    "req.host" | "http.host" => {
+                        if let Some(h) = &ctx.host {
+                            "|".hash(&mut hasher);
+                            h.hash(&mut hasher);
+                        }
+                        continue;
+                    }
+                    "req.method" | "http.method" => {
+                        "|".hash(&mut hasher);
+                        ctx.method.hash(&mut hasher);
+                        continue;
+                    }
+                    "req.scheme" | "http.scheme" => {
+                        "|".hash(&mut hasher);
+                        ctx.scheme.hash(&mut hasher);
+                        continue;
+                    }
+                    "req.ip" | "http.ip" => {
+                        "|".hash(&mut hasher);
+                        ctx.client_ip.hash(&mut hasher);
+                        continue;
+                    }
+                    "req.peer_ip" | "http.peer_ip" => {
+                        "|".hash(&mut hasher);
+                        ctx.peer_ip.hash(&mut hasher);
+                        continue;
+                    }
                     "req.user_agent" | "http.user_agent" => {
-                        if let Some(ua) = &ctx.user_agent { "|".hash(&mut hasher); ua.hash(&mut hasher); }
+                        if let Some(ua) = &ctx.user_agent {
+                            "|".hash(&mut hasher);
+                            ua.hash(&mut hasher);
+                        }
                         continue;
                     }
                     _ => {}
                 }
                 if let Some(value) = resolve_condition_value(ctx, p) {
                     match value {
-                        serde_json::Value::String(s) => { "|".hash(&mut hasher); s.hash(&mut hasher); }
-                        serde_json::Value::Number(n) => { "|".hash(&mut hasher); n.to_string().hash(&mut hasher); }
-                        serde_json::Value::Bool(b) => { "|".hash(&mut hasher); b.hash(&mut hasher); }
+                        serde_json::Value::String(s) => {
+                            "|".hash(&mut hasher);
+                            s.hash(&mut hasher);
+                        }
+                        serde_json::Value::Number(n) => {
+                            "|".hash(&mut hasher);
+                            n.to_string().hash(&mut hasher);
+                        }
+                        serde_json::Value::Bool(b) => {
+                            "|".hash(&mut hasher);
+                            b.hash(&mut hasher);
+                        }
                         _ => {}
                     }
                 }
@@ -473,12 +605,22 @@ pub fn accept_encoding_bucket(headers: &http::HeaderMap) -> &'static str {
             let mut it = part.split(';');
             let coding = it.next().unwrap_or("").trim();
             let refused = it.any(|p| matches!(p.trim().strip_prefix("q="), Some(q) if q.trim().parse::<f32>().map_or(false, |q| q == 0.0)));
-            if refused { continue; }
-            if coding.eq_ignore_ascii_case("br") { return "br"; }
-            if coding.eq_ignore_ascii_case("gzip") { gzip = true; }
+            if refused {
+                continue;
+            }
+            if coding.eq_ignore_ascii_case("br") {
+                return "br";
+            }
+            if coding.eq_ignore_ascii_case("gzip") {
+                gzip = true;
+            }
         }
     }
-    if gzip { "gzip" } else { "identity" }
+    if gzip {
+        "gzip"
+    } else {
+        "identity"
+    }
 }
 
 /// Accept-Encoding sent to the origin for a bucket (None = remove the header).
@@ -494,7 +636,9 @@ pub fn bucket_accept_encoding(bucket: &str) -> Option<&'static str> {
 pub fn vary_is_cacheable(headers: &http::HeaderMap) -> bool {
     headers.get_all(http::header::VARY).iter().all(|v| {
         v.to_str().map_or(false, |v| {
-            v.split(',').map(str::trim).all(|f| f.is_empty() || f.eq_ignore_ascii_case("accept-encoding"))
+            v.split(',')
+                .map(str::trim)
+                .all(|f| f.is_empty() || f.eq_ignore_ascii_case("accept-encoding"))
         })
     })
 }
@@ -539,7 +683,10 @@ mod tests {
         assert!(vary_is_cacheable(&h));
         h.insert(http::header::VARY, "Accept-Encoding".parse().unwrap());
         assert!(vary_is_cacheable(&h));
-        h.insert(http::header::VARY, "Accept-Encoding, Cookie".parse().unwrap());
+        h.insert(
+            http::header::VARY,
+            "Accept-Encoding, Cookie".parse().unwrap(),
+        );
         assert!(!vary_is_cacheable(&h));
         h.insert(http::header::VARY, "*".parse().unwrap());
         assert!(!vary_is_cacheable(&h));
@@ -547,7 +694,9 @@ mod tests {
 
     fn entry(age: u64, ttl: u64, swr: u64, sie: u64) -> CacheEntry {
         CacheEntry {
-            status: 200, headers: Arc::new(vec![]), body: Bytes::from_static(b"x"),
+            status: 200,
+            headers: Arc::new(vec![]),
+            body: Bytes::from_static(b"x"),
             stored_at: Instant::now() - Duration::from_secs(age),
             edge_ttl: Duration::from_secs(ttl),
             stale_while_revalidate: Duration::from_secs(swr),

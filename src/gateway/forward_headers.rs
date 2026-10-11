@@ -57,7 +57,9 @@ pub struct CompiledForwardHeaders {
     headers: Vec<(ForwardField, Bytes)>,
 }
 
-pub fn compile_forward_headers(cfg: &ForwardHeadersConfig) -> Result<Option<CompiledForwardHeaders>, String> {
+pub fn compile_forward_headers(
+    cfg: &ForwardHeadersConfig,
+) -> Result<Option<CompiledForwardHeaders>, String> {
     if !cfg.enabled {
         return Ok(None);
     }
@@ -84,7 +86,11 @@ pub fn compile_forward_headers(cfg: &ForwardHeadersConfig) -> Result<Option<Comp
                     .map(|(_, _, f)| *f)
                     .ok_or_else(|| {
                         let valid: Vec<&str> = FIELDS.iter().map(|(n, _, _)| *n).collect();
-                        format!("ip_intel.forward_headers.fields: unknown field '{}' (valid: {})", name, valid.join(", "))
+                        format!(
+                            "ip_intel.forward_headers.fields: unknown field '{}' (valid: {})",
+                            name,
+                            valid.join(", ")
+                        )
                     })?;
                 if !out.contains(&field) {
                     out.push(field);
@@ -100,12 +106,19 @@ pub fn compile_forward_headers(cfg: &ForwardHeadersConfig) -> Result<Option<Comp
             continue;
         }
         let name = format!("{}{}", prefix, suffix);
-        http::HeaderName::from_bytes(name.as_bytes())
-            .map_err(|_| format!("ip_intel.forward_headers.prefix '{}' is not a valid header name", cfg.prefix))?;
+        http::HeaderName::from_bytes(name.as_bytes()).map_err(|_| {
+            format!(
+                "ip_intel.forward_headers.prefix '{}' is not a valid header name",
+                cfg.prefix
+            )
+        })?;
         headers.push((*field, Bytes::from(name)));
     }
 
-    Ok(Some(CompiledForwardHeaders { prefix_lower, headers }))
+    Ok(Some(CompiledForwardHeaders {
+        prefix_lower,
+        headers,
+    }))
 }
 
 impl CompiledForwardHeaders {
@@ -130,7 +143,11 @@ impl CompiledForwardHeaders {
     }
 }
 
-fn field_value(field: ForwardField, intel: Option<&IpIntel>, client_ip: IpAddr) -> Option<HeaderValue> {
+fn field_value(
+    field: ForwardField,
+    intel: Option<&IpIntel>,
+    client_ip: IpAddr,
+) -> Option<HeaderValue> {
     if field == ForwardField::ClientIp {
         return HeaderValue::from_str(&client_ip.to_string()).ok();
     }
@@ -224,7 +241,9 @@ mod tests {
 
     #[test]
     fn strips_spoofed_and_sets_values() {
-        let fh = compile_forward_headers(&cfg(DEFAULT_PREFIX, None)).unwrap().unwrap();
+        let fh = compile_forward_headers(&cfg(DEFAULT_PREFIX, None))
+            .unwrap()
+            .unwrap();
         let mut req = RequestHeader::build("GET", b"/", None).unwrap();
         req.insert_header("X-QG-Datacenter", "false").unwrap();
         req.insert_header("x-qg-made-up", "1").unwrap();
@@ -247,7 +266,9 @@ mod tests {
 
     #[test]
     fn field_selection_and_custom_prefix() {
-        let fh = compile_forward_headers(&cfg("X-Edge-", Some(vec!["country", "is_datacenter"]))).unwrap().unwrap();
+        let fh = compile_forward_headers(&cfg("X-Edge-", Some(vec!["country", "is_datacenter"])))
+            .unwrap()
+            .unwrap();
         let mut req = RequestHeader::build("GET", b"/", None).unwrap();
         fh.apply(&mut req, Some(&intel()), "203.0.113.7".parse().unwrap());
         assert_eq!(get(&req, "x-edge-country"), Some("CH"));
@@ -258,7 +279,9 @@ mod tests {
 
     #[test]
     fn no_intel_still_sends_client_ip() {
-        let fh = compile_forward_headers(&cfg(DEFAULT_PREFIX, None)).unwrap().unwrap();
+        let fh = compile_forward_headers(&cfg(DEFAULT_PREFIX, None))
+            .unwrap()
+            .unwrap();
         let mut req = RequestHeader::build("GET", b"/", None).unwrap();
         fh.apply(&mut req, None, "2001:db8::1".parse().unwrap());
         assert_eq!(get(&req, "x-qg-client-ip"), Some("2001:db8::1"));

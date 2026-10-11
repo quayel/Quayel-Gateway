@@ -1,9 +1,9 @@
-use crate::config::schema::*;
-use bytes::Bytes;
 use crate::config::compiler::{CompiledConfig, CompiledTarget};
+use crate::config::schema::*;
 use crate::gateway::request_context::*;
 use crate::plugins::firewall::{evaluate_conditions, resolve_condition_value};
 use crate::plugins::{GatewayResponse, PluginFlow};
+use bytes::Bytes;
 use dashmap::DashMap;
 use rustc_hash::FxHasher;
 use std::hash::{Hash, Hasher};
@@ -57,9 +57,10 @@ impl LoadBalancerPlugin {
                 ctx.status_code = Some(503);
                 return PluginFlow::Respond(GatewayResponse {
                     status: 503,
-                    headers: Arc::new(vec![
-                        ("content-type".to_string(), "application/json".to_string()),
-                    ]),
+                    headers: Arc::new(vec![(
+                        "content-type".to_string(),
+                        "application/json".to_string(),
+                    )]),
                     body: Bytes::from_static(b"{\"error\":\"no_healthy_upstream\"}"),
                 });
             }
@@ -69,16 +70,10 @@ impl LoadBalancerPlugin {
                 AlgorithmType::WeightedRoundRobin => {
                     self.select_weighted_round_robin(&lb.id, &healthy_targets)
                 }
-                AlgorithmType::LeastConnections => {
-                    self.select_least_connections(&healthy_targets)
-                }
+                AlgorithmType::LeastConnections => self.select_least_connections(&healthy_targets),
                 AlgorithmType::FastResponse => self.select_fast_response(&healthy_targets),
                 AlgorithmType::StickySession => {
-                    let key = lb
-                        .algorithm
-                        .key
-                        .as_deref()
-                        .unwrap_or("req.ip");
+                    let key = lb.algorithm.key.as_deref().unwrap_or("req.ip");
                     self.select_sticky_session(ctx, key, &healthy_targets)
                 }
             };

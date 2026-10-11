@@ -1,10 +1,10 @@
 use dashmap::DashMap;
 use rcgen::{CertificateParams, KeyPair, SanType};
-use rustls::sign::CertifiedKey;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
+use rustls::sign::CertifiedKey;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tracing::{info, warn, error};
+use tracing::{error, info, warn};
 
 /// In-memory certificate store — domain → CertifiedKey (for SNI lookup)
 pub type CertMap = DashMap<String, Arc<CertifiedKey>>;
@@ -37,11 +37,13 @@ impl CertificateManager {
 
         // Add SAN
         params.subject_alt_names = vec![SanType::DnsName(
-            domain.try_into().map_err(|e| format!("Invalid domain: {}", e))?,
+            domain
+                .try_into()
+                .map_err(|e| format!("Invalid domain: {}", e))?,
         )];
 
-        let key_pair = KeyPair::generate()
-            .map_err(|e| format!("Failed to generate key pair: {}", e))?;
+        let key_pair =
+            KeyPair::generate().map_err(|e| format!("Failed to generate key pair: {}", e))?;
 
         let cert = params
             .self_signed(&key_pair)
@@ -124,33 +126,31 @@ impl CertificateManager {
     /// Check if a certificate is expired or will expire within `days_before` days.
     pub fn check_expiry(cert_pem: &str, days_before: u32) -> CertExpiryStatus {
         match x509_parser::pem::Pem::iter_from_buffer(cert_pem.as_bytes()).next() {
-            Some(Ok(pem)) => {
-                match pem.parse_x509() {
-                    Ok(cert) => {
-                        let not_after = cert.validity().not_after.to_datetime();
-                        let now = time::OffsetDateTime::now_utc();
-                        let days_until_expiry = (not_after - now).whole_days();
+            Some(Ok(pem)) => match pem.parse_x509() {
+                Ok(cert) => {
+                    let not_after = cert.validity().not_after.to_datetime();
+                    let now = time::OffsetDateTime::now_utc();
+                    let days_until_expiry = (not_after - now).whole_days();
 
-                        if days_until_expiry <= 0 {
-                            CertExpiryStatus::Expired
-                        } else if days_until_expiry <= days_before as i64 {
-                            CertExpiryStatus::ExpiringSoon {
-                                days_left: days_until_expiry as u32,
-                                expires_at: not_after,
-                            }
-                        } else {
-                            CertExpiryStatus::Valid {
-                                days_left: days_until_expiry as u32,
-                                expires_at: not_after,
-                            }
+                    if days_until_expiry <= 0 {
+                        CertExpiryStatus::Expired
+                    } else if days_until_expiry <= days_before as i64 {
+                        CertExpiryStatus::ExpiringSoon {
+                            days_left: days_until_expiry as u32,
+                            expires_at: not_after,
+                        }
+                    } else {
+                        CertExpiryStatus::Valid {
+                            days_left: days_until_expiry as u32,
+                            expires_at: not_after,
                         }
                     }
-                    Err(e) => {
-                        warn!("Failed to parse x509 cert: {}", e);
-                        CertExpiryStatus::ParseError
-                    }
                 }
-            }
+                Err(e) => {
+                    warn!("Failed to parse x509 cert: {}", e);
+                    CertExpiryStatus::ParseError
+                }
+            },
             _ => CertExpiryStatus::ParseError,
         }
     }

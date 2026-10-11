@@ -3,21 +3,19 @@ pub mod certificate;
 pub mod challenge;
 
 use acme::AcmeClient;
-use certificate::{CertExpiryStatus, CertificateManager, CertMap};
+use certificate::{CertExpiryStatus, CertMap, CertificateManager};
 use challenge::ChallengeStore;
 use dashmap::{DashMap, DashSet};
 use rustls::sign::CertifiedKey;
 use std::sync::{Arc, RwLock};
 use std::time::Instant;
-use tracing::{info, error};
+use tracing::{error, info};
 
 /// Certificate provisioning state
 #[derive(Debug, Clone)]
 pub enum CertState {
     /// Certificate is valid and loaded
-    Valid {
-        expires_at: time::OffsetDateTime,
-    },
+    Valid { expires_at: time::OffsetDateTime },
     /// ACME provisioning in progress
     Pending,
     /// Provisioning failed
@@ -83,11 +81,11 @@ impl AutoSslManager {
         renewal_days_before: u32,
     ) -> Self {
         let cert_manager = CertificateManager::new(cert_storage_path);
-        
+
         // Load cached certs from disk on startup
         let cert_map = cert_manager.load_all_cached_certs(domains);
         let loaded_count = cert_map.len();
-        
+
         // Initialize cert states for loaded certs
         let cert_state = DashMap::new();
         for domain in domains {
@@ -137,10 +135,7 @@ impl AutoSslManager {
     /// Set the background runtime handle used to spawn ACME workers from sync
     /// contexts (the rustls SNI callback, which cannot call `tokio::spawn`).
     pub fn set_bg_handle(&self, handle: tokio::runtime::Handle) {
-        *self
-            .bg_handle
-            .write()
-            .unwrap_or_else(|e| e.into_inner()) = Some(handle);
+        *self.bg_handle.write().unwrap_or_else(|e| e.into_inner()) = Some(handle);
     }
 
     /// Get a certificate for a domain (for SNI callback).
@@ -308,10 +303,7 @@ impl AutoSslManager {
     }
 
     /// Daily renewal check — renew expiring certs, retry one failed cert.
-    pub async fn daily_renewal_check(
-        self: &Arc<Self>,
-        bg_handle: &tokio::runtime::Handle,
-    ) {
+    pub async fn daily_renewal_check(self: &Arc<Self>, bg_handle: &tokio::runtime::Handle) {
         info!("Running daily cert renewal check");
 
         let domains: Vec<String> = {
@@ -340,9 +332,15 @@ impl AutoSslManager {
                         info!(domain = %domain, "Cert expired, triggering renewal");
                         self.provision_if_needed(domain.clone(), bg_handle).await;
                     }
-                    CertState::Failed { failed_at, attempts, .. } => {
+                    CertState::Failed {
+                        failed_at,
+                        attempts,
+                        ..
+                    } => {
                         // Retry one failed cert per daily cycle
-                        if !retried_failed && failed_at.elapsed() >= std::time::Duration::from_secs(24 * 60 * 60) {
+                        if !retried_failed
+                            && failed_at.elapsed() >= std::time::Duration::from_secs(24 * 60 * 60)
+                        {
                             info!(domain = %domain, attempts = attempts, "Retrying failed cert (daily cycle)");
                             self.provision_if_needed(domain.clone(), bg_handle).await;
                             retried_failed = true;

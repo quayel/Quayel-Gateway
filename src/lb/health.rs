@@ -1,5 +1,5 @@
-use crate::config::schema::*;
 use crate::config::compiler::CompiledLoadBalancer;
+use crate::config::schema::*;
 use dashmap::DashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -23,10 +23,7 @@ impl HealthChecker {
     }
 
     /// Start background health check tasks for all load balancers
-    pub fn start_background_checks(
-        self: &Arc<Self>,
-        lb_configs: &[CompiledLoadBalancer],
-    ) {
+    pub fn start_background_checks(self: &Arc<Self>, lb_configs: &[CompiledLoadBalancer]) {
         for lb in lb_configs {
             if let Some(hc_config) = &lb.health_check {
                 if hc_config.mode == HealthCheckMode::Off {
@@ -169,9 +166,6 @@ impl HealthChecker {
 
     pub fn is_healthy(&self, host: &str, port: u16) -> bool {
         let key = format!("{}:{}", host, port);
-        self.status
-            .get(&key)
-            .map(|s| *s)
-            .unwrap_or(true) // Default to healthy if not tracked
+        self.status.get(&key).map(|s| *s).unwrap_or(true) // Default to healthy if not tracked
     }
 }

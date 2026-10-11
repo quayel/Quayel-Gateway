@@ -122,11 +122,7 @@ impl CidrSet {
         // Sort by start address for binary search
         ranges.sort_by_key(|r| r.start);
 
-        info!(
-            "Loaded {} CIDR ranges for {}",
-            ranges.len(),
-            name
-        );
+        info!("Loaded {} CIDR ranges for {}", ranges.len(), name);
 
         Self {
             ranges: Arc::new(ranges),

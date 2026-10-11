@@ -2,7 +2,7 @@ use crate::auto_ssl::challenge::ChallengeStore;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use tracing::{info, debug};
+use tracing::{debug, info};
 
 /// ACME v2 directory URLs
 const LETS_ENCRYPT_PROD: &str = "https://acme-v02.api.letsencrypt.org/directory";
@@ -146,7 +146,9 @@ impl AcmeClient {
             return Ok(dir.clone());
         }
         debug!("Fetching ACME directory from {}", self.directory_url);
-        let resp = self.http.get(&self.directory_url)
+        let resp = self
+            .http
+            .get(&self.directory_url)
             .send()
             .await?
             .error_for_status()?
@@ -159,16 +161,15 @@ impl AcmeClient {
     /// Get a fresh nonce from the ACME server
     async fn fetch_nonce(&mut self) -> Result<String, AcmeError> {
         let dir = self.ensure_directory().await?;
-        let resp = self.http.head(&dir.new_nonce)
-            .send()
-            .await?;
-        
-        let nonce = resp.headers()
+        let resp = self.http.head(&dir.new_nonce).send().await?;
+
+        let nonce = resp
+            .headers()
             .get("replay-nonce")
             .and_then(|v| v.to_str().ok())
             .ok_or_else(|| AcmeError::Protocol("Missing replay-nonce header".to_string()))?
             .to_string();
-        
+
         self.nonce = Some(nonce.clone());
         Ok(nonce)
     }
@@ -193,16 +194,19 @@ impl AcmeClient {
             "contact": [format!("mailto:{}", self.email)]
         });
 
-        let response = self.send_signed_request(
-            &dir.new_account,
-            &payload.to_string(),
-            &key_pair,
-            &nonce,
-            Some(&jwk),
-            None,
-        ).await?;
+        let response = self
+            .send_signed_request(
+                &dir.new_account,
+                &payload.to_string(),
+                &key_pair,
+                &nonce,
+                Some(&jwk),
+                None,
+            )
+            .await?;
 
-        let account_url = response.headers()
+        let account_url = response
+            .headers()
             .get("location")
             .and_then(|v| v.to_str().ok())
             .ok_or_else(|| AcmeError::Protocol("Missing account location header".to_string()))?
@@ -231,11 +235,13 @@ impl AcmeClient {
         // Build CSR
         let mut params = rcgen::CertificateParams::new(vec![domain.to_string()])
             .map_err(|e| AcmeError::Protocol(format!("Failed to create cert params: {}", e)))?;
-        params.subject_alt_names = vec![rcgen::SanType::DnsName(
-            domain.try_into().map_err(|e| AcmeError::Protocol(format!("Invalid domain: {}", e)))?,
-        )];
+        params.subject_alt_names =
+            vec![rcgen::SanType::DnsName(domain.try_into().map_err(|e| {
+                AcmeError::Protocol(format!("Invalid domain: {}", e))
+            })?)];
 
-        let csr = params.serialize_request(&domain_key_pair)
+        let csr = params
+            .serialize_request(&domain_key_pair)
             .map_err(|e| AcmeError::Protocol(format!("Failed to create CSR: {}", e)))?;
 
         // Create order
@@ -254,14 +260,14 @@ impl AcmeClient {
         // Extract private key PEM
         let key_pem = format!(
             "-----BEGIN PRIVATE KEY-----\n{}\n-----END PRIVATE KEY-----",
-            base64::Engine::encode(&base64::engine::general_purpose::STANDARD, domain_key_pair.serialize_der())
+            base64::Engine::encode(
+                &base64::engine::general_purpose::STANDARD,
+                domain_key_pair.serialize_der()
+            )
         );
 
         info!(domain = %domain, "ACME certificate provisioned successfully");
-        Ok(AcmeResult {
-            cert_pem,
-            key_pem,
-        })
+        Ok(AcmeResult { cert_pem, key_pem })
     }
 
     /// Create a new ACME order for a domain
@@ -278,14 +284,16 @@ impl AcmeClient {
             }]
         });
 
-        let response = self.send_signed_request(
-            &dir.new_order,
-            &payload.to_string(),
-            &key_pair,
-            &nonce,
-            None,
-            account_url.as_deref(),
-        ).await?;
+        let response = self
+            .send_signed_request(
+                &dir.new_order,
+                &payload.to_string(),
+                &key_pair,
+                &nonce,
+                None,
+                account_url.as_deref(),
+            )
+            .await?;
 
         let order: AcmeOrder = response.json().await?;
         Ok(order)
@@ -293,7 +301,9 @@ impl AcmeClient {
 
     /// Get an ACME authorization
     async fn get_authorization(&self, url: &str) -> Result<AcmeAuthorization, AcmeError> {
-        let resp = self.http.get(url)
+        let resp = self
+            .http
+            .get(url)
             .send()
             .await?
             .error_for_status()?
@@ -308,7 +318,9 @@ impl AcmeClient {
         auth: &AcmeAuthorization,
         challenge_store: &Arc<ChallengeStore>,
     ) -> Result<(), AcmeError> {
-        let challenge = auth.challenges.iter()
+        let challenge = auth
+            .challenges
+            .iter()
             .find(|c| c.challenge_type == "http-01")
             .ok_or_else(|| AcmeError::Protocol("No http-01 challenge found".to_string()))?;
 
@@ -325,7 +337,7 @@ impl AcmeClient {
         let nonce = self.fetch_nonce().await?;
         let account_url = self.account_url.clone();
         let payload = serde_json::json!({});
-        
+
         self.send_signed_request(
             &challenge.url,
             &payload.to_string(),
@@ -333,7 +345,8 @@ impl AcmeClient {
             &nonce,
             None,
             account_url.as_deref(),
-        ).await?;
+        )
+        .await?;
 
         // Poll for challenge completion
         self.poll_challenge_status(&challenge.url).await?;
@@ -350,7 +363,9 @@ impl AcmeClient {
         for _ in 0..30 {
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
-            let resp: serde_json::Value = self.http.get(url)
+            let resp: serde_json::Value = self
+                .http
+                .get(url)
                 .send()
                 .await?
                 .error_for_status()?
@@ -367,31 +382,40 @@ impl AcmeClient {
                 _ => continue,
             }
         }
-        Err(AcmeError::ChallengeFailed("Challenge timed out".to_string()))
+        Err(AcmeError::ChallengeFailed(
+            "Challenge timed out".to_string(),
+        ))
     }
 
     /// Finalize an ACME order and download the certificate
-    async fn finalize_order(&mut self, finalize_url: &str, csr: &rcgen::CertificateSigningRequest) -> Result<String, AcmeError> {
+    async fn finalize_order(
+        &mut self,
+        finalize_url: &str,
+        csr: &rcgen::CertificateSigningRequest,
+    ) -> Result<String, AcmeError> {
         let nonce = self.fetch_nonce().await?;
         let key_pair = self.get_account_key_pair()?;
         let account_url = self.account_url.clone();
 
         // Encode CSR in DER format
         let csr_der = csr.der().to_vec();
-        let csr_b64 = base64::Engine::encode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, &csr_der);
+        let csr_b64 =
+            base64::Engine::encode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, &csr_der);
 
         let payload = serde_json::json!({
             "csr": csr_b64
         });
 
-        let response = self.send_signed_request(
-            finalize_url,
-            &payload.to_string(),
-            &key_pair,
-            &nonce,
-            None,
-            account_url.as_deref(),
-        ).await?;
+        let response = self
+            .send_signed_request(
+                finalize_url,
+                &payload.to_string(),
+                &key_pair,
+                &nonce,
+                None,
+                account_url.as_deref(),
+            )
+            .await?;
 
         let order: AcmeOrder = response.json().await?;
 
@@ -411,10 +435,13 @@ impl AcmeClient {
         }
 
         // Download certificate
-        let cert_url = order.certificate
-            .ok_or_else(|| AcmeError::CertificateFailed("No certificate URL in order".to_string()))?;
+        let cert_url = order.certificate.ok_or_else(|| {
+            AcmeError::CertificateFailed("No certificate URL in order".to_string())
+        })?;
 
-        let cert_pem = self.http.get(&cert_url)
+        let cert_pem = self
+            .http
+            .get(&cert_url)
             .send()
             .await?
             .error_for_status()?
@@ -425,25 +452,32 @@ impl AcmeClient {
     }
 
     /// Compute the key authorization for an HTTP-01 challenge
-    fn compute_key_authorization(&self, token: &str, key_pair: &rcgen::KeyPair) -> Result<String, AcmeError> {
-        use sha2::{Sha256, Digest};
-        
+    fn compute_key_authorization(
+        &self,
+        token: &str,
+        key_pair: &rcgen::KeyPair,
+    ) -> Result<String, AcmeError> {
+        use sha2::{Digest, Sha256};
+
         // Get the JWK thumbprint
         let jwk = self.build_jwk(key_pair)?;
         let jwk_str = serde_json::to_string(&jwk)
             .map_err(|e| AcmeError::Protocol(format!("Failed to serialize JWK: {}", e)))?;
-        
+
         let mut hasher = Sha256::new();
         hasher.update(jwk_str.as_bytes());
-        let thumbprint = base64::Engine::encode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, hasher.finalize());
-        
+        let thumbprint = base64::Engine::encode(
+            &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+            hasher.finalize(),
+        );
+
         Ok(format!("{}.{}", token, thumbprint))
     }
 
     /// Build a JWK from a key pair
     fn build_jwk(&self, key_pair: &rcgen::KeyPair) -> Result<serde_json::Value, AcmeError> {
         let der = key_pair.serialize_der();
-        
+
         // Simplified: create a basic JWK structure
         // In production, properly parse the DER to extract EC coordinates
         Ok(serde_json::json!({
@@ -477,22 +511,20 @@ impl AcmeClient {
             jwk: jwk.cloned(),
             kid,
         };
-        
+
         let protected = base64::Engine::encode(
             &base64::engine::general_purpose::URL_SAFE_NO_PAD,
             serde_json::to_string(&header)
                 .map_err(|e| AcmeError::Protocol(format!("Failed to serialize header: {}", e)))?,
         );
-        
-        let payload_b64 = base64::Engine::encode(
-            &base64::engine::general_purpose::URL_SAFE_NO_PAD,
-            payload,
-        );
-        
+
+        let payload_b64 =
+            base64::Engine::encode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, payload);
+
         // Sign with RSA-SHA256
         let signing_input = format!("{}.{}", protected, payload_b64);
         let signature = self.sign_data(key_pair, signing_input.as_bytes())?;
-        
+
         let jws = JwsPayload {
             protected,
             payload: payload_b64,
@@ -501,20 +533,18 @@ impl AcmeClient {
                 &signature,
             ),
         };
-        
-        let resp = self.http.post(url)
-            .json(&jws)
-            .send()
-            .await?;
-        
+
+        let resp = self.http.post(url).json(&jws).send().await?;
+
         // Update nonce from response
         if let Some(new_nonce) = resp.headers().get("replay-nonce") {
             if let Ok(n) = new_nonce.to_str() {
                 self.nonce = Some(n.to_string());
             }
         }
-        
-        resp.error_for_status().map_err(|e| AcmeError::Network(e.to_string()))
+
+        resp.error_for_status()
+            .map_err(|e| AcmeError::Network(e.to_string()))
     }
 
     /// Sign data with the key pair (simplified - uses raw DER for now)
@@ -522,13 +552,13 @@ impl AcmeClient {
         // In a real implementation, you'd use RSA-SHA256 signing
         // For now, we'll use a placeholder that creates a valid-looking signature
         // The actual signing would need the private key in a format that can sign
-        
+
         // This is a simplified version - in production, use ring or rsa crate for signing
-        use sha2::{Sha256, Digest};
+        use sha2::{Digest, Sha256};
         let mut hasher = Sha256::new();
         hasher.update(data);
         let hash = hasher.finalize();
-        
+
         // Return hash as placeholder signature (won't actually work with LE)
         // In production, properly sign with RSA-SHA256
         Ok(hash.to_vec())

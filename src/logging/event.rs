@@ -181,7 +181,12 @@ impl LogEvent {
                 None => ctx.host.as_ref().map(Arc::clone),
             }
             .unwrap_or_else(|| Arc::from("")),
-            path: Arc::clone(ctx.request_transform.original_path.as_ref().unwrap_or(&ctx.path)),
+            path: Arc::clone(
+                ctx.request_transform
+                    .original_path
+                    .as_ref()
+                    .unwrap_or(&ctx.path),
+            ),
 
             response_status: ctx.status_code.unwrap_or(0),
 
@@ -223,8 +228,16 @@ impl LogEvent {
 
             request_transform: RequestTransformEvent {
                 rules: ctx.request_transform.rules.clone(),
-                path: ctx.request_transform.original_path.as_ref().map(|_| Arc::clone(&ctx.path)),
-                host: ctx.request_transform.original_host.as_ref().and_then(|_| ctx.host.as_ref().map(Arc::clone)),
+                path: ctx
+                    .request_transform
+                    .original_path
+                    .as_ref()
+                    .map(|_| Arc::clone(&ctx.path)),
+                host: ctx
+                    .request_transform
+                    .original_host
+                    .as_ref()
+                    .and_then(|_| ctx.host.as_ref().map(Arc::clone)),
             },
 
             cache: CacheEvent {
@@ -244,10 +257,7 @@ impl LogEvent {
                 target: ctx.load_balancer.target_host.as_ref().map(Arc::clone),
             },
 
-            termination_phase: ctx
-                .termination_phase
-                .as_ref()
-                .map(|p| format!("{:?}", p)),
+            termination_phase: ctx.termination_phase.as_ref().map(|p| format!("{:?}", p)),
 
             timings_us: TimingsEvent {
                 ip_intel_us: ctx.ip_intel_latency_us,

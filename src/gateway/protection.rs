@@ -75,29 +75,34 @@ pub fn compile_server(raw: &ServerConfig) -> Result<CompiledServer, String> {
     let l = &raw.limits;
     let p = &raw.protection;
 
-    let protection = if p.enabled {
-        for cidr in &p.exempt_ips {
-            if CidrRange::parse(cidr).is_none() {
-                return Err(format!("server.protection.exempt_ips: '{}' is not a valid IP or CIDR", cidr));
+    let protection =
+        if p.enabled {
+            for cidr in &p.exempt_ips {
+                if CidrRange::parse(cidr).is_none() {
+                    return Err(format!(
+                        "server.protection.exempt_ips: '{}' is not a valid IP or CIDR",
+                        cidr
+                    ));
+                }
             }
-        }
-        let b = &p.ban;
-        let ban = (b.enabled && b.strikes > 0 && b.window_secs > 0 && b.duration_secs > 0).then(|| CompiledBan {
-            strikes: b.strikes,
-            window_secs: b.window_secs,
-            duration_secs: b.duration_secs,
-        });
-        Some(Arc::new(CompiledProtection {
-            exempt: CidrSet::from_lines("server.protection.exempt_ips", &p.exempt_ips),
-            exempt_cloudflare: p.exempt_cloudflare,
-            max_connections_per_ip: p.max_connections_per_ip,
-            max_new_connections_per_ip_per_sec: p.max_new_connections_per_ip_per_sec,
-            max_requests_per_ip_per_sec: p.max_requests_per_ip_per_sec,
-            ban,
-        }))
-    } else {
-        None
-    };
+            let b = &p.ban;
+            let ban = (b.enabled && b.strikes > 0 && b.window_secs > 0 && b.duration_secs > 0)
+                .then(|| CompiledBan {
+                    strikes: b.strikes,
+                    window_secs: b.window_secs,
+                    duration_secs: b.duration_secs,
+                });
+            Some(Arc::new(CompiledProtection {
+                exempt: CidrSet::from_lines("server.protection.exempt_ips", &p.exempt_ips),
+                exempt_cloudflare: p.exempt_cloudflare,
+                max_connections_per_ip: p.max_connections_per_ip,
+                max_new_connections_per_ip_per_sec: p.max_new_connections_per_ip_per_sec,
+                max_requests_per_ip_per_sec: p.max_requests_per_ip_per_sec,
+                ban,
+            }))
+        } else {
+            None
+        };
 
     Ok(CompiledServer {
         workers: raw.workers,
@@ -113,7 +118,8 @@ pub fn compile_server(raw: &ServerConfig) -> Result<CompiledServer, String> {
         graceful_shutdown_secs: t.graceful_shutdown_secs,
         max_header_bytes: l.max_header_bytes,
         max_body_bytes: l.max_body_bytes,
-        max_requests_per_connection: (l.max_requests_per_connection > 0).then_some(l.max_requests_per_connection),
+        max_requests_per_connection: (l.max_requests_per_connection > 0)
+            .then_some(l.max_requests_per_connection),
         upstream_keepalive_pool_size: l.upstream_keepalive_pool_size,
         protection,
     })
@@ -170,7 +176,10 @@ impl IpTracker {
         Arc::new(Self {
             entries: DashMap::new(),
             epoch: Instant::now(),
-            cloudflare: CidrSet::from_lines("cloudflare (protection)", &parse_cidr_file(CLOUDFLARE_CIDRS)),
+            cloudflare: CidrSet::from_lines(
+                "cloudflare (protection)",
+                &parse_cidr_file(CLOUDFLARE_CIDRS),
+            ),
         })
     }
 
@@ -185,7 +194,11 @@ impl IpTracker {
 
     /// Called once per accepted connection. The returned permit keeps the
     /// IP's open-connection count up until it is dropped.
-    pub fn open_connection(self: &Arc<Self>, p: &CompiledProtection, ip: IpAddr) -> Result<ConnPermit, Violation> {
+    pub fn open_connection(
+        self: &Arc<Self>,
+        p: &CompiledProtection,
+        ip: IpAddr,
+    ) -> Result<ConnPermit, Violation> {
         if self.is_exempt(p, ip) {
             return Ok(ConnPermit { tracker: None, ip });
         }
@@ -199,7 +212,9 @@ impl IpTracker {
             e.conn_count = 0;
         }
         e.conn_count = e.conn_count.saturating_add(1);
-        let violation = if p.max_new_connections_per_ip_per_sec > 0 && e.conn_count > p.max_new_connections_per_ip_per_sec {
+        let violation = if p.max_new_connections_per_ip_per_sec > 0
+            && e.conn_count > p.max_new_connections_per_ip_per_sec
+        {
             Some(Violation::ConnectionRate)
         } else if p.max_connections_per_ip > 0 && e.active >= p.max_connections_per_ip {
             Some(Violation::ConnectionLimit)
@@ -211,12 +226,19 @@ impl IpTracker {
             return Err(v);
         }
         e.active += 1;
-        Ok(ConnPermit { tracker: Some(self.clone()), ip })
+        Ok(ConnPermit {
+            tracker: Some(self.clone()),
+            ip,
+        })
     }
 
     /// Called once per request with the resolved client IP.
     /// Err(Banned) carries the seconds left on the ban.
-    pub fn check_request(&self, p: &CompiledProtection, ip: IpAddr) -> Result<(), (Violation, u64)> {
+    pub fn check_request(
+        &self,
+        p: &CompiledProtection,
+        ip: IpAddr,
+    ) -> Result<(), (Violation, u64)> {
         if self.is_exempt(p, ip) {
             return Ok(());
         }
@@ -235,7 +257,11 @@ impl IpTracker {
         e.req_count = e.req_count.saturating_add(1);
         if e.req_count > p.max_requests_per_ip_per_sec {
             add_strike(&mut e, p.ban, now, ip, Violation::RequestRate);
-            let retry = if e.banned_until > now { e.banned_until - now } else { 1 };
+            let retry = if e.banned_until > now {
+                e.banned_until - now
+            } else {
+                1
+            };
             return Err((Violation::RequestRate, retry));
         }
         Ok(())
@@ -340,7 +366,10 @@ mod tests {
         assert_eq!(d.max_header_bytes, 32 * 1024);
         assert!(d.protection.is_some());
 
-        let c = compile(r#"{"timeouts":{"header_secs":3,"keepalive_secs":0},"limits":{"max_body_bytes":0}}"#).unwrap();
+        let c = compile(
+            r#"{"timeouts":{"header_secs":3,"keepalive_secs":0},"limits":{"max_body_bytes":0}}"#,
+        )
+        .unwrap();
         assert_eq!(c.header_timeout, Some(Duration::from_secs(3)));
         assert_eq!(c.keepalive_secs, None);
         assert_eq!(c.max_body_bytes, 0);
@@ -352,18 +381,30 @@ mod tests {
     fn rejects_bad_values() {
         assert!(compile(r#"{"workers":0}"#).is_err());
         assert!(compile(r#"{"protection":{"exempt_ips":["not-an-ip"]}}"#).is_err());
-        assert!(compile(r#"{"timeouts":{"header_sec":3}}"#).is_err(), "typos are rejected");
-        assert!(compile(r#"{"protection":{"enabled":false}}"#).unwrap().protection.is_none());
+        assert!(
+            compile(r#"{"timeouts":{"header_sec":3}}"#).is_err(),
+            "typos are rejected"
+        );
+        assert!(compile(r#"{"protection":{"enabled":false}}"#)
+            .unwrap()
+            .protection
+            .is_none());
     }
 
     #[test]
     fn connection_limit_and_release() {
-        let s = compile(r#"{"protection":{"max_connections_per_ip":2,"max_new_connections_per_ip_per_sec":0}}"#).unwrap();
+        let s = compile(
+            r#"{"protection":{"max_connections_per_ip":2,"max_new_connections_per_ip_per_sec":0}}"#,
+        )
+        .unwrap();
         let p = s.protection.unwrap();
         let t = IpTracker::new();
         let a = t.open_connection(&p, ip("203.0.113.5")).unwrap();
         let _b = t.open_connection(&p, ip("203.0.113.5")).unwrap();
-        assert_eq!(t.open_connection(&p, ip("203.0.113.5")).err(), Some(Violation::ConnectionLimit));
+        assert_eq!(
+            t.open_connection(&p, ip("203.0.113.5")).err(),
+            Some(Violation::ConnectionLimit)
+        );
         drop(a);
         assert!(t.open_connection(&p, ip("203.0.113.5")).is_ok());
         // Other IPs are unaffected; exempt IPs are never limited.
@@ -382,7 +423,8 @@ mod tests {
         let _a = t.open_connection(&p, cf).unwrap();
         assert!(t.open_connection(&p, cf).is_ok());
 
-        let s = compile(r#"{"protection":{"max_connections_per_ip":1,"exempt_cloudflare":false}}"#).unwrap();
+        let s = compile(r#"{"protection":{"max_connections_per_ip":1,"exempt_cloudflare":false}}"#)
+            .unwrap();
         let p = s.protection.unwrap();
         let _a = t.open_connection(&p, cf).unwrap();
         assert!(t.open_connection(&p, cf).is_err());
@@ -397,8 +439,14 @@ mod tests {
         for _ in 0..5 {
             assert!(t.check_request(&p, a).is_ok());
         }
-        assert_eq!(t.check_request(&p, a).unwrap_err().0, Violation::RequestRate);
-        assert_eq!(t.check_request(&p, a).unwrap_err().0, Violation::RequestRate);
+        assert_eq!(
+            t.check_request(&p, a).unwrap_err().0,
+            Violation::RequestRate
+        );
+        assert_eq!(
+            t.check_request(&p, a).unwrap_err().0,
+            Violation::RequestRate
+        );
         // Third strike bans the IP for both requests and new connections.
         let (_, retry) = t.check_request(&p, a).unwrap_err();
         assert!(retry > 1);
@@ -408,7 +456,9 @@ mod tests {
 
     #[test]
     fn ban_disabled_never_bans() {
-        let s = compile(r#"{"protection":{"max_requests_per_ip_per_sec":1,"ban":{"enabled":false}}}"#).unwrap();
+        let s =
+            compile(r#"{"protection":{"max_requests_per_ip_per_sec":1,"ban":{"enabled":false}}}"#)
+                .unwrap();
         let p = s.protection.unwrap();
         let t = IpTracker::new();
         let a = ip("198.51.100.8");

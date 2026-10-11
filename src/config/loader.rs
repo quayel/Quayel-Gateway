@@ -7,16 +7,16 @@ pub fn load_config<P: AsRef<Path>>(path: P) -> Result<GatewayConfig, String> {
     let content = fs::read_to_string(path)
         .map_err(|e| format!("Failed to read config file {:?}: {}", path, e))?;
 
-    let config: GatewayConfig = serde_json::from_str(&content)
-        .map_err(|e| format!("Failed to parse config: {}", e))?;
+    let config: GatewayConfig =
+        serde_json::from_str(&content).map_err(|e| format!("Failed to parse config: {}", e))?;
 
     validate_config(&config)?;
     Ok(config)
 }
 
 pub fn load_config_from_str(content: &str) -> Result<GatewayConfig, String> {
-    let config: GatewayConfig = serde_json::from_str(content)
-        .map_err(|e| format!("Failed to parse config: {}", e))?;
+    let config: GatewayConfig =
+        serde_json::from_str(content).map_err(|e| format!("Failed to parse config: {}", e))?;
     validate_config(&config)?;
     Ok(config)
 }
@@ -46,10 +46,7 @@ fn validate_config(config: &GatewayConfig) -> Result<(), String> {
     if let Some(fw) = &config.plugins.firewall {
         for rule in &fw.rules {
             if rule.conditions.is_empty() {
-                return Err(format!(
-                    "Firewall rule '{}' has no conditions",
-                    rule.id
-                ));
+                return Err(format!("Firewall rule '{}' has no conditions", rule.id));
             }
         }
     }
@@ -58,16 +55,10 @@ fn validate_config(config: &GatewayConfig) -> Result<(), String> {
     if let Some(rl) = &config.plugins.rate_limiting {
         for rule in &rl.rules {
             if rule.limit == 0 {
-                return Err(format!(
-                    "Rate limit rule '{}' has zero limit",
-                    rule.id
-                ));
+                return Err(format!("Rate limit rule '{}' has zero limit", rule.id));
             }
             if rule.window_seconds == 0 {
-                return Err(format!(
-                    "Rate limit rule '{}' has zero window",
-                    rule.id
-                ));
+                return Err(format!("Rate limit rule '{}' has zero window", rule.id));
             }
         }
     }
@@ -76,10 +67,7 @@ fn validate_config(config: &GatewayConfig) -> Result<(), String> {
     if let Some(lb_plugin) = &config.plugins.load_balancer {
         for lb in &lb_plugin.load_balancers {
             if lb.targets.is_empty() {
-                return Err(format!(
-                    "Load balancer '{}' has no targets",
-                    lb.id
-                ));
+                return Err(format!("Load balancer '{}' has no targets", lb.id));
             }
         }
     }
