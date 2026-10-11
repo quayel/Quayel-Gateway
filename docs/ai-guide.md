@@ -503,6 +503,5 @@ Access log = one JSON object per line. Useful JSON paths for automation:
 | Log format with full example | [`logging.md`](logging.md) |
 | Headers, variables, response bodies | [`api-reference.md`](api-reference.md) |
 | Plugin internals (cache singleflight, ACME flow, …) | [`plugins/`](plugins/) |
-| Reusable skill package for AI tools | [`../skills/quayel-gateway/SKILL.md`](../skills/quayel-gateway/SKILL.md) |
-
+| Request / response transforms | [`plugins/transform.md`](plugins/transform.md) |
 | Reusable skill package for AI tools | [`../skills/quayel-gateway/SKILL.md`](../skills/quayel-gateway/SKILL.md) |
