@@ -112,6 +112,7 @@
 15967|Nazwa.pl Sp.z.o.o.
 16125|UAB "Cherry Servers"
 16262|Datacheap LLC
+16265|LeaseWeb Network B.V.
 16276|OVH SAS
 16284|Inq. Digital Nigeria
 16397|EQUINIX BRASIL
@@ -340,6 +341,7 @@
 35295|JSC "RU-CENTER"
 35366|ISPpro Internet KG
 35415|Webzilla B.V.
+35467|DDFR IT Infra & Security B.V.
 35470|Signet B.V.
 35540|OVH SAS
 35662|Iomart Managed Services Limited
@@ -568,6 +570,7 @@
 51395|Datasource AG
 51396|Pfcloud UG (haftungsbeschrankt)
 51430|AltusHost B.V.
+51447|RootLayer Web Services LLC
 51698|"ActiveHost RU" LLC
 51731|Unknown
 51765|Oy Crea Nova Hosting Solution Ltd
@@ -953,6 +956,7 @@
 396982|Google LLC
 397373|H4Y Technologies LLC
 398101|GoDaddy.com, LLC
+398779|Ace Host, LLC
 398787|GoDaddy.com, LLC
 399486|12651980 CANADA INC.
 399629|BL Networks

@@ -138,7 +138,7 @@ Request arrives
 
 | File | Size | Entries | Source | Refresh |
 |------|------|---------|--------|---------|
-| `datacenter-asns.txt` | 26 KB | 956 ASNs | Maintained in-repo (`ASN\|Label`, RIR-registered names) | Edit by hand |
+| `datacenter-asns.txt` | 26 KB | 960 ASNs | Maintained in-repo (`ASN\|Label`, RIR-registered names) | Edit by hand |
 
 Datacenter detection is **ASN-based**: the ASN MMDB resolves the client IP to its ASN (already part of the ~5 μs lookup), and this list classifies the network and names the provider. No datacenter IP ranges are embedded — the ASN identifies the provider regardless of which blocks it announces.
 

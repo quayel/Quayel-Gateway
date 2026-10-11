@@ -129,7 +129,7 @@ One CIDR per line. Used for IP range membership checks via binary search (O(log 
 | **Source** | Maintained by hand in this repo (originally seeded from [X4BNet/lists_vpn](https://github.com/X4BNet/lists_vpn/blob/main/input/datacenter/ASN.txt)) |
 | **Labels** | Organisation registered for the ASN at its RIR (checked via RIPEstat), `Unknown` if none |
 | **Format** | `ASN\|Label` (one per line, `#` comments) |
-| **Entries** | 956 ASNs (AWS, Google, Azure, Hostinger, Hetzner, OVH, DigitalOcean, …) |
+| **Entries** | 960 ASNs (AWS, Google, Azure, Hostinger, Hetzner, OVH, DigitalOcean, …) |
 | **Updating** | Edit the file by hand, then rebuild — `setup.sh` never touches it |
 | **Provides** | ASN → provider label map |
 | **Used for** | `ip.is_datacenter` + `ip.provider` detection |
