@@ -207,7 +207,7 @@ Startup error → fix map:
 | `Firewall rule '<id>' has no conditions` | add ≥1 condition |
 | `Rate limit rule '<id>' has zero limit / zero window` | use values ≥1 |
 | `Load balancer '<id>' has no targets` | add ≥1 target |
-| `At least one of listen.http or listen.https` | set a listener |
+| `No config file found` | pass a path, set `QUAYEL_GATEWAY_CONFIG`, or create `/etc/quayel-gateway/config.json` |
 
 ## 6. Behavior notes that surprise people
 

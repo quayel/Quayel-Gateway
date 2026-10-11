@@ -39,7 +39,8 @@ fn parse_workers_from_args() -> (usize, Vec<String>) {
             println!("  --help, -h      Show this help message");
             println!();
             println!("Arguments:");
-            println!("  CONFIG_PATH     Path to config.json (default: config.json)");
+            println!("  CONFIG_PATH     Path to the config file. If omitted, the first that exists of:");
+            println!("                    $QUAYEL_GATEWAY_CONFIG, {}, ./config.json", DEFAULT_CONFIG_PATH);
             std::process::exit(0);
         }
         if args[i] == "--workers" {
@@ -71,6 +72,33 @@ fn parse_workers_from_args() -> (usize, Vec<String>) {
     (count, remaining)
 }
 
+/// System-wide config location (same path the Docker image uses).
+const DEFAULT_CONFIG_PATH: &str = "/etc/quayel-gateway/config.json";
+const DEFAULT_HTTP_LISTEN: &str = "0.0.0.0:80";
+const DEFAULT_HTTPS_LISTEN: &str = "0.0.0.0:443";
+
+/// Pick the config file: CLI argument, then $QUAYEL_GATEWAY_CONFIG, then the
+/// system path, then ./config.json (kept so existing setups keep working).
+fn resolve_config_path(cli_arg: Option<String>) -> Result<String, String> {
+    if let Some(path) = cli_arg {
+        return Ok(path);
+    }
+    if let Ok(path) = std::env::var("QUAYEL_GATEWAY_CONFIG") {
+        if !path.is_empty() {
+            return Ok(path);
+        }
+    }
+    for candidate in [DEFAULT_CONFIG_PATH, "config.json"] {
+        if std::path::Path::new(candidate).is_file() {
+            return Ok(candidate.to_string());
+        }
+    }
+    Err(format!(
+        "No config file found. Looked for {} and ./config.json; pass a path or set QUAYEL_GATEWAY_CONFIG",
+        DEFAULT_CONFIG_PATH
+    ))
+}
+
 fn main() {
     // Initialize tracing
     tracing_subscriber::fmt()
@@ -92,11 +120,17 @@ fn main() {
         if workers_from_cli { " (from --workers)" } else { " (auto-detected)" }
     );
 
-    // Load configuration — positional arg or default to "config.json"
-    let config_path = remaining_args
-        .into_iter()
-        .find(|a| !a.starts_with("--"))
-        .unwrap_or_else(|| "config.json".to_string());
+    // Load configuration — positional arg, $QUAYEL_GATEWAY_CONFIG, system path, ./config.json
+    let config_path = match resolve_config_path(
+        remaining_args.into_iter().find(|a| !a.starts_with("--")),
+    ) {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::error!("{}", e);
+            std::process::exit(1);
+        }
+    };
+    tracing::info!("Config file: {}", config_path);
 
     let raw_config = match load_config(&config_path) {
         Ok(c) => c,
@@ -162,7 +196,7 @@ fn main() {
     let listen_addr = compiled
         .listen_http
         .clone()
-        .unwrap_or_else(|| "0.0.0.0:8089".to_string());
+        .unwrap_or_else(|| DEFAULT_HTTP_LISTEN.to_string());
 
     // Initialize log queue ONLY when logging is enabled
     // When logging.enabled = false, log_queue = None → no file opened, no LogEvent built per request
@@ -206,7 +240,7 @@ fn main() {
     // Start HTTPS listener with Auto-SSL if configured
     if let Some(ref auto_ssl_manager) = state.auto_ssl {
         let https_addr = state.config.load().listen_https.clone()
-            .unwrap_or_else(|| "0.0.0.0:8443".to_string());
+            .unwrap_or_else(|| DEFAULT_HTTPS_LISTEN.to_string());
 
         tracing::info!("Auto-SSL enabled — HTTPS listening on {}", https_addr);
 

@@ -19,8 +19,8 @@ services to install (no Redis/etcd/DB).
 | Fact | Value |
 |---|---|
 | Binary | `target/release/quayel-gateway` (~153 MB, data embedded) |
-| CLI | `--workers <N>` (default: all CPU cores), `--help`; positional `CONFIG_PATH` (default `config.json`) |
-| Env | `RUST_LOG` (`info` default), `QUAYEL_IP_INTEL_CACHE_SIZE` (default `65536`) |
+| CLI | `--workers <N>` (default: all CPU cores), `--help`; positional `CONFIG_PATH` (if omitted: `$QUAYEL_GATEWAY_CONFIG`, then `/etc/quayel-gateway/config.json`, then `./config.json`) |
+| Env | `QUAYEL_GATEWAY_CONFIG`, `RUST_LOG` (`info` default), `QUAYEL_IP_INTEL_CACHE_SIZE` (default `65536`) |
 | Build | `./setup.sh` then `cargo build --release` (Linux x86_64) |
 | Config reload | Automatic — the file is watched; a valid edit hot-reloads (no restart). Invalid edits are rejected and the old config keeps serving. |
 | Logs | stderr = JSON tracing; access log = JSONL file (if `plugins.logging` configured) |
@@ -31,8 +31,8 @@ services to install (no Redis/etcd/DB).
 
 When you generate a `config.json`, follow this checklist **every time**:
 
-1. **Required top-level fields:** `gateway_id`, `gateway_name`, `server_name`, `config_version` (all strings), `listen` (object), `plugins` (object). `client_ip` is optional (defaults to `peer_ip`).
-2. **At least one** of `listen.http` / `listen.https` must be set (`"host:port"` strings).
+1. **Required top-level fields:** `gateway_id`, `gateway_name`, `server_name`, `config_version` (all strings), `plugins` (object). `listen` is optional (defaults `0.0.0.0:80` / `0.0.0.0:443`). `client_ip` is optional (defaults to `peer_ip`).
+2. `listen.http` / `listen.https` are `"host:port"` strings; set them only to change the default ports 80/443.
 3. **Enums are snake_case strings** — see §4. A single wrong enum value makes the whole
    config fail to load (serde error at startup). Examples of wrong values seen in the wild:
    `"round-robin"`, `"HTTP"`, `"mode": "http"` (health check), `"Header_Index"`.
@@ -303,7 +303,7 @@ Common startup errors and their meaning:
 | `Firewall rule '<id>' has no conditions` | Give the rule ≥1 condition |
 | `Rate limit rule '<id>' has zero limit / zero window` | Use positive integers |
 | `Load balancer '<id>' has no targets` | Add ≥1 target |
-| `At least one of listen.http or listen.https must be specified` | Set a listener |
+| `No config file found` | Pass a path, set `QUAYEL_GATEWAY_CONFIG`, or create `/etc/quayel-gateway/config.json` |
 
 **Step 3 — smoke test** (with the gateway running and a backend up):
 

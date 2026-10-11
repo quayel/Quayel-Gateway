@@ -4,7 +4,7 @@
   "title": "Quayel Gateway config.json",
   "description": "Machine-readable schema for Quayel Gateway configuration. Mirrors src/config/schema.rs (snake_case serde enums) and src/config/loader.rs validation. NOTE: the gateway itself ignores unknown fields; this schema sets additionalProperties=false so typos in generated configs are caught. Validate: check-jsonschema --schemafile docs/config.schema.json config.json",
   "type": "object",
-  "required": ["gateway_id", "gateway_name", "server_name", "config_version", "listen", "plugins"],
+  "required": ["gateway_id", "gateway_name", "server_name", "config_version", "plugins"],
   "additionalProperties": false,
   "properties": {
     "gateway_id": { "type": "string", "description": "Unique identifier for this gateway instance" },
@@ -21,13 +21,9 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "http": { "type": "string", "description": "host:port, e.g. \"0.0.0.0:8080\"" },
-        "https": { "type": "string", "description": "host:port, e.g. \"0.0.0.0:8443\"" }
-      },
-      "anyOf": [
-        { "required": ["http"] },
-        { "required": ["https"] }
-      ]
+        "http": { "type": "string", "description": "host:port (default \"0.0.0.0:80\")" },
+        "https": { "type": "string", "description": "host:port, used when Auto-SSL is enabled (default \"0.0.0.0:443\")" }
+      }
     },
 
     "client_ip": {

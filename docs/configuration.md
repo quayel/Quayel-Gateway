@@ -30,7 +30,7 @@ Complete reference for `config.json`.
 | `http` | string | HTTP listen address (`host:port`) |
 | `https` | string | HTTPS listen address (requires TLS config) |
 
-At least one of `http` or `https` must be specified.
+`listen` is optional. Defaults: `http` = `0.0.0.0:80`, `https` = `0.0.0.0:443`. The HTTPS listener only starts when Auto-SSL is enabled. Binding ports below 1024 needs root or `CAP_NET_BIND_SERVICE`.
 
 ## `client_ip`
 

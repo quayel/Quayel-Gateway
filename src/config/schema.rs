@@ -10,6 +10,8 @@ pub struct GatewayConfig {
     pub server_name: String,
     pub config_version: String,
 
+    /// Optional: omitted → HTTP on 0.0.0.0:80, HTTPS (Auto-SSL) on 0.0.0.0:443.
+    #[serde(default)]
     pub listen: ListenConfig,
 
     #[serde(default = "default_client_ip")]
@@ -18,7 +20,7 @@ pub struct GatewayConfig {
     pub plugins: PluginsConfig,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ListenConfig {
     pub http: Option<String>,
     pub https: Option<String>,

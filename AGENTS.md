@@ -88,7 +88,7 @@ timeout -k 2 3 ./target/release/quayel-gateway config.json
 | `Firewall rule '<id>' has no conditions` | firewall rules cannot be catch-all |
 | `Rate limit rule '<id>' has zero limit / zero window` | values must be ≥1 |
 | `Load balancer '<id>' has no targets` | add ≥1 target |
-| `At least one of listen.http or listen.https` | set a listener |
+| `No config file found` | pass a path, set `QUAYEL_GATEWAY_CONFIG`, or create `/etc/quayel-gateway/config.json` |
 
 ## Using the skill from other AI tools
 

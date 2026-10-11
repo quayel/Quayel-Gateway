@@ -42,11 +42,6 @@ fn validate_config(config: &GatewayConfig) -> Result<(), String> {
         return Err("client_ip.source is header_index but no index specified".to_string());
     }
 
-    // Validate listen
-    if config.listen.http.is_none() && config.listen.https.is_none() {
-        return Err("At least one of listen.http or listen.https must be specified".to_string());
-    }
-
     // Validate firewall rules
     if let Some(fw) = &config.plugins.firewall {
         for rule in &fw.rules {
