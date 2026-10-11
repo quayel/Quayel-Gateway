@@ -390,14 +390,18 @@ The build compiles the binary in `rust:1-bookworm` and runs it on `debian:bookwo
 
 ### Making a release
 
-Releases are built automatically by [`.github/workflows/release.yml`](.github/workflows/release.yml). Set `version` in `Cargo.toml`, commit, then push a matching tag:
+Releases are built automatically by [`.github/workflows/release.yml`](.github/workflows/release.yml).
+
+1. As you make changes, add a line for each user-visible one under `## [Unreleased]` in [`CHANGELOG.md`](CHANGELOG.md), in **Breaking changes**, **Added**, **Changed** or **Fixed**.
+2. When releasing, rename `## [Unreleased]` to `## [0.3.0] - YYYY-MM-DD`, add a new empty `## [Unreleased]` above it, and set `version` in `Cargo.toml` to match. Preview the notes with `scripts/release-notes.sh v0.3.0`.
+3. Commit, then push a matching tag:
 
 ```bash
-git tag v0.2.0
-git push origin v0.2.0
+git tag v0.3.0
+git push origin main v0.3.0
 ```
 
-GitHub Actions then tests and builds the x86_64 and ARM64 binaries with fresh IP data, packages them as `.tar.gz` and `.deb` files, creates the GitHub release with notes generated from the commits, and pushes the Docker image to `ghcr.io`. The build stops if the tag doesn't match `Cargo.toml`. A tag with a suffix, such as `v0.3.0-rc.1`, is published as a pre-release and doesn't move the `latest` image tag.
+GitHub Actions then tests and builds the x86_64 and ARM64 binaries with fresh IP data, packages them as `.tar.gz` and `.deb` files, creates the GitHub release using that version's `CHANGELOG.md` section plus install instructions as the notes, and pushes the Docker image to `ghcr.io`. The build stops if the tag doesn't match `Cargo.toml` or `CHANGELOG.md` has no section for that version. A tag with a suffix, such as `v0.3.0-rc.1`, is published as a pre-release and doesn't move the `latest` image tag.
 
 ---
 

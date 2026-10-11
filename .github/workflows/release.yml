@@ -8,7 +8,9 @@
 #   1. builds + tests release binaries for Linux x86_64 and aarch64
 #      (native runners, so no slow emulation of the fat-LTO build)
 #   2. creates a GitHub Release with the .tar.gz archives, .deb packages
-#      (amd64 + arm64) and SHA256SUMS, with notes generated from the commits since the previous tag
+#      (amd64 + arm64) and SHA256SUMS. The release notes are the matching
+#      `## [x.y.z]` section of CHANGELOG.md plus install instructions
+#      (scripts/release-notes.sh); the build fails early if that section is missing
 #   3. pushes a multi-arch Docker image to ghcr.io/<owner>/quayel-gateway
 #
 # The IP datasets are downloaded fresh at build time (setup.sh --data-only),
@@ -61,6 +63,9 @@ jobs:
             echo "::error::Tag ${TAG} does not match Cargo.toml version ${cargo_version}"
             exit 1
           fi
+
+      - name: Check CHANGELOG.md has notes for this version
+        run: scripts/release-notes.sh "${TAG}" "${GITHUB_REPOSITORY}" > /dev/null
 
       - name: Install build tools
         run: |
@@ -120,6 +125,11 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+          fetch-depth: 0   # release-notes.sh needs the previous tag
+
       - uses: actions/download-artifact@v4
         with:
           pattern: release-*
@@ -130,6 +140,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          scripts/release-notes.sh "${TAG}" "${GITHUB_REPOSITORY}" > notes.md
           cd dist
           cat ./*.sha256 > SHA256SUMS
           rm ./*.sha256
@@ -137,9 +148,10 @@ jobs:
           case "${TAG}" in *-*) prerelease="--prerelease" ;; esac
           if gh release view "${TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
             gh release upload "${TAG}" ./* --clobber --repo "${GITHUB_REPOSITORY}"
+            gh release edit "${TAG}" --notes-file ../notes.md --repo "${GITHUB_REPOSITORY}"
           else
             gh release create "${TAG}" ./* --repo "${GITHUB_REPOSITORY}" \
-              --title "Quayel Gateway ${TAG}" --generate-notes --verify-tag ${prerelease}
+              --title "Quayel Gateway ${TAG}" --notes-file ../notes.md --verify-tag ${prerelease}
           fi
 
   docker:
