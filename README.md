@@ -78,7 +78,7 @@ docker compose up -d --build     # see docker-compose.yml
 Every [release](https://github.com/quayel/Quayel-Gateway/releases) has a `.deb` package for amd64 and arm64. It works on Ubuntu 22.04+ and Debian 12+.
 
 ```bash
-VERSION=0.2.0                      # pick the latest from the releases page
+VERSION=0.3.0                      # pick the latest from the releases page
 ARCH=$(dpkg --print-architecture)  # amd64 or arm64
 curl -LO https://github.com/quayel/Quayel-Gateway/releases/download/v$VERSION/quayel-gateway_${VERSION}_$ARCH.deb
 sudo apt install ./quayel-gateway_${VERSION}_$ARCH.deb
@@ -111,7 +111,7 @@ To upgrade, install the newer `.deb` the same way. `sudo apt remove quayel-gatew
 Every [release](https://github.com/quayel/Quayel-Gateway/releases) has ready-made binaries for Linux on x86_64 and ARM64 (aarch64). They need glibc 2.35 or newer: Ubuntu 22.04+ and Debian 12+. On older systems (including RHEL/Rocky/Alma 9 and Amazon Linux 2023), use the Docker image.
 
 ```bash
-VERSION=v0.2.0                     # pick the latest from the releases page
+VERSION=v0.3.0                     # pick the latest from the releases page
 ARCH=x86_64                        # or aarch64
 curl -LO https://github.com/quayel/Quayel-Gateway/releases/download/$VERSION/quayel-gateway-$VERSION-$ARCH-unknown-linux-gnu.tar.gz
 tar xzf quayel-gateway-$VERSION-$ARCH-unknown-linux-gnu.tar.gz
