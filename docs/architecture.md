@@ -169,10 +169,9 @@ All IP intelligence data is compiled into the binary at build time using Rust's 
 | `dbip-city-lite.mmdb` | 122 MB | MMDB | Country, region, city, lat/lon |
 | `dbip-asn-lite.mmdb` | 9.2 MB | MMDB | ASN number + organization |
 | `dbip-country.mmdb` | 8.0 MB | MMDB | Country-only fallback |
-| `provider-asns.txt` | ~1.5 KB | ASN registry | `ASN\|Label` provider map (e.g. `47583\|Hostinger`) |
 | `vpn.txt` | 177 KB | CIDR list | 11K VPN provider ranges |
 | `tor.txt` | 19 KB | CIDR list | 1.3K Tor exit node IPs |
-| `hosting-asns.txt` | 4.3 KB | ASN list | Bad/hosting ASN numbers |
+| `datacenter-asns.txt` | 26 KB | ASN list | `ASN\|Label` datacenter ASNs + provider names (maintained in-repo) |
 | `cloudflare.txt` | 336 B | CIDR list | Cloudflare edge ranges |
 | `proxy.txt` | 0 B | CIDR list | FireHOL anonymous (empty) |
 

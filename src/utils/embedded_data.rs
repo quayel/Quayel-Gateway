@@ -6,11 +6,11 @@
 //
 // Data sources:
 //   CIDR lists   — downloaded by setup.sh (VPN, Tor, proxy, Cloudflare ranges)
-//   ASN lists    — provider-asns.txt (versioned registry) + hosting-asns.txt
+//   ASN list     — datacenter-asns.txt ('ASN|Label', maintained in-repo)
 //   MMDB files   — downloaded from DB-IP free databases
 //
 // Datacenter/hosting detection is ASN-based: the ASN MMDB resolves any client
-// IP to its ASN, and the ASN lists classify the network. No datacenter IP
+// IP to its ASN, and datacenter-asns.txt classifies the network. No datacenter IP
 // ranges are shipped.
 
 // ── CIDR Lists ──────────────────────────────────────────────────────────────
@@ -29,14 +29,11 @@ pub const PROXY_CIDRS: &str = include_str!("../data/proxy.txt");
 
 // ── ASN Lists ────────────────────────────────────────────────────────────────
 
-/// Datacenter/hosting provider registry — 'ASN|Label' lines (e.g. 47583|Hostinger).
-/// Versioned in the repo; add a provider with one line. Sets is_datacenter and
-/// the provider label on any request whose IP resolves to one of these ASNs.
-pub const PROVIDER_ASNS: &str = include_str!("../data/provider-asns.txt");
-
-/// Bad/hosting ASN numbers from brianhama/bad-asn-list (bare ASN per line).
-/// Requests from these ASNs are flagged is_datacenter (unlabeled).
-pub const HOSTING_ASNS: &str = include_str!("../data/hosting-asns.txt");
+/// Datacenter/hosting ASNs from X4BNet/lists_vpn — 'ASN|Label' lines
+/// (e.g. 47583|Hostinger International Limited), maintained by hand in the repo.
+/// Sets is_datacenter and the provider label ('Unknown' when unnamed) on any
+/// request whose IP resolves to one of these ASNs.
+pub const DATACENTER_ASNS: &str = include_str!("../data/datacenter-asns.txt");
 
 // ── MMDB Databases ──────────────────────────────────────────────────────────
 

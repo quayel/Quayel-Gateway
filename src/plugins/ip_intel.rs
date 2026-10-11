@@ -7,7 +7,7 @@ use crate::utils::sharded_lru::ShardedLruCache;
 use maxminddb::Reader;
 use serde::Deserialize;
 use serde_json::Value;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::net::IpAddr;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
@@ -25,16 +25,18 @@ use tracing::{error, info};
 //   vpn.txt, tor.txt, cloudflare.txt, proxy.txt
 //
 // ASN lists (include_str!):
-//   provider-asns.txt — 'ASN|Label' registry (e.g. 47583|Hostinger)
-//   hosting-asns.txt  — bare ASNs known for hosting/abuse
+//   datacenter-asns.txt — 'ASN|Label' (maintained in-repo), e.g. 47583|Hostinger International Limited
 //
 // Datacenter detection is ASN-based: the ASN MMDB resolves the client IP to its
-// ASN, and the ASN lists classify the network. No datacenter IP ranges needed —
+// ASN, and datacenter-asns.txt classifies the network. No datacenter IP ranges needed —
 // the ASN already identifies the provider (Hostinger, Hetzner, AWS, …).
 
 /// Default LRU cache size — 65,536 entries (2^16) for high-traffic scenarios.
 /// Override via QUAYEL_IP_INTEL_CACHE_SIZE env var.
 const DEFAULT_CACHE_SIZE: usize = 65_536;
+
+/// Provider label for datacenter ASNs whose name is missing from the list.
+const UNKNOWN_PROVIDER: &str = "Unknown";
 
 #[derive(Debug)]
 pub struct IpIntelPlugin {
@@ -46,10 +48,9 @@ pub struct IpIntelPlugin {
     country_reader: Option<Reader<&'static [u8]>>,
     /// CIDR sets for threat detection
     cidr_sets: HashMap<String, CidrSet>,
-    /// Provider registry: ASN → provider label (from provider-asns.txt)
-    provider_asns: HashMap<u32, String>,
-    /// ASNs known for hosting/abuse (from hosting-asns.txt)
-    hosting_asns: HashSet<u32>,
+    /// Datacenter ASN → provider label (from datacenter-asns.txt; 'Unknown'
+    /// when the source has no name)
+    datacenter_asns: HashMap<u32, String>,
     /// Sharded LRU cache for IP lookups — reduces lock contention under concurrency.
     /// 64 shards with independent RwLocks, so requests for different IPs rarely contend.
     cache: Arc<ShardedLruCache<IpAddr, Arc<IpIntel>>>,
@@ -143,15 +144,17 @@ impl IpIntelPlugin {
 
     pub fn new() -> Self {
         let cache_cap = Self::resolve_cache_size();
-        info!("IP Intel sharded LRU cache capacity: {} entries (64 shards)", cache_cap);
+        info!(
+            "IP Intel sharded LRU cache capacity: {} entries (64 shards)",
+            cache_cap
+        );
 
         let mut plugin = Self {
             geo_reader: None,
             asn_reader: None,
             country_reader: None,
             cidr_sets: HashMap::new(),
-            provider_asns: HashMap::new(),
-            hosting_asns: HashSet::new(),
+            datacenter_asns: HashMap::new(),
             cache: Arc::new(ShardedLruCache::new(cache_cap.get())),
         };
 
@@ -170,7 +173,11 @@ impl IpIntelPlugin {
                 info!(
                     "Loaded embedded city MMDB ({} bytes, IPv{} support)",
                     embedded_data::DBIP_CITY_MMDB.len(),
-                    if reader.metadata.ip_version == 6 { "4+6" } else { "4" }
+                    if reader.metadata.ip_version == 6 {
+                        "4+6"
+                    } else {
+                        "4"
+                    }
                 );
                 self.geo_reader = Some(reader);
             }
@@ -236,47 +243,16 @@ impl IpIntelPlugin {
         info!("Loaded {} embedded CIDR sets total", loaded);
     }
 
-    /// Load ASN sets from embedded data.
+    /// Load the datacenter ASN list from embedded data.
     ///
-    /// provider-asns.txt  'ASN|Label' (e.g. 47583|Hostinger) — the provider
-    ///                     registry. One line per ASN; edit to add providers.
-    /// hosting-asns.txt   bare ASNs known for hosting/abuse (bad-asn-list).
+    /// datacenter-asns.txt  'ASN|Label' (e.g. 47583|Hostinger International
+    ///                       Limited), built from X4BNet/lists_vpn. A line with
+    ///                       no label (or a bare ASN) is labeled 'Unknown'.
     fn load_embedded_asn_sets(&mut self) {
-        // ── provider registry ──────────────────────────────────────────────
-        let mut providers = 0usize;
-        for line in embedded_data::PROVIDER_ASNS.lines() {
-            let line = line.trim();
-            if line.is_empty() || line.starts_with('#') {
-                continue;
-            }
-            if let Some((asn_str, label)) = line.split_once('|') {
-                if let Ok(asn) = asn_str.trim().parse::<u32>() {
-                    let label = label.trim();
-                    if !label.is_empty() {
-                        self.provider_asns.insert(asn, label.to_string());
-                        providers += 1;
-                    }
-                }
-            }
-        }
+        self.datacenter_asns = parse_datacenter_asns(embedded_data::DATACENTER_ASNS);
         info!(
-            "Loaded {} provider ASNs ('ASN|Label' registry, embedded)",
-            providers
-        );
-
-        // ── hosting/abuse ASNs ─────────────────────────────────────────────
-        for line in embedded_data::HOSTING_ASNS.lines() {
-            let line = line.trim();
-            if line.is_empty() || line.starts_with('#') {
-                continue;
-            }
-            if let Ok(asn) = line.parse::<u32>() {
-                self.hosting_asns.insert(asn);
-            }
-        }
-        info!(
-            "Loaded {} hosting ASNs for datacenter detection (embedded)",
-            self.hosting_asns.len()
+            "Loaded {} datacenter ASNs ('ASN|Label', embedded)",
+            self.datacenter_asns.len()
         );
     }
 
@@ -284,10 +260,10 @@ impl IpIntelPlugin {
     /// The MMDB already resolved the IP to an ASN, and the ASN identifies the
     /// operator — no IP-range lists required.
     fn classify_asn(&self, asn: u32) -> (bool, Option<String>) {
-        if let Some(label) = self.provider_asns.get(&asn) {
-            return (true, Some(label.clone()));
+        match self.datacenter_asns.get(&asn) {
+            Some(label) => (true, Some(label.clone())),
+            None => (false, None),
         }
-        (self.hosting_asns.contains(&asn), None)
     }
 
     /// Detect edge type from client IP
@@ -366,10 +342,7 @@ impl IpIntelPlugin {
         // ── City / Geolocation lookup ──────────────────────────────────
         if let Some(reader) = &self.geo_reader {
             if let Ok(city) = reader.lookup::<MaxMindCity>(ip) {
-                intel.country = city
-                    .country
-                    .as_ref()
-                    .and_then(|c| c.iso_code.clone());
+                intel.country = city.country.as_ref().and_then(|c| c.iso_code.clone());
                 intel.city = city
                     .city
                     .as_ref()
@@ -449,6 +422,34 @@ impl IpIntelPlugin {
     }
 }
 
+/// Parse 'ASN|Label' lines into ASN → provider label. Accepts 'AS' prefixes and
+/// bare ASNs; a missing/empty label becomes 'Unknown'. First entry wins.
+fn parse_datacenter_asns(text: &str) -> HashMap<u32, String> {
+    let mut map = HashMap::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let (asn_str, label) = line.split_once('|').unwrap_or((line, ""));
+        let asn_str = asn_str.trim();
+        let asn_str = asn_str
+            .strip_prefix("AS")
+            .or_else(|| asn_str.strip_prefix("as"))
+            .unwrap_or(asn_str);
+        if let Ok(asn) = asn_str.parse::<u32>() {
+            let label = label.trim();
+            let label = if label.is_empty() {
+                UNKNOWN_PROVIDER
+            } else {
+                label
+            };
+            map.entry(asn).or_insert_with(|| label.to_string());
+        }
+    }
+    map
+}
+
 /// Classify network type based on IP intel flags
 fn classify_network_type(intel: &IpIntel) -> Option<String> {
     if intel.is_tor.unwrap_or(false) {
@@ -507,7 +508,7 @@ pub struct IpIntel {
     pub city: Option<String>,
     pub asn: Option<u32>,
     pub as_org: Option<String>,
-    /// Hosting/cloud provider label from the ASN registry (e.g. "Hostinger")
+    /// Provider label from datacenter-asns.txt ("Unknown" when unnamed)
     pub provider: Option<String>,
     pub is_vpn: Option<bool>,
     pub is_proxy: Option<bool>,
@@ -602,10 +603,12 @@ mod tests {
     }
 
     #[test]
-    fn test_provider_registry_loaded() {
+    fn test_datacenter_asns_loaded() {
         let p = plugin();
-        assert!(!p.provider_asns.is_empty(), "provider-asns.txt must parse");
-        assert!(!p.hosting_asns.is_empty(), "hosting-asns.txt must parse");
+        assert!(
+            p.datacenter_asns.len() > 500,
+            "datacenter-asns.txt must parse"
+        );
     }
 
     #[test]
@@ -614,17 +617,16 @@ mod tests {
         // AS47583 = Hostinger — must be a labeled datacenter
         let (dc, label) = p.classify_asn(47583);
         assert!(dc);
-        assert_eq!(label.as_deref(), Some("Hostinger"));
+        assert_eq!(label.as_deref(), Some("Hostinger International Limited"));
     }
 
     #[test]
     fn test_classify_cloud_giants() {
         let p = plugin();
         for (asn, name) in [
-            (16509u32, "Amazon AWS"),
-            (15169, "Google Cloud"),
-            (8075, "Microsoft Azure"),
-            (31898, "Oracle Cloud"),
+            (16509u32, "Amazon.com, Inc."),
+            (15169, "Google LLC"),
+            (8075, "Microsoft Corporation"),
         ] {
             let (dc, label) = p.classify_asn(asn);
             assert!(dc, "AS{} must be datacenter", asn);
@@ -633,15 +635,16 @@ mod tests {
     }
 
     #[test]
-    fn test_classify_hosting_asn_unlabeled() {
-        let p = plugin();
-        // 1442 is in bad-asn-list but not in the provider registry:
-        // datacenter without a label
-        if !p.provider_asns.contains_key(&1442) {
-            let (dc, label) = p.classify_asn(1442);
-            assert!(dc, "bad-asn-list ASN must be datacenter");
-            assert_eq!(label, None);
-        }
+    fn test_unnamed_asn_is_unknown() {
+        // Lines without a name: 'ASN|', bare 'ASN' and 'ASxxx'
+        let map =
+            parse_datacenter_asns("# comment\n64500|\n64501\nAS64502\n64503| Acme \n64503|Dup\n");
+        assert_eq!(map.get(&64500).map(String::as_str), Some("Unknown"));
+        assert_eq!(map.get(&64501).map(String::as_str), Some("Unknown"));
+        assert_eq!(map.get(&64502).map(String::as_str), Some("Unknown"));
+        // first entry wins on duplicates; labels are trimmed
+        assert_eq!(map.get(&64503).map(String::as_str), Some("Acme"));
+        assert_eq!(map.len(), 4);
     }
 
     #[test]
@@ -661,7 +664,10 @@ mod tests {
         let ip: IpAddr = "185.28.23.10".parse().unwrap();
         let intel = p.do_lookup(ip).await;
         assert_eq!(intel.asn, Some(47583));
-        assert_eq!(intel.provider.as_deref(), Some("Hostinger"));
+        assert_eq!(
+            intel.provider.as_deref(),
+            Some("Hostinger International Limited")
+        );
         assert_eq!(intel.is_datacenter, Some(true));
         assert_eq!(intel.network_type.as_deref(), Some("datacenter"));
     }

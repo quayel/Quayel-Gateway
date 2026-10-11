@@ -104,8 +104,8 @@ Request arrives
         ├── 2. MMDB city lookup → country, region, city
         ├── 3. MMDB country fallback (if city missed)
         ├── 4. MMDB ASN lookup → asn, as_org
-        ├── 5. ASN registry lookup: provider-asns.txt → is_datacenter, provider
-        │        (fallback: hosting-asns.txt → is_datacenter)
+        ├── 5. ASN lookup: datacenter-asns.txt → is_datacenter, provider
+        │        (provider = "Unknown" when the list has no name)
         ├── 6. CIDR check: vpn.txt → is_vpn
         ├── 7. CIDR check: tor.txt → is_tor
         ├── 8. CIDR check: proxy.txt → is_proxy
@@ -138,10 +138,9 @@ Request arrives
 
 | File | Size | Entries | Source | Refresh |
 |------|------|---------|--------|---------|
-| `provider-asns.txt` | ~1.5 KB | 38 ASNs | Versioned registry (`ASN\|Label`) — add one line per provider | Manual (one-line edit) |
-| `hosting-asns.txt` | 4.3 KB | ASNs | [brianhama/bad-asn-list](https://github.com/brianhama/bad-asn-list) | Weekly |
+| `datacenter-asns.txt` | 26 KB | 956 ASNs | Maintained in-repo (`ASN\|Label`, RIR-registered names) | Edit by hand |
 
-Datacenter detection is **ASN-based**: the ASN MMDB resolves the client IP to its ASN (already part of the ~5 μs lookup), and these lists classify the network. No datacenter IP ranges are embedded — the ASN identifies the provider regardless of which blocks it announces.
+Datacenter detection is **ASN-based**: the ASN MMDB resolves the client IP to its ASN (already part of the ~5 μs lookup), and this list classifies the network and names the provider. No datacenter IP ranges are embedded — the ASN identifies the provider regardless of which blocks it announces.
 
 ## Performance
 

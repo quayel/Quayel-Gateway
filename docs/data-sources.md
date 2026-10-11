@@ -122,34 +122,38 @@ One CIDR per line. Used for IP range membership checks via binary search (O(log 
 17.5.12.34
 ```
 
-#### `provider-asns.txt` (~1.5 KB)
+#### `datacenter-asns.txt` (26 KB)
 
 | Field | Value |
 |-------|-------|
-| **Source** | Versioned in repo — manual registry |
+| **Source** | Maintained by hand in this repo (originally seeded from [X4BNet/lists_vpn](https://github.com/X4BNet/lists_vpn/blob/main/input/datacenter/ASN.txt)) |
+| **Labels** | Organisation registered for the ASN at its RIR (checked via RIPEstat), `Unknown` if none |
 | **Format** | `ASN\|Label` (one per line, `#` comments) |
-| **Entries** | 38 ASNs across 31 providers (AWS, Google, Azure, Oracle, Hostinger, Hetzner, Linode, Contabo, …) |
-| **Refresh** | Manual — add ONE line, rebuild |
+| **Entries** | 956 ASNs (AWS, Google, Azure, Hostinger, Hetzner, OVH, DigitalOcean, …) |
+| **Updating** | Edit the file by hand, then rebuild — `setup.sh` never touches it |
 | **Provides** | ASN → provider label map |
 | **Used for** | `ip.is_datacenter` + `ip.provider` detection |
 
 Datacenter detection is **ASN-based**: the ASN MMDB resolves the client IP to its
-ASN at runtime (part of the standard lookup), and this registry classifies the
+ASN at runtime (part of the standard lookup), and this list classifies the
 network. The ASN identifies the operator no matter which IP blocks it announces —
-so no datacenter IP ranges need to be embedded. **Adding a provider is one line:**
+so no datacenter IP ranges need to be embedded.
+
+`setup.sh` turns each source line into `ASN|Label`: the label is the organisation
+name after ` - `, with the trailing country code removed. An ASN with no name in
+the source gets the label **`Unknown`** — it is still flagged `is_datacenter`.
 
 ```
-47583|Hostinger
+AS16509 # AMAZON-02 - Amazon.com, Inc., US   →   16509|Amazon.com, Inc.
+AS24940 # HETZNER-AS, DE                     →   24940|HETZNER-AS
+AS64500                                      →   64500|Unknown
 ```
-
-Find a provider's ASN: `whois -h whois.radb.net -- '-i origin ASxxxx'` or
-[bgp.tools](https://bgp.tools).
 
 **Sample lines:**
 ```
-47583|Hostinger
-24940|Hetzner
-16509|Amazon AWS
+16509|Amazon.com, Inc.
+24940|HETZNER-AS
+47583|Hostinger International Limited
 ```
 
 #### `cloudflare.txt` (336 B)
@@ -171,25 +175,6 @@ Find a provider's ASN: `whois -h whois.radb.net -- '-i origin ASxxxx'` or
 103.22.200.0/22
 2803:f800::/32
 2a06:98c0::/29
-```
-
-#### `hosting-asns.txt` (4.3 KB)
-
-| Field | Value |
-|-------|-------|
-| **Source** | [brianhama/bad-asn-list](https://github.com/brianhama/bad-asn-list) |
-| **URL** | `https://raw.githubusercontent.com/brianhama/bad-asn-list/master/bad-asn-list.csv` |
-| **Format** | ASN numbers (one per line) |
-| **Entries** | ASN numbers known for hosting, abuse, bulletproof hosting |
-| **Original refresh** | Weekly (7 days) |
-| **Provides** | ASN numbers associated with hosting/abuse |
-| **Used for** | `is_datacenter` fallback (ASN-based detection) |
-
-**Sample lines:**
-```
-14061
-16276
-24940
 ```
 
 #### `proxy.txt` (0 B — empty by default)
@@ -218,9 +203,8 @@ pub const TOR_CIDRS: &str = include_str!("../data/tor.txt");
 pub const CLOUDFLARE_CIDRS: &str = include_str!("../data/cloudflare.txt");
 pub const PROXY_CIDRS: &str = include_str!("../data/proxy.txt");
 
-// ASN lists
-pub const PROVIDER_ASNS: &str = include_str!("../data/provider-asns.txt");
-pub const HOSTING_ASNS: &str = include_str!("../data/hosting-asns.txt");
+// ASN list
+pub const DATACENTER_ASNS: &str = include_str!("../data/datacenter-asns.txt");
 
 // MMDB databases
 pub const DBIP_CITY_MMDB: &[u8] = include_bytes!("../data/dbip-city-lite.mmdb");
@@ -250,8 +234,7 @@ Gateway starts
         └── proxy.txt    → CidrSet (0 ranges, empty)
 
     └── load_embedded_asn_sets()
-        ├── provider-asns.txt → HashMap<ASN, Label> (38 ASNs)
-        └── hosting-asns.txt  → HashSet<ASN> (723 ASNs)
+        └── datacenter-asns.txt → HashMap<ASN, Label> (933 ASNs)
 
 Per request:
     │
@@ -264,7 +247,7 @@ Per request:
         ├── MMDB city lookup → country, region, city
         ├── MMDB country fallback (if city missed)
         ├── MMDB ASN lookup → asn, as_org
-        ├── provider-asns.txt / hosting-asns.txt lookup (by ASN) → is_datacenter, provider
+        ├── datacenter-asns.txt lookup (by ASN) → is_datacenter, provider
         ├── CidrSet::contains("vpn", ip) → is_vpn
         ├── CidrSet::contains("tor", ip) → is_tor
         ├── CidrSet::contains("proxy", ip) → is_proxy
@@ -336,16 +319,10 @@ curl -sL https://raw.githubusercontent.com/X4BNet/lists_vpn/main/output/vpn/ipv4
 curl -sL https://check.torproject.org/torbulkexitlist \
   > src/data/tor.txt
 
-# Datacenter providers — edit the registry (one line per ASN), no download:
-#   echo '47583|Hostinger' >> src/data/provider-asns.txt
-
 # Cloudflare
 curl -sL https://www.cloudflare.com/ips-v4 > src/data/cloudflare.txt
 curl -sL https://www.cloudflare.com/ips-v6 >> src/data/cloudflare.txt
 
-# Hosting ASNs (bad-asn-list)
-curl -sL https://raw.githubusercontent.com/brianhama/bad-asn-list/master/bad-asn-list.csv | \
-  tail -n +2 | cut -d',' -f1 > src/data/hosting-asns.txt
 ```
 
 ### 3. Rebuild
@@ -410,5 +387,4 @@ systemctl restart quayel-gateway
 | Azure Service Tags | Microsoft | https://www.microsoft.com/en-us/download |
 | DigitalOcean | MIT | https://www.digitalocean.com/geo |
 | Cloudflare | Cloudflare | https://www.cloudflare.com/ips |
-| brianhama/bad-asn-list | MIT | https://github.com/brianhama/bad-asn-list |
 | FireHOL | GPL v3 | https://github.com/firehol/blocklist-ipsets |
