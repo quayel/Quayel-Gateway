@@ -4,7 +4,7 @@ target/
 .gitignore
 
 # Local machine config — may contain secrets.
-# The image gets config.demo.json copied in as its default config instead.
+# The image gets examples/config.demo.json copied in as its default config instead.
 config.json
 
 # Not needed inside the image

@@ -1,5 +1,5 @@
 # Apache APISIX mirror of quayel-gateway cache semantics for A/B benchmarking.
-# Same route policy as scripts/nginx-mirror/nginx.conf + config.json + cache.rs:
+# Same route policy as scripts/bench/nginx-mirror/nginx.conf + config.json + cache.rs:
 #   /cache-test        Quayel-CDN-Cache-Control: public s-maxage=3600 swr=3600 sie=3600
 #                      -> edge TTL 3600s
 #   /cache-test-second public s-maxage=2 swr=5 sie=3600

@@ -2,7 +2,7 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # Quayel Gateway — ALL-RULES test harness
 #
-# Boots the gateway with config.all-rules.json plus two echo origins, then
+# Boots the gateway with examples/config.all-rules.json plus two echo origins, then
 # fires a request per operator / condition path / plugin feature and asserts
 # the observable outcome:
 #   - block/redirect  → status code + rule_id in the response body
@@ -14,14 +14,14 @@
 #   - load balancer   → routing behavior per algorithm
 #   - logging         → JSONL events for every plugin
 #
-# Usage:   bash scripts/test-all-rules.sh
+# Usage:   bash scripts/test/all-rules.sh
 # Env:     KEEP=1   keep gateway + origins running after the tests
 # ─────────────────────────────────────────────────────────────────────────────
 set -u
 
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/../.."
 ROOT="$(pwd)"
-CONFIG="config.all-rules.json"
+CONFIG="examples/config.all-rules.json"
 GW_URL="http://127.0.0.1:8099"
 LOG=/tmp/quayel-all-rules-access.jsonl
 BIN=./target/release/quayel-gateway
@@ -48,8 +48,8 @@ trap cleanup EXIT
 
 # ── Boot echo origins + gateway ──────────────────────────────────────────────
 rm -f "$LOG"
-python3 scripts/all-rules-echo.py 9099 A >/dev/null 2>&1 & ECHO_A_PID=$!
-python3 scripts/all-rules-echo.py 9100 B >/dev/null 2>&1 & ECHO_B_PID=$!
+python3 scripts/test/echo-origin.py 9099 A >/dev/null 2>&1 & ECHO_A_PID=$!
+python3 scripts/test/echo-origin.py 9100 B >/dev/null 2>&1 & ECHO_B_PID=$!
 "$BIN" "$CONFIG" >/tmp/quayel-all-rules-gw.log 2>&1 & GW_PID=$!
 
 for _ in $(seq 1 50); do

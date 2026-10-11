@@ -33,6 +33,13 @@ A high-performance API gateway built on [Pingora](https://github.com/cloudflare/
 | [Logging](logging.md) | JSONL access log format, fields, and analysis |
 | [API Reference](api-reference.md) | Request/response headers, APISIX variables |
 
+## Development
+
+| Document | Description |
+|----------|-------------|
+| [Benchmark Protocol](development/benchmark-protocol.md) | Fixed parameters for comparable benchmark runs (`scripts/bench/`) |
+| [Multithreading](development/multithreading.md) | Notes on the multi-worker performance work |
+
 ## What Makes Quayel Different
 
 1. **Zero external dependencies** — All IP intelligence data (140 MB of MMDB + CIDR lists) is compiled directly into the binary. No Redis, no external databases, no downloads on startup.

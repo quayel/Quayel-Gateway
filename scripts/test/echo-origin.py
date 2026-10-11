@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Minimal echo origin for the all-rules test harness.
 
-Usage: echo_origin.py <port> <origin_id>
+Usage: echo-origin.py <port> <origin_id>
 Responds to every request with a JSON dump of what it received and
 Cache-Control: public, max-age=60 so cache rules have something to store.
 """

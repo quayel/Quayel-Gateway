@@ -1,19 +1,18 @@
 #!/usr/bin/env bash
-# Benchmark suite for any HTTP endpoint (quayel-gateway or nginx mirror).
-# Usage: bench_http.sh <base_url> <label> [reps]
-# Every run: wrk -t12 -c1000 -d10s --latency. 3 routes, REPS runs each,
-# median/min/max reported. Same harness as scripts/bench.sh.
+# Benchmark suite for quayel-gateway — fixed params per docs/development/benchmark-protocol.md.
+# Usage: bench.sh <label> [reps]
+# Every run: wrk -t12 -c1000 -d10s --latency. 3 routes, REPS runs each, median reported.
 set -u
-BASE="${1:?usage: bench_http.sh <base_url> <label> [reps]}"
-LABEL="${2:-run}"
-REPS="${3:-3}"
+LABEL="${1:-run}"
+REPS="${2:-3}"
+BASE="http://127.0.0.1:8089"
 ROUTES=(/cache-test /cache-test-second /no-cache)
 
 median() {
-  printf '%s\\n' "$@" | sort -n | awk '{a[NR]=$1} END{if (NR%2) print a[(NR+1)/2]; else print (a[NR/2]+a[NR/2+1])/2}'
+  printf '%s\n' "$@" | sort -n | awk '{a[NR]=$1} END{if (NR%2) print a[(NR+1)/2]; else print (a[NR/2]+a[NR/2+1])/2}'
 }
 
-echo "=== BENCH: $LABEL @ $BASE  (wrk -t12 -c1000 -d10s, median-of-$REPS) ==="
+echo "=== BENCH: $LABEL  (wrk -t12 -c1000 -d10s, median-of-$REPS) ==="
 echo "route,rps_median,rps_min,rps_max,p99_median"
 for route in "${ROUTES[@]}"; do
   wrk -t12 -c1000 -d2s "$BASE$route" >/dev/null 2>&1   # warmup, discarded

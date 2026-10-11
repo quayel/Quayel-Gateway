@@ -60,7 +60,7 @@ VOLUME ["/var/lib/quayel/certs"]
 
 # Default config = the demo. Mount your own over it:
 #   docker run -v $PWD/config.json:/etc/quayel-gateway/config.json:ro ...
-COPY config.demo.json /etc/quayel-gateway/config.json
+COPY examples/config.demo.json /etc/quayel-gateway/config.json
 
 WORKDIR /etc/quayel-gateway
 

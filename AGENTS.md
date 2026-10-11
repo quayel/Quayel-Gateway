@@ -26,7 +26,7 @@ Precedence when docs disagree: `src/config/schema.rs` + `src/config/loader.rs`
 setup.sh               # one-time: download embedded datasets into src/data/ + fetch crates
 cargo build --release  # build (embeds src/data/* into the binary)
 target/release/quayel-gateway   # the binary
-config.demo.json       # full-featured example config (valid, safe to copy from)
+examples/config.demo.json  # full-featured example config (valid, safe to copy from)
 config.json            # live config (hot-reloaded on change)
 src/config/schema.rs   # ← authoritative config schema (serde structs + enums)
 src/config/loader.rs   # ← authoritative startup validation rules
@@ -41,7 +41,7 @@ skills/                # AI skill package
 - Enum changes in `src/config/schema.rs` **must** be reflected in:
   `docs/config.schema.json`, `docs/ai-guide.md`, `skills/quayel-gateway/SKILL.md`,
   and `docs/configuration.md`. Keep all five in sync — agents rely on them.
-- Keep `docs/config.schema.json` validating `config.demo.json` and `config.json`
+- Keep `docs/config.schema.json` validating `examples/config.demo.json` and `config.json`
   (test with `python3` + `jsonschema`, see below).
 - Do not document a field name that serde does not accept (e.g. redirect uses
   `location`, not `url`; health-check modes are `https`/`accepts_connections`/`off`).
