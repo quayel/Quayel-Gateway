@@ -19,7 +19,8 @@ class Echo(BaseHTTPRequestHandler):
             "origin": ORIGIN,
             "method": self.command,
             "path": self.path,
-            "headers": {k: v for k, v in self.headers.items()},
+            # Repeated headers are joined, so tests can see every value.
+            "headers": {k: ", ".join(self.headers.get_all(k)) for k in dict.fromkeys(self.headers.keys())},
         }).encode()
         self.send_response(200)
         self.send_header("content-type", "application/json")

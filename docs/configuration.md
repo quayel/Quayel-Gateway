@@ -10,8 +10,9 @@ Complete reference for `config.json`.
 | `gateway_name` | string | ✅ | Human-readable name |
 | `server_name` | string | ✅ | Server name for logging |
 | `config_version` | string | ✅ | Version string for tracking config changes |
-| `listen` | object | ✅ | Listen addresses |
+| `listen` | object | — | Listen addresses (default ports 80/443) |
 | `client_ip` | object | — | Client IP resolution strategy |
+| `server` | object | — | Workers, timeouts, size limits and DoS protection. Every field has a default |
 | `plugins` | object | ✅ | Plugin configurations |
 
 ## `listen`
@@ -86,6 +87,112 @@ Controls how the real client IP is determined from incoming requests.
 }
 ```
 
+## `server`
+
+Server-wide settings: worker threads, timeouts, size limits, and protection
+against connection floods, Slowloris, slow POST and HTTP request floods.
+
+`server` and every block inside it are optional. Anything you leave out uses
+the default in the tables below, and any value you set overrides it. Setting
+a timeout or limit to `0` switches that one check off. A misspelled field name
+is rejected when the config loads.
+
+```json
+{
+  "server": {
+    "workers": 4,
+    "timeouts": { "header_secs": 5, "upstream_read_secs": 120 },
+    "limits": { "max_body_bytes": 10485760 },
+    "protection": {
+      "max_requests_per_ip_per_sec": 200,
+      "exempt_ips": ["127.0.0.0/8", "10.0.0.0/8"]
+    }
+  }
+}
+```
+
+Settings marked **startup only** take effect when the gateway restarts. All
+the others also change on [live reload](../README.md#changing-the-config).
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `workers` | all CPU cores | Worker threads. `--workers` on the command line wins. Startup only |
+
+### `server.timeouts`
+
+All values are in seconds.
+
+| Field | Default | What it limits |
+|-------|---------|----------------|
+| `header_secs` | `10` | Time for the **whole** request header to arrive. Counted from the connection opening (first request) or from the first byte of each later keep-alive request. Stops Slowloris |
+| `keepalive_secs` | `60` | How long an idle keep-alive connection waits for the next request. `0` turns keep-alive off |
+| `body_read_secs` | `30` | Longest gap between two reads of a request body (slow POST / R.U.D.Y.) |
+| `response_write_secs` | `60` | Longest a single write to the client may take (clients that read the response very slowly) |
+| `upstream_connect_secs` | `5` | TCP connect to the upstream |
+| `upstream_total_connect_secs` | `10` | TCP connect plus TLS handshake to the upstream |
+| `upstream_read_secs` | `60` | Longest wait for data from the upstream |
+| `upstream_write_secs` | `30` | Longest a single write to the upstream may take |
+| `upstream_idle_secs` | `30` | How long an unused upstream connection stays in the pool |
+| `graceful_shutdown_secs` | `5` | Time in-flight requests get to finish after `SIGTERM`. Startup only |
+
+### `server.limits`
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `max_header_bytes` | `32768` (32 KB) | Largest request header block. Larger → connection closed |
+| `max_body_bytes` | `104857600` (100 MB) | Largest request body. Larger → `413`, checked from `Content-Length` and while streaming chunked bodies |
+| `max_requests_per_connection` | `10000` | Requests served on one keep-alive connection before it is closed. Startup only |
+| `upstream_keepalive_pool_size` | `1024` | Idle upstream connections kept per worker. Startup only |
+
+### `server.protection`
+
+Per-IP limits. Connection limits use the IP of the machine connecting to the
+gateway; the request limit and bans also use the [resolved client IP](#client_ip).
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `enabled` | `true` | Turns every check in this block on or off |
+| `exempt_ips` | `["127.0.0.0/8", "::1/128"]` | IPs or CIDRs that skip every limit and are never banned |
+| `exempt_cloudflare` | `true` | Skip the limits for [Cloudflare's edge IPs](data-sources.md), which carry many visitors over a few addresses. Set `client_ip` to `CF-Connecting-IP` so the request limit applies to real visitors |
+| `max_connections_per_ip` | `256` | Open connections one IP may hold at once. Over the limit → new connection dropped |
+| `max_new_connections_per_ip_per_sec` | `100` | New connections per second from one IP. Over → dropped |
+| `max_requests_per_ip_per_sec` | `500` | Requests per second from one client IP across all routes. Over → `429` with `Retry-After` |
+
+#### `server.protection.ban`
+
+An IP that breaks the limits above (or sends a too-slow or too-large request)
+`strikes` times within `window_secs` is banned for `duration_secs`. While
+banned, its new connections are dropped and its requests get `429`.
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `enabled` | `true` | Turn automatic bans on or off |
+| `strikes` | `50` | Violations that trigger a ban |
+| `window_secs` | `60` | Window the strikes are counted in |
+| `duration_secs` | `600` | Ban length |
+
+Requests refused by `server.protection` or `server.limits` are logged with
+`termination_phase: "Protection"`, and the response carries an
+`X-Quayel-Block-Reason` header (`request_rate`, `banned` or `body_too_large`).
+Bans are logged to `gateway.out` as warnings. Connections dropped before any
+request (connection limits, slow or oversized headers) are only logged at
+`debug` level, so a flood doesn't flood the logs too.
+
+#### What this does and doesn't cover
+
+| Attack | Covered by |
+|--------|------------|
+| Slowloris (headers sent slowly) | `timeouts.header_secs`, `limits.max_header_bytes`, `protection.max_connections_per_ip` |
+| Slow POST / R.U.D.Y. | `timeouts.body_read_secs`, `limits.max_body_bytes` |
+| Slow read | `timeouts.response_write_secs` |
+| Connection flood from few IPs | `protection.max_connections_per_ip`, `max_new_connections_per_ip_per_sec`, bans |
+| HTTP request flood | `protection.max_requests_per_ip_per_sec`, bans |
+| SYN flood | The kernel: keep `net.ipv4.tcp_syncookies = 1` (on by default) |
+| Floods that fill the network link (UDP, amplification, large botnets) | Not possible inside any server. Use Cloudflare or your host's DDoS filtering in front |
+
+HTTP/2 connections use the per-IP connection limits and bans, plus HTTP/2's
+own stream limits; the header deadline applies to HTTP/1.x.
+
 ## `plugins`
 
 ```json
@@ -103,7 +210,9 @@ Controls how the real client IP is determined from incoming requests.
 
 ### `plugins.ip_intel`
 
-IP Intelligence. All data is embedded in the binary — only `enabled` is needed.
+IP Intelligence. All data is embedded in the binary. `enabled` is the only
+required field; `forward_headers` (optional, off by default) sends the lookup
+results to your backend as `X-QG-*` headers.
 
 ```json
 {
@@ -113,7 +222,8 @@ IP Intelligence. All data is embedded in the binary — only `enabled` is needed
 }
 ```
 
-See [IP Intelligence Plugin](plugins/ip-intel.md) for details.
+See [IP Intelligence Plugin](plugins/ip-intel.md) for details, including
+[forwarding headers to the upstream](plugins/ip-intel.md#forwarding-to-the-upstream).
 
 ### `plugins.firewall`
 
@@ -583,7 +693,8 @@ See [Auto-SSL Plugin](plugins/auto-ssl.md) for full documentation.
 The gateway validates config on startup and rejects:
 
 - Missing required fields (`gateway_id`, `gateway_name`, `server_name`, `config_version`)
-- No listen address (`http` and `https` both missing)
+- Unknown fields inside `server` (typos), `server.workers: 0`, or an invalid
+  IP/CIDR in `server.protection.exempt_ips`
 - `client_ip.source` is `header` or `header_index` but `header` is not set
 - `client_ip.source` is `header_index` but `index` is not set
 - Firewall rules with empty conditions

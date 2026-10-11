@@ -12,6 +12,84 @@ write entries for people running the gateway, not for people reading the diff.
 
 ## [Unreleased]
 
+### ⚠️ Breaking changes
+
+- **DoS protection is on by default.** New defaults that can refuse traffic
+  which got through before: request headers must arrive within 10 s and be at
+  most 32 KB; request bodies are capped at 100 MB (`413`); one IP may hold 256
+  open connections, open 100 new ones per second and send 500 requests per
+  second (`429`); IPs that keep breaking these limits are banned for 10
+  minutes. Loopback and Cloudflare's edge IPs are exempt. Every value can be
+  changed, or the protection turned off, in the new `server` section.
+
+### Added
+
+- **`server` config section.** Worker threads, every timeout (header, keep-alive,
+  body read, response write, upstream connect/read/write/idle, graceful
+  shutdown), size limits and the per-IP protection settings now live in one
+  optional block. Every field has a built-in default; set only what you want
+  to change. Most settings also apply on live reload. See
+  [Configuration → `server`](docs/configuration.md#server).
+- **Slowloris, slow POST and slow-read protection.** A deadline for the whole
+  request header (Pingora only timed out each read), a per-read body timeout
+  and a per-write response timeout.
+- **Connection and HTTP flood protection.** Per-IP limits on open connections,
+  new connections per second and requests per second, with automatic temporary
+  bans. Refused requests are logged with `termination_phase: "Protection"`.
+- **Optional `X-QG-*` headers to the upstream.** Set
+  `plugins.ip_intel.forward_headers.enabled` to `true` to send the client's
+  country, region, city, ASN, provider, datacenter/VPN/proxy/Tor/mobile flags,
+  network type, risk score and IP to your backend. Off by default. Client-sent
+  headers with the same prefix are removed first, so they can't be spoofed. The
+  prefix and the list of fields are configurable. See
+  [IP Intelligence](docs/plugins/ip-intel.md#forwarding-to-the-upstream).
+- **Request and response transforms.** `plugins.request_transform` rewrites the
+  path, query parameters and headers after firewall and rate limiting (they
+  still see the original request) and before the cache (the key uses the
+  rewritten request). `plugins.response_transform` sets, adds, removes or
+  renames headers and overrides the status on origin responses and on
+  responses served from cache. Conditions can also use `resp.status` and
+  `resp.header.<name>`. Gateway blocks are not transformed, and the cache only
+  stores the untransformed origin response. Request rules can't touch
+  `X-Forwarded-For`, `X-Forwarded-Proto` or `X-Forwarded-Host` (the config is
+  rejected); the gateway always builds them from the client's original request.
+  Access log events have `request_transform` (matched rules, rewritten path
+  and host) and `response_transform` (matched rules). See
+  [Request & Response Transform](docs/plugins/transform.md).
+- **Conditional revalidation.** Refreshing a stale entry sends the stored
+  `ETag` / `Last-Modified`. A `304` refreshes the entry without downloading the
+  body again (`Quayel-Cache-Status: REVALIDATED`).
+- **Stale-if-error now works.** If the origin returns a 5xx, times out or
+  refuses the connection while a stored copy is inside its `stale_if_error`
+  window, the client gets the stored copy (`STALE`) instead of the error.
+  Between the end of `stale_while_revalidate` and the end of `stale_if_error`,
+  the entry is kept only as this fallback (`EXPIRED`).
+
+### Changed
+
+- **Cache runs before the load balancer.** Cache HITs no longer pick a backend
+  or count toward least-connections / fast-response. HITs are served even when
+  no backend is healthy, and their log events have no `lb_*` / `target_*`
+  fields.
+- **The cache key includes the client's `Accept-Encoding`**, collapsed to `br`,
+  `gzip` or `identity`, and the origin is sent the matching `Accept-Encoding`.
+  Existing entries are not reused after upgrading.
+
+### Fixed
+
+- Cached responses were always replayed with status `200`. The origin's status
+  is now stored, and only statuses in the rule's `statuses` list are stored.
+- A client's `If-None-Match` / `If-Modified-Since` reached the origin on a MISS.
+  They are now removed from requests whose response may be stored.
+- A response compressed for one client could be served to a client that didn't
+  accept that encoding. Responses with a `Vary` other than `Accept-Encoding`
+  are no longer stored.
+- `HEAD` and `Range` requests no longer try to fill the cache.
+- Responses served from cache now carry a `Content-Length` matching the body,
+  instead of the origin's framing headers.
+- Log events for proxied responses now record the status sent to the client
+  (it was `0`).
+
 ## [0.2.0] - 2026-10-11
 
 The first published release. It ships as Linux binaries, `.deb` packages and a

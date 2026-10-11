@@ -13,10 +13,67 @@
     "config_version": { "type": "string", "description": "Version string; bump on every change" },
     "listen": { "$ref": "#/definitions/listen" },
     "client_ip": { "$ref": "#/definitions/client_ip" },
+    "server": { "$ref": "#/definitions/server" },
     "plugins": { "$ref": "#/definitions/plugins" }
   },
 
   "definitions": {
+    "server": {
+      "type": "object",
+      "description": "Workers, timeouts, size limits and DoS protection. Every field is optional with a built-in default; 0 switches a timeout or limit off.",
+      "additionalProperties": false,
+      "properties": {
+        "workers": { "type": "integer", "minimum": 1, "description": "Worker threads (default: all CPU cores). --workers wins. Startup only" },
+        "timeouts": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "header_secs": { "type": "integer", "minimum": 0, "default": 10, "description": "Whole request header deadline (Slowloris)" },
+            "keepalive_secs": { "type": "integer", "minimum": 0, "default": 60, "description": "Idle keep-alive wait; 0 turns keep-alive off" },
+            "body_read_secs": { "type": "integer", "minimum": 0, "default": 30, "description": "Max gap between request body reads (slow POST)" },
+            "response_write_secs": { "type": "integer", "minimum": 0, "default": 60, "description": "Max time for one write to the client (slow read)" },
+            "upstream_connect_secs": { "type": "integer", "minimum": 0, "default": 5 },
+            "upstream_total_connect_secs": { "type": "integer", "minimum": 0, "default": 10, "description": "TCP connect + TLS handshake" },
+            "upstream_read_secs": { "type": "integer", "minimum": 0, "default": 60 },
+            "upstream_write_secs": { "type": "integer", "minimum": 0, "default": 30 },
+            "upstream_idle_secs": { "type": "integer", "minimum": 0, "default": 30 },
+            "graceful_shutdown_secs": { "type": "integer", "minimum": 0, "default": 5, "description": "Startup only" }
+          }
+        },
+        "limits": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "max_header_bytes": { "type": "integer", "minimum": 0, "default": 32768 },
+            "max_body_bytes": { "type": "integer", "minimum": 0, "default": 104857600, "description": "Larger bodies get 413" },
+            "max_requests_per_connection": { "type": "integer", "minimum": 0, "default": 10000, "description": "Startup only" },
+            "upstream_keepalive_pool_size": { "type": "integer", "minimum": 0, "default": 1024, "description": "Startup only" }
+          }
+        },
+        "protection": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean", "default": true },
+            "exempt_ips": { "type": "array", "items": { "type": "string" }, "default": ["127.0.0.0/8", "::1/128"] },
+            "exempt_cloudflare": { "type": "boolean", "default": true },
+            "max_connections_per_ip": { "type": "integer", "minimum": 0, "default": 256 },
+            "max_new_connections_per_ip_per_sec": { "type": "integer", "minimum": 0, "default": 100 },
+            "max_requests_per_ip_per_sec": { "type": "integer", "minimum": 0, "default": 500, "description": "Over → 429" },
+            "ban": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "enabled": { "type": "boolean", "default": true },
+                "strikes": { "type": "integer", "minimum": 0, "default": 50 },
+                "window_secs": { "type": "integer", "minimum": 0, "default": 60 },
+                "duration_secs": { "type": "integer", "minimum": 0, "default": 600 }
+              }
+            }
+          }
+        }
+      }
+    },
     "listen": {
       "type": "object",
       "additionalProperties": false,
@@ -65,11 +122,29 @@
         "ip_intel": {
           "type": "object",
           "additionalProperties": false,
-          "properties": { "enabled": { "type": "boolean", "default": true } }
+          "properties": {
+            "enabled": { "type": "boolean", "default": true },
+            "forward_headers": {
+              "type": "object",
+              "additionalProperties": false,
+              "description": "Send lookup results to the upstream as headers. Off unless enabled is true.",
+              "properties": {
+                "enabled": { "type": "boolean", "default": false },
+                "prefix": { "type": "string", "default": "X-QG-", "pattern": "^[A-Za-z0-9-]+-$" },
+                "fields": {
+                  "type": "array",
+                  "uniqueItems": true,
+                  "items": { "enum": ["client_ip", "country", "region", "city", "asn", "as_org", "provider", "is_datacenter", "is_vpn", "is_proxy", "is_tor", "is_mobile", "network_type", "risk_score"] }
+                }
+              }
+            }
+          }
         },
         "firewall": { "$ref": "#/definitions/firewall" },
         "rate_limiting": { "$ref": "#/definitions/rate_limiting" },
+        "request_transform": { "$ref": "#/definitions/request_transform" },
         "cache": { "$ref": "#/definitions/cache" },
+        "response_transform": { "$ref": "#/definitions/response_transform" },
         "load_balancer": { "$ref": "#/definitions/load_balancer" },
         "logging": { "$ref": "#/definitions/logging" },
         "auto_ssl": { "$ref": "#/definitions/auto_ssl" }
@@ -195,6 +270,88 @@
       }
     },
 
+    "request_transform": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Rewrite the request after firewall/rate limiting and before cache. See docs/plugins/transform.md.",
+      "properties": {
+        "enabled": { "type": "boolean", "default": true },
+        "rules": {
+          "type": "array",
+          "description": "Run in order; every matching rule applies all its actions.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id"],
+            "properties": {
+              "id": { "type": "string" },
+              "name": { "type": "string" },
+              "enabled": { "type": "boolean", "default": true },
+              "conditions": { "type": "array", "items": { "$ref": "#/definitions/condition" } },
+              "actions": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["type", "operation"],
+                  "properties": {
+                    "type": { "enum": ["header", "path", "query"] },
+                    "operation": { "enum": ["set", "add", "remove", "rename", "replace_prefix", "regex_replace"] },
+                    "name": { "type": "string", "description": "Header or query parameter name. content-length, transfer-encoding, connection and upgrade are rejected." },
+                    "value": { "description": "Header/query value, path for path set, status code for status set." },
+                    "from": { "type": "string", "description": "path replace_prefix: prefix to replace" },
+                    "to": { "type": "string", "description": "rename: new name; path replace_prefix: new prefix" },
+                    "pattern": { "type": "string", "description": "path regex_replace: regex" },
+                    "replacement": { "type": "string", "description": "path regex_replace: replacement ($1, $2 ...)" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "response_transform": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Change origin and cached responses on the way out (never gateway blocks). Conditions may also use resp.status and resp.header.<name>. See docs/plugins/transform.md.",
+      "properties": {
+        "enabled": { "type": "boolean", "default": true },
+        "rules": {
+          "type": "array",
+          "description": "Run in order; every matching rule applies all its actions.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id"],
+            "properties": {
+              "id": { "type": "string" },
+              "name": { "type": "string" },
+              "enabled": { "type": "boolean", "default": true },
+              "conditions": { "type": "array", "items": { "$ref": "#/definitions/condition" } },
+              "actions": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["type", "operation"],
+                  "properties": {
+                    "type": { "enum": ["header", "status"] },
+                    "operation": { "enum": ["set", "add", "remove", "rename"] },
+                    "name": { "type": "string", "description": "Header or query parameter name. content-length, transfer-encoding, connection and upgrade are rejected." },
+                    "value": { "description": "Header/query value, path for path set, status code for status set." },
+                    "from": { "type": "string", "description": "path replace_prefix: prefix to replace" },
+                    "to": { "type": "string", "description": "rename: new name; path replace_prefix: new prefix" },
+                    "pattern": { "type": "string", "description": "path regex_replace: regex" },
+                    "replacement": { "type": "string", "description": "path regex_replace: replacement ($1, $2 ...)" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "cache": {
       "type": "object",
       "additionalProperties": false,

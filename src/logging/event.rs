@@ -28,7 +28,8 @@ pub struct LogEvent {
     pub peer_ip: String,
     pub client_ip_source: Arc<str>,
 
-    // HTTP — Arc<str> from request, cheap clone
+    // HTTP — Arc<str> from request, cheap clone. host and path are what the
+    // client sent; a request_transform rewrite is in request_transform.
     pub method: Arc<str>,
     pub scheme: Arc<str>,
     pub host: Arc<str>,
@@ -49,8 +50,14 @@ pub struct LogEvent {
     // Rate limiting
     pub rate_limit: RateLimitEvent,
 
+    // Request transform
+    pub request_transform: RequestTransformEvent,
+
     // Cache
     pub cache: CacheEvent,
+
+    // Response transform
+    pub response_transform: ResponseTransformEvent,
 
     // Load balancer
     pub load_balancer: LoadBalancerEvent,
@@ -100,6 +107,22 @@ pub struct RateLimitEvent {
     pub rule_id: Option<String>,
     pub blocked: bool,
     pub remaining: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RequestTransformEvent {
+    /// IDs of the rules that matched, in order.
+    pub rules: Vec<Arc<str>>,
+    /// Path and query sent upstream; None when no rule rewrote them.
+    pub path: Option<Arc<str>>,
+    /// Host sent upstream; None when no rule touched it.
+    pub host: Option<Arc<str>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResponseTransformEvent {
+    /// IDs of the rules that matched, in order. Empty for gateway blocks.
+    pub rules: Vec<Arc<str>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -153,12 +176,12 @@ impl LogEvent {
             // ── Arc<str> fields: Arc::clone() instead of .to_string() ──
             method: Arc::clone(&ctx.method),
             scheme: Arc::clone(&ctx.scheme),
-            host: ctx
-                .host
-                .as_ref()
-                .map(Arc::clone)
-                .unwrap_or_else(|| Arc::from("")),
-            path: Arc::clone(&ctx.path),
+            host: match &ctx.request_transform.original_host {
+                Some(original) => original.as_ref().map(Arc::clone),
+                None => ctx.host.as_ref().map(Arc::clone),
+            }
+            .unwrap_or_else(|| Arc::from("")),
+            path: Arc::clone(ctx.request_transform.original_path.as_ref().unwrap_or(&ctx.path)),
 
             response_status: ctx.status_code.unwrap_or(0),
 
@@ -198,10 +221,20 @@ impl LogEvent {
                 remaining: ctx.rate_limit.remaining,
             },
 
+            request_transform: RequestTransformEvent {
+                rules: ctx.request_transform.rules.clone(),
+                path: ctx.request_transform.original_path.as_ref().map(|_| Arc::clone(&ctx.path)),
+                host: ctx.request_transform.original_host.as_ref().and_then(|_| ctx.host.as_ref().map(Arc::clone)),
+            },
+
             cache: CacheEvent {
                 rule_id: ctx.cache.rule_id.clone(),
                 status: ctx.cache.status.as_str().to_string(),
                 key_hash: ctx.cache.key_hash.clone(),
+            },
+
+            response_transform: ResponseTransformEvent {
+                rules: ctx.response_transform.rules.clone(),
             },
 
             load_balancer: LoadBalancerEvent {

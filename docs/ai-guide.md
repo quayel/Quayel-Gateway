@@ -12,7 +12,7 @@
 Quayel Gateway is a single-binary reverse proxy / API gateway (Rust, Pingora core).
 Run: `quayel-gateway [OPTIONS] [CONFIG_PATH]`. One JSON file describes everything:
 listeners, client-IP resolution, and a plugin pipeline
-(`ip_intel → firewall → rate_limiting → load_balancer → cache → logging`, plus `auto_ssl`
+(`ip_intel → firewall → rate_limiting → request_transform → cache → load_balancer → logging`, plus `auto_ssl`
 for TLS). All IP-intelligence data is embedded in the binary. There are **no** external
 services to install (no Redis/etcd/DB).
 
@@ -467,9 +467,13 @@ Access log = one JSON object per line. Useful JSON paths for automation:
 
 ## 10. Operational gotchas
 
-- **Pipeline order matters:** `ip_intel → firewall → rate_limiting → load_balancer → cache
-  → logging`. Load balancer selection runs *before* cache so cache revalidation knows the
-  upstream. A firewall block never touches cache or backends.
+- **Pipeline order matters:** `ip_intel → firewall → rate_limiting → request_transform → cache → load_balancer
+  → logging`. Cache runs *before* load balancer selection, so a cache HIT never picks a
+  target or counts toward least-connections. A firewall block never touches cache or backends.
+  `request_transform` runs after firewall/rate limiting (they see the client's original
+  request) and before cache (the key uses the rewritten request). `response_transform` is
+  not a pipeline step: it runs on every origin or cached response on the way out, never on
+  gateway blocks, and the cache only stores the untransformed origin response.
 - **Rule order matters** within each plugin: first match wins.
 - **`ip.*` booleans can be `null`** (unknown). Prefer `{"operator":"equals","value":true}`.
 - **Firewall rules cannot be catch-all by design** — empty `conditions` is a config error.

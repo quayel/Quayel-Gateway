@@ -31,7 +31,7 @@ config.json            # live config (hot-reloaded on change)
 src/config/schema.rs   # ← authoritative config schema (serde structs + enums)
 src/config/loader.rs   # ← authoritative startup validation rules
 src/plugins/           # firewall, rate_limit, cache, load_balancer, ip_intel
-src/gateway/           # pipeline: ip_intel → firewall → rate_limiting → load_balancer → cache → logging
+src/gateway/           # pipeline: ip_intel → firewall → rate_limiting → request_transform → cache → load_balancer → logging
 docs/                  # documentation (see map above)
 skills/                # AI skill package
 ```

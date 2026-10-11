@@ -188,13 +188,14 @@ fully_expired = edge_ttl + max_stale = 60 + 60 = 120s
 
 ### Cache states
 
-| State | Age range | Behavior |
-|-------|-----------|----------|
-| **Fresh** | `age < edge_ttl` | Cache HIT — serve immediately |
-| **Stale (SWR window)** | `edge_ttl ≤ age < edge_ttl + max(SWR, SIE)` | Serve stale + revalidate |
-| **Fully expired** | `age ≥ edge_ttl + max(SWR, SIE)` | Cache MISS — entry removed |
+| State | Age range | Behavior | `Quayel-Cache-Status` |
+|-------|-----------|----------|------|
+| **Fresh** | `age < edge_ttl` | Serve immediately | `HIT` |
+| **Stale (SWR window)** | `edge_ttl ≤ age < edge_ttl + SWR` | One request revalidates (lock holder); the rest are served the stored copy | `REVALIDATING` |
+| **Expired, error fallback** | `edge_ttl + SWR ≤ age < edge_ttl + SIE` | Go to origin like a miss; the stored copy is kept for a `304` or an origin error | `EXPIRED` |
+| **Fully expired** | `age ≥ edge_ttl + max(SWR, SIE)` | Entry removed, normal miss | `MISS` |
 
-> **Note:** `stale_if_error` extends the total stale serving window (used in `max(SWR, SIE)` calculation). Within this window, stale data can be served. Error-specific gating (only serving stale when the upstream returns 5xx/timeout) is a planned enhancement — currently the time window alone determines eligibility.
+Stale copies are served without asking the origin only inside the SWR window. Inside the SIE window they are used only when the origin fails (see [Revalidation outcomes](#revalidation-outcomes)).
 
 ## Singleflight Revalidation
 
@@ -291,6 +292,34 @@ Thread B: try_lock_owned() → Err → serve stale (status=Stale)
 
 This is safe — Thread B falls back to serving stale data.
 
+## Revalidation outcomes
+
+The request that goes to the origin while holding a stored copy (the SWR lock holder, or an `EXPIRED` request) sends a **conditional request**. Its own `If-None-Match` / `If-Modified-Since` are replaced with the stored `ETag` / `Last-Modified`. What the client gets depends on the origin's answer:
+
+| Origin answer | Client receives | Cache | `Quayel-Cache-Status` |
+|---|---|---|---|
+| `304 Not Modified` | Stored copy (status, headers, body) | Headers from the 304 merged in, TTL restarted, no body transfer | `REVALIDATED` |
+| `5xx` and the entry is inside its SIE window | Stored copy | Unchanged | `STALE` |
+| Connect error / timeout before any response, entry inside SIE | Stored copy | Unchanged | `STALE` |
+| Cacheable response | Origin response | Replaced | `REVALIDATING` / `EXPIRED` |
+| Anything else | Origin response | Unchanged | `REVALIDATING` / `EXPIRED` |
+
+In every case the revalidation lock is released when the request ends, and the response goes through [`response_transform`](transform.md).
+
+If a `304` carries `Cache-Control: no-store` (or anything else that makes the response uncacheable), the stored copy is served this one time and then removed.
+
+## What gets stored
+
+A response is stored only when **all** of these hold:
+
+- The request is `GET` without a `Range` header. `HEAD` can be served from cache but never fills it.
+- The origin status is in the rule's `statuses` (default `[200, 301, 404]`). The stored status is the origin's status, not one changed by `response_transform`.
+- `Vary` is absent or lists only `Accept-Encoding`. `Vary: *`, `Vary: Cookie` and so on are not stored.
+- There is no `Set-Cookie`, and `Cache-Control` / `Quayel-CDN-Cache-Control` doesn't say `no-store`, `no-cache` or `private`.
+- The edge TTL is above zero and the body fits in `max_object_size_bytes`.
+
+Client validators (`If-None-Match`, `If-Modified-Since`) are removed from requests that may be stored, so the origin always returns a full body the cache can keep.
+
 ## Stale-If-Error (SIE)
 
 The `stale-if-error` directive extends the cache lifetime for error scenarios. When the upstream returns an error (5xx, timeout, connection failure), the gateway can serve stale data instead.
@@ -312,17 +341,11 @@ edge_ttl = 60s, stale_while_revalidate = 0s, stale_if_error = 120s
 
 ### How SIE works
 
-1. Cache entry is stored with `stale_if_error` duration from origin's `Cache-Control` header
-2. `stale_if_error` extends the total stale window: `fully_expired = edge_ttl + max(SWR, SIE)`
-3. Within this extended window, stale entries are eligible for serving via the singleflight revalidation mechanism
-4. When the first request fetches fresh data from origin and stores it, subsequent requests get fresh cache hits
-
-### Planned enhancement: error-specific gating
-
-In a future version, `stale_if_error` will only activate when the upstream actually returns an error:
-
-- If origin returns **success (2xx/3xx/4xx)**: cache is updated with fresh data
-- If origin returns **error (5xx, timeout, connection failure)**: gateway serves stale cached data instead of the error
+1. The entry is stored with a `stale_if_error` duration (rule setting, or the origin's `Cache-Control`).
+2. The entry is kept until `edge_ttl + max(SWR, SIE)`.
+3. Requests that go to the origin while the entry is inside `edge_ttl + SIE` keep it as a fallback:
+   - **Origin answers normally (2xx/3xx/4xx):** the client gets the origin response, and the cache is updated if it's cacheable.
+   - **Origin returns 5xx, times out or refuses the connection:** the client gets the stored copy (`STALE`) instead of the error.
 
 ### Configuration example
 
@@ -380,7 +403,9 @@ Set a specific browser TTL:
 
 ### Default mode
 
-The default cache key is: `scheme|host|path`
+The default cache key is: `scheme|host|path|encoding`
+
+`path` includes the query string and is the path **after** [`request_transform`](transform.md). `encoding` is the client's `Accept-Encoding` collapsed to one of three buckets: `br` (accepts Brotli), `gzip` (accepts gzip but not Brotli) or `identity` (neither). The origin is sent the matching `Accept-Encoding` (`br, gzip`, `gzip`, or none), so a URL has at most three stored copies and a client never gets an encoding it didn't ask for.
 
 ```json
 {

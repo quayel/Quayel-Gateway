@@ -17,8 +17,172 @@ pub struct GatewayConfig {
     #[serde(default = "default_client_ip")]
     pub client_ip: ClientIpConfig,
 
+    /// Server settings: workers, timeouts, size limits and connection/flood
+    /// protection. Optional; every field has a built-in default and any value
+    /// set here overrides it.
+    #[serde(default)]
+    pub server: ServerConfig,
+
     pub plugins: PluginsConfig,
 }
+
+// ── Server Config ────────────────────────────────────────────────────────────
+// `server` and each of its sub-sections are optional. Any field left out uses
+// the default below. For timeouts and limits, 0 switches that one check off
+// (for `keepalive_secs`, 0 turns keep-alive off).
+//
+// Settings marked "startup only" are read once when the gateway starts; the
+// rest also change on live config reload.
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ServerConfig {
+    /// Worker threads. Omitted → all CPU cores. `--workers` on the command
+    /// line wins. Startup only.
+    #[serde(default)]
+    pub workers: Option<usize>,
+    #[serde(default)]
+    pub timeouts: TimeoutsConfig,
+    #[serde(default)]
+    pub limits: LimitsConfig,
+    #[serde(default)]
+    pub protection: ProtectionConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TimeoutsConfig {
+    /// The whole request header must arrive within this time, counted from
+    /// the connection opening (first request) or from its first byte (later
+    /// keep-alive requests). Stops Slowloris.
+    #[serde(default = "default_header_secs")]
+    pub header_secs: u64,
+    /// How long an idle keep-alive connection waits for the next request.
+    #[serde(default = "default_keepalive_secs")]
+    pub keepalive_secs: u64,
+    /// Longest gap allowed between two reads of a request body (slow POST).
+    #[serde(default = "default_body_read_secs")]
+    pub body_read_secs: u64,
+    /// Longest a single write to the client may take (slow-read clients).
+    #[serde(default = "default_response_write_secs")]
+    pub response_write_secs: u64,
+    #[serde(default = "default_upstream_connect_secs")]
+    pub upstream_connect_secs: u64,
+    /// TCP connect plus TLS handshake to the upstream.
+    #[serde(default = "default_upstream_total_connect_secs")]
+    pub upstream_total_connect_secs: u64,
+    #[serde(default = "default_upstream_read_secs")]
+    pub upstream_read_secs: u64,
+    #[serde(default = "default_upstream_write_secs")]
+    pub upstream_write_secs: u64,
+    /// How long an unused upstream connection stays in the keep-alive pool.
+    #[serde(default = "default_upstream_idle_secs")]
+    pub upstream_idle_secs: u64,
+    /// Time in-flight requests get to finish after SIGTERM. Startup only.
+    #[serde(default = "default_graceful_shutdown_secs")]
+    pub graceful_shutdown_secs: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LimitsConfig {
+    /// Largest request header block (request line + all headers). Larger →
+    /// connection closed.
+    #[serde(default = "default_max_header_bytes")]
+    pub max_header_bytes: usize,
+    /// Largest request body. Larger → 413.
+    #[serde(default = "default_max_body_bytes")]
+    pub max_body_bytes: u64,
+    /// Requests served on one keep-alive connection before it is closed.
+    /// Startup only.
+    #[serde(default = "default_max_requests_per_connection")]
+    pub max_requests_per_connection: u32,
+    /// Idle upstream connections kept per worker. Startup only.
+    #[serde(default = "default_upstream_keepalive_pool_size")]
+    pub upstream_keepalive_pool_size: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProtectionConfig {
+    /// Master switch for the per-IP limits and bans below.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// CIDRs that skip every per-IP limit and are never banned.
+    #[serde(default = "default_exempt_ips")]
+    pub exempt_ips: Vec<String>,
+    /// Skip the per-IP *connection* limits for Cloudflare's edge ranges, which
+    /// carry many visitors over few IPs. Request limits still apply per client IP.
+    #[serde(default = "default_true")]
+    pub exempt_cloudflare: bool,
+    /// Open connections one IP may hold at once (Slowloris, connection floods).
+    #[serde(default = "default_max_connections_per_ip")]
+    pub max_connections_per_ip: u32,
+    #[serde(default = "default_max_new_connections_per_ip_per_sec")]
+    pub max_new_connections_per_ip_per_sec: u32,
+    /// Requests per second from one client IP across all routes (HTTP
+    /// floods). Over → 429.
+    #[serde(default = "default_max_requests_per_ip_per_sec")]
+    pub max_requests_per_ip_per_sec: u32,
+    #[serde(default)]
+    pub ban: BanConfig,
+}
+
+/// Temporary bans: an IP that breaks the limits above `strikes` times within
+/// `window_secs` is refused for `duration_secs`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BanConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_ban_strikes")]
+    pub strikes: u32,
+    #[serde(default = "default_ban_window_secs")]
+    pub window_secs: u64,
+    #[serde(default = "default_ban_duration_secs")]
+    pub duration_secs: u64,
+}
+
+// Defaults come from the serde attributes so there is one source of truth.
+impl Default for ServerConfig {
+    fn default() -> Self { serde_json::from_str("{}").expect("ServerConfig defaults") }
+}
+impl Default for TimeoutsConfig {
+    fn default() -> Self { serde_json::from_str("{}").expect("TimeoutsConfig defaults") }
+}
+impl Default for LimitsConfig {
+    fn default() -> Self { serde_json::from_str("{}").expect("LimitsConfig defaults") }
+}
+impl Default for ProtectionConfig {
+    fn default() -> Self { serde_json::from_str("{}").expect("ProtectionConfig defaults") }
+}
+impl Default for BanConfig {
+    fn default() -> Self { serde_json::from_str("{}").expect("BanConfig defaults") }
+}
+
+fn default_header_secs() -> u64 { 10 }
+fn default_keepalive_secs() -> u64 { 60 }
+fn default_body_read_secs() -> u64 { 30 }
+fn default_response_write_secs() -> u64 { 60 }
+fn default_upstream_connect_secs() -> u64 { 5 }
+fn default_upstream_total_connect_secs() -> u64 { 10 }
+fn default_upstream_read_secs() -> u64 { 60 }
+fn default_upstream_write_secs() -> u64 { 30 }
+fn default_upstream_idle_secs() -> u64 { 30 }
+fn default_graceful_shutdown_secs() -> u64 { 5 }
+fn default_max_header_bytes() -> usize { 32 * 1024 }
+fn default_max_body_bytes() -> u64 { 100 * 1024 * 1024 }
+fn default_max_requests_per_connection() -> u32 { 10_000 }
+fn default_upstream_keepalive_pool_size() -> usize { 1024 }
+fn default_exempt_ips() -> Vec<String> {
+    vec!["127.0.0.0/8".to_string(), "::1/128".to_string()]
+}
+fn default_max_connections_per_ip() -> u32 { 256 }
+fn default_max_new_connections_per_ip_per_sec() -> u32 { 100 }
+fn default_max_requests_per_ip_per_sec() -> u32 { 500 }
+fn default_ban_strikes() -> u32 { 50 }
+fn default_ban_window_secs() -> u64 { 60 }
+fn default_ban_duration_secs() -> u64 { 600 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ListenConfig {
@@ -74,7 +238,13 @@ pub struct PluginsConfig {
     pub rate_limiting: Option<RateLimitingConfig>,
 
     #[serde(default)]
+    pub request_transform: Option<TransformConfig>,
+
+    #[serde(default)]
     pub cache: Option<CacheConfig>,
+
+    #[serde(default)]
+    pub response_transform: Option<TransformConfig>,
 
     #[serde(default)]
     pub load_balancer: Option<LoadBalancerPluginConfig>,
@@ -93,6 +263,24 @@ pub struct PluginsConfig {
 pub struct IpIntelConfig {
     #[serde(default = "default_true")]
     pub enabled: bool,
+    /// Optional: send the lookup results to the upstream as X-QG-* headers.
+    #[serde(default)]
+    pub forward_headers: Option<ForwardHeadersConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ForwardHeadersConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_forward_prefix")]
+    pub prefix: String,
+    /// Omitted → every field. See gateway::forward_headers for valid names.
+    #[serde(default)]
+    pub fields: Option<Vec<String>>,
+}
+
+fn default_forward_prefix() -> String {
+    crate::gateway::forward_headers::DEFAULT_PREFIX.to_string()
 }
 
 fn default_true() -> bool {
@@ -242,6 +430,60 @@ pub struct RateLimitAction {
 #[serde(rename_all = "snake_case")]
 pub enum RateLimitActionType {
     Block,
+}
+
+// ── Transform Config ─────────────────────────────────────────────────────────
+// Shared by plugins.request_transform and plugins.response_transform. Which
+// action types and operations are valid depends on the plugin; the compiler
+// (plugins::transform) rejects the rest.
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TransformConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub rules: Vec<TransformRule>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TransformRule {
+    pub id: String,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub conditions: Vec<Condition>,
+    #[serde(default)]
+    pub actions: Vec<TransformAction>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TransformAction {
+    /// header | path | query | status
+    #[serde(rename = "type")]
+    pub action_type: String,
+    /// set | add | remove | rename | replace_prefix | regex_replace
+    pub operation: String,
+    /// Header or query parameter name.
+    #[serde(default)]
+    pub name: Option<String>,
+    /// New value: header/query value, path for `path set`, status code for `status set`.
+    #[serde(default)]
+    pub value: Option<serde_json::Value>,
+    /// Prefix to replace (`path replace_prefix`).
+    #[serde(default)]
+    pub from: Option<String>,
+    /// New name (`rename`) or new prefix (`path replace_prefix`).
+    #[serde(default)]
+    pub to: Option<String>,
+    /// Regex for `path regex_replace`.
+    #[serde(default)]
+    pub pattern: Option<String>,
+    /// Replacement for `path regex_replace` ($1, $2 ... refer to capture groups).
+    #[serde(default)]
+    pub replacement: Option<String>,
 }
 
 // ── Cache Config ─────────────────────────────────────────────────────────────

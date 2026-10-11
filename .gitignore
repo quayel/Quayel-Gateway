@@ -128,3 +128,5 @@ tmp/
 # Backups
 *.bak
 *.backup
+# Python bytecode (scripts/test/*.py)
+__pycache__/

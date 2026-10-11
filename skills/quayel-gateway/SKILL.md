@@ -14,7 +14,7 @@ description: >
 
 You are configuring **Quayel Gateway**: one binary + one `config.json`. There is
 nothing else to install. Plugins run in a fixed pipeline —
-`ip_intel → firewall → rate_limiting → load_balancer → cache → logging` — and any
+`ip_intel → firewall → rate_limiting → request_transform → cache → load_balancer → logging` — and any
 plugin can short-circuit the request. Rules **inside** a plugin run in array
 order, **first match wins** (most specific first).
 

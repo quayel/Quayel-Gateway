@@ -24,6 +24,7 @@ client ──▶ IP Intel ──▶ Firewall ──▶ Rate Limit ──▶ Cach
 - [Running it](#running-it)
 - [Embedded IP data](#embedded-ip-data)
 - [Troubleshooting](#troubleshooting)
+- [Performance vs Nginx](#performance-vs-nginx)
 - [How it compares](#how-it-compares)
 - [Documentation](#documentation)
 - [Repository layout](#repository-layout)
@@ -319,8 +320,11 @@ Health-check modes are `https` (request `path` and check the status; it uses eac
 | **Firewall** | Allow, block or redirect based on any request field or IP field | [firewall.md](docs/plugins/firewall.md) |
 | **Rate Limiting** | Sliding-window limits keyed by IP, header, cookie or expression | [rate-limiting.md](docs/plugins/rate-limiting.md) |
 | **Cache** | Edge cache with custom TTLs, bypass rules, cache keys and stale-while-revalidate | [cache.md](docs/plugins/cache.md) |
+| **Request / Response Transform** | Rewrite path, query and headers before the cache and origin; set headers and status on every response, including cache HITs | [transform.md](docs/plugins/transform.md) |
 | **Load Balancer** | Round-robin, weighted, least-connections, sticky sessions and fast-response; health checks; Host header control | [load-balancer.md](docs/plugins/load-balancer.md) |
 | **Auto-SSL** | Let's Encrypt certificates issued on the first request and renewed automatically | [auto-ssl.md](docs/plugins/auto-ssl.md) |
+
+**Built-in DoS protection**, on by default with generous limits: a deadline for the whole request header (Slowloris), body and write timeouts (slow POST, slow read), per-IP connection and request limits (connection and HTTP floods) and automatic temporary bans. Every timeout and limit can be changed in the [`server` section](docs/configuration.md#server).
 
 Plugins run in this order: **IP Intel → Firewall → Rate Limit → Cache → Load Balancer → Logging**. Any plugin can stop the request early. For example, the firewall returns `403` before a backend is ever contacted.
 
@@ -337,7 +341,7 @@ quayel-gateway [--workers N] [CONFIG_PATH]
 | Option | Default | Meaning |
 |--------|---------|---------|
 | `CONFIG_PATH` | see below | Path to the config file |
-| `--workers N` | all CPU cores | Number of worker threads |
+| `--workers N` | `server.workers`, else all CPU cores | Number of worker threads |
 | `--help` | | Show help |
 
 If you don't pass `CONFIG_PATH`, the gateway uses the first of these that exists:
@@ -455,9 +459,38 @@ The label is the organisation registered for the ASN. Use `Unknown` when there i
 | `503` with a "no healthy upstream" body | Every target in the pool failed its health check. Check that the `health_check.path` returns one of `expected_statuses` |
 | HTTPS certificate isn't issued | Port 80 must be reachable from the internet, the domain must be in `auto_ssl.domains` and its DNS must point at this server |
 | Let's Encrypt rate-limit errors in Docker | Certificates aren't being kept. Mount a volume at `/var/lib/quayel/certs` |
+| Clients get `429` with an `X-Quayel-Block-Reason` header | The built-in flood protection refused them (`request_rate` or `banned`). If it's real traffic, raise `server.protection.max_requests_per_ip_per_sec` or add the IPs to `exempt_ips`. Behind a proxy, set `client_ip` so the limit applies per visitor, not per proxy IP |
+| Large uploads fail with `413` | Raise `server.limits.max_body_bytes` (default 100 MB) |
 | `localhost` / `127.0.0.1` has no country | Expected. Private and local IPs aren't in the GeoIP databases |
 
 For more detail, run with `RUST_LOG=debug`.
+
+---
+
+## Performance vs Nginx
+
+Same machine, same origin, same three routes, same cache rules. Quayel Gateway serves **~39% more requests per second than Nginx on cache hits** and **~18% more when proxying to the origin**, with lower latency on every route.
+
+| Route | What it tests | Nginx rps | **Quayel rps** | Faster by | p50 Nginx → Quayel | p99 Nginx → Quayel |
+|---|---|---:|---:|---:|---|---|
+| `/cache-test` | cache HIT (1 h TTL) | 59,040 | **82,610** | **+40%** | 15.2 → **10.7 ms** | 50.2 → **43.9 ms** |
+| `/cache-test-second` | cache HIT (2 s TTL, stale-while-revalidate) | 57,612 | **79,823** | **+39%** | 15.3 → **11.1 ms** | 55.0 → **44.1 ms** |
+| `/no-cache` | proxied to the origin every time | 18,550 | **21,939** | **+18%** | 50.2 → **42.1 ms** | 108.2 → **91.9 ms** |
+
+Median of 10 runs per route. Quayel won 28 of the 30 head-to-head runs. Both had zero errors and zero non-2xx responses.
+
+<details>
+<summary><b>How it was measured</b></summary>
+
+- **Load:** `wrk -t12 -c1000 -d10s --latency` (12 threads, 1,000 connections, 10 seconds) per run, after a 2-second warm-up per route.
+- **Interleaved:** every rep runs both servers back to back and alternates which goes first, so drift on the box affects both equally.
+- **Machine:** 6 vCPU AMD EPYC, 11 GB RAM. `wrk`, both servers and nothing else on the same box. Both started with `ulimit -n 100000`.
+- **Nginx 1.31.6** (`nginx:alpine`, host networking), config in [`scripts/bench/nginx-mirror/nginx.conf`](scripts/bench/nginx-mirror/nginx.conf): `worker_processes auto`, upstream keepalive, `proxy_cache` with `proxy_cache_lock`, `use_stale updating` and background update, access log off.
+- **Quayel Gateway** release build with `ip_intel`, `firewall` and `rate_limiting` **switched on** (Nginx does none of that work), cache keyed on the path, round-robin to the same origin, access log off.
+- **Not a lab:** results on this box vary by ±10–15% between single runs, which is why it takes 10 interleaved reps. Nginx's cache is file-backed (served from the page cache), Quayel's is in memory.
+
+Reproduce: start both, then `bash scripts/bench/bench_vs_nginx.sh 10`. Raw results: [`scripts/bench/results/gateway-vs-nginx-20261011.csv`](scripts/bench/results/gateway-vs-nginx-20261011.csv).
+</details>
 
 ---
 
@@ -586,7 +619,8 @@ quayel-gateway/
 │   ├── build-deb.sh      # builds the .deb from a release binary (used by CI)
 │   └── deb/              # systemd unit, default config, logrotate, install scripts
 ├── scripts/
-│   ├── test/             # all-rules.sh (live rule test), check-config.sh
+│   ├── test/             # run-all.sh runs every suite: cargo test, check-config.sh,
+│   │                     # all-rules.sh, transform-cache.py, dos-protection.py
 │   └── bench/            # wrk benchmarks, Nginx/APISIX mirrors, results/
 └── skills/               # AI skill package
 ```

@@ -15,16 +15,18 @@ static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
 use crate::auto_ssl::AutoSslManager;
 use crate::config::{compile_config, load_config, ConfigWatcher};
+use crate::gateway::conn_guard::GuardedApp;
 use crate::gateway::gateway::{GatewayState, QuayelGateway};
 use crate::logging::queue::LogQueue;
+use pingora_core::apps::HttpServerOptions;
 use pingora_core::server::configuration::Opt;
 use pingora_core::server::Server;
-use pingora_proxy::http_proxy_service;
+use pingora_core::services::listening::Service;
+use pingora_proxy::http_proxy;
 use std::sync::Arc;
 
-/// Parse `--workers N` from the raw CLI args, returning (worker_count, remaining_args).
-/// If `--workers` is not provided, defaults to all available CPU cores.
-fn parse_workers_from_args() -> (usize, Vec<String>) {
+/// Parse `--workers N` from the raw CLI args, returning (workers, remaining_args).
+fn parse_workers_from_args() -> (Option<usize>, Vec<String>) {
     let args: Vec<String> = std::env::args().collect();
     let mut workers: Option<usize> = None;
     let mut remaining: Vec<String> = Vec::new();
@@ -35,7 +37,7 @@ fn parse_workers_from_args() -> (usize, Vec<String>) {
             println!("Usage: {} [OPTIONS] [CONFIG_PATH]", args[0]);
             println!();
             println!("Options:");
-            println!("  --workers <N>   Number of worker threads (default: all CPU cores)");
+            println!("  --workers <N>   Number of worker threads (default: server.workers, else all CPU cores)");
             println!("  --help, -h      Show this help message");
             println!();
             println!("Arguments:");
@@ -63,13 +65,7 @@ fn parse_workers_from_args() -> (usize, Vec<String>) {
         i += 1;
     }
 
-    let count = workers.unwrap_or_else(|| {
-        std::thread::available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(4)
-    });
-
-    (count, remaining)
+    (workers, remaining)
 }
 
 /// System-wide config location (same path the Docker image uses).
@@ -111,14 +107,7 @@ fn main() {
 
     tracing::info!("Starting Quayel Gateway...");
 
-    // Parse worker count from CLI (--workers N) or default to all CPUs
-    let (worker_count, remaining_args) = parse_workers_from_args();
-    let workers_from_cli = std::env::args().any(|a| a == "--workers");
-    tracing::info!(
-        "Worker threads: {}{}",
-        worker_count,
-        if workers_from_cli { " (from --workers)" } else { " (auto-detected)" }
-    );
+    let (cli_workers, remaining_args) = parse_workers_from_args();
 
     // Load configuration — positional arg, $QUAYEL_GATEWAY_CONFIG, system path, ./config.json
     let config_path = match resolve_config_path(
@@ -155,6 +144,17 @@ fn main() {
         }
     };
 
+    // Worker threads: --workers, then server.workers, then all CPU cores
+    let (worker_count, workers_source) = match (cli_workers, compiled.server.workers) {
+        (Some(n), _) => (n, "from --workers"),
+        (None, Some(n)) => (n, "from server.workers"),
+        (None, None) => (
+            std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4),
+            "auto-detected",
+        ),
+    };
+    tracing::info!("Worker threads: {} ({})", worker_count, workers_source);
+
     // ── Background Tokio runtime ──────────────────────────────────────────
     // Pingora's run_forever() creates its OWN Tokio runtime internally, so we
     // cannot call tokio::spawn or Handle::current() before it starts.
@@ -177,15 +177,15 @@ fn main() {
     // Set worker threads — this is the Pingora ServerConf field that controls
     // how many Tokio service runtimes are created (default was 1!)
     conf.threads = worker_count;
-    // Increase upstream keepalive pool size to handle concurrent connections
-    // Default is 128 per worker thread; bump to 1024 for high-traffic gateways
-    conf.upstream_keepalive_pool_size = 1024;
+    // Upstream keepalive pool (server.limits.upstream_keepalive_pool_size,
+    // default 1024; Pingora's own default is 128 per worker thread)
+    conf.upstream_keepalive_pool_size = compiled.server.upstream_keepalive_pool_size;
     // Graceful shutdown timing. Without these, pingora uses EXIT_TIMEOUT = 300s
     // as the grace period after SIGTERM — the process looks dead for 5 minutes
-    // and container runtimes resort to SIGKILL. 5s grace + 5s runtime shutdown
-    // fits Docker's default 10s stop timeout while still draining in-flight
-    // requests.
-    conf.grace_period_seconds = Some(5);
+    // and container runtimes resort to SIGKILL. The default 5s grace
+    // (server.timeouts.graceful_shutdown_secs) + 5s runtime shutdown fits
+    // Docker's default 10s stop timeout while still draining in-flight requests.
+    conf.grace_period_seconds = Some(compiled.server.graceful_shutdown_secs);
     conf.graceful_shutdown_timeout_seconds = Some(5);
     let mut server = Server::new_with_opt_and_conf(opt, conf);
     server.bootstrap();
@@ -230,9 +230,15 @@ fn main() {
     // Create HTTP proxy service
     tracing::info!("Listening on {}", listen_addr);
 
-    let mut proxy_service = http_proxy_service(
-        &server.configuration,
-        QuayelGateway { state: state.clone() },
+    let mut proxy = http_proxy(&server.configuration, QuayelGateway { state: state.clone() });
+    let mut server_options = HttpServerOptions::default();
+    server_options.keepalive_request_limit = state.config.load().server.max_requests_per_connection;
+    proxy.server_options = Some(server_options);
+    // GuardedApp applies server.protection connection limits and the
+    // request-header deadline before Pingora parses each request.
+    let mut proxy_service = Service::new(
+        "Quayel Gateway".to_string(),
+        GuardedApp::new(proxy, state.clone()),
     );
 
     proxy_service.add_tcp(&listen_addr);

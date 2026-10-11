@@ -106,11 +106,20 @@ impl FirewallPlugin {
 /// Processes conditions left-to-right with AND having higher precedence than OR.
 /// Example: `A AND B OR C` evaluates as `(A AND B) OR C`.
 pub fn evaluate_conditions(ctx: &mut RequestContext, conditions: &[CompiledCondition]) -> bool {
+    evaluate_conditions_with(ctx, conditions, resolve_condition_value)
+}
+
+/// Same as `evaluate_conditions`, with a custom field resolver (response_transform
+/// uses this to add `resp.*` fields).
+pub fn evaluate_conditions_with<F>(ctx: &mut RequestContext, conditions: &[CompiledCondition], mut resolve: F) -> bool
+where
+    F: FnMut(&mut RequestContext, &str) -> Option<Value>,
+{
     if conditions.is_empty() {
         return true;
     }
 
-    let first_left = resolve_condition_value(ctx, &conditions[0].left);
+    let first_left = resolve(ctx, &conditions[0].left);
     let first_result = evaluate_single_condition(first_left, &conditions[0]);
 
     if conditions.len() == 1 {
@@ -123,7 +132,7 @@ pub fn evaluate_conditions(ctx: &mut RequestContext, conditions: &[CompiledCondi
 
     for i in 1..conditions.len() {
         let cond = &conditions[i];
-        let left_value = resolve_condition_value(ctx, &cond.left);
+        let left_value = resolve(ctx, &cond.left);
         let cond_result = evaluate_single_condition(left_value, cond);
         let next_op = cond.next.as_ref().unwrap_or(&LogicalOp::And);
 

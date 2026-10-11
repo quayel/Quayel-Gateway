@@ -42,7 +42,7 @@ if jq -e ".listen.http" "$CONFIG_FILE" >/dev/null 2>&1; then
 else echo -e "${YELLOW}WARN${NC}: No http listener"; fi
 
 echo ""; echo "-- Plugins --"
-for p in firewall rate_limiting cache load_balancer logging ip_intel auto_ssl; do
+for p in ip_intel firewall rate_limiting request_transform cache response_transform load_balancer logging auto_ssl; do
     if jq -e ".plugins.$p" "$CONFIG_FILE" >/dev/null 2>&1; then
         en=$(jq -r ".plugins.$p.enabled // false" "$CONFIG_FILE")
         echo -e "${GREEN}OK${NC}: $p (enabled=$en)"

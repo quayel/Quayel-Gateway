@@ -3,6 +3,7 @@ pub mod firewall;
 pub mod ip_intel;
 pub mod load_balancer;
 pub mod rate_limit;
+pub mod transform;
 
 use bytes::Bytes;
 use std::sync::Arc;

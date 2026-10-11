@@ -1,5 +1,7 @@
 use crate::config::schema::*;
+use crate::plugins::cache::CacheEntry;
 use crate::plugins::ip_intel::IpIntel;
+use crate::plugins::transform::{RequestTransformState, ResponseTransformState};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::net::IpAddr;
@@ -66,6 +68,8 @@ pub struct RequestContext {
 
     // Plugin results
     pub firewall: FirewallResult,
+    pub request_transform: RequestTransformState,
+    pub response_transform: ResponseTransformState,
     pub rate_limit: RateLimitResult,
     pub cache: CacheResult,
     pub load_balancer: LoadBalancerResult,
@@ -77,6 +81,8 @@ pub struct RequestContext {
 
     // Response / bandwidth
     pub status_code: Option<u16>,
+    /// Status the origin sent, before response_transform (cache stores this one).
+    pub upstream_status: Option<u16>,
 
     pub client_bytes_in: u64,
     pub client_bytes_out: u64,
@@ -92,6 +98,14 @@ pub struct RequestContext {
     /// When dropped (request completes), the lock releases and concurrent requests
     /// see fresh cache data.
     pub revalidation_guard: Option<RevalidationGuard>,
+
+    /// Stored copy kept while this request goes to the origin (revalidation,
+    /// or an expired entry still inside its stale-if-error window). Used for
+    /// the conditional request, a 304 answer and stale-if-error.
+    pub cache_stale: Option<CacheEntry>,
+    /// Set by response_filter when the origin answer is replaced by a stored
+    /// copy (304 or stale-if-error); fail_to_proxy writes it to the client.
+    pub serve_from_cache: Option<CacheEntry>,
 
     // Timings (microseconds)
     pub ip_intel_latency_us: Option<u64>,
@@ -148,6 +162,8 @@ impl RequestContext {
             jwt_cache: HashMap::new(),
             ip_intel: None,
             firewall: FirewallResult::default(),
+            request_transform: RequestTransformState::default(),
+            response_transform: ResponseTransformState::default(),
             rate_limit: RateLimitResult::default(),
             cache: CacheResult::default(),
             load_balancer: LoadBalancerResult::default(),
@@ -155,6 +171,7 @@ impl RequestContext {
             upstream_target: None,
             upstream_protocol: None,
             status_code: None,
+            upstream_status: None,
             client_bytes_in: 0,
             client_bytes_out: 0,
             upstream_bytes_out: 0,
@@ -163,6 +180,8 @@ impl RequestContext {
             response_body_buffer: Vec::new(),
             cache_should_store: false,
             revalidation_guard: None,
+            cache_stale: None,
+            serve_from_cache: None,
             ip_intel_latency_us: None,
             firewall_latency_us: None,
             rate_limit_latency_us: None,
@@ -231,6 +250,11 @@ pub struct CacheResult {
     pub stale_if_error_seconds: Option<u64>,
     /// Cached max object size from config — avoids arc_swap::load() on every body chunk.
     pub max_object_size_bytes: usize,
+    /// Origin statuses the matched rule allows storing.
+    pub statuses: Option<Arc<[u16]>>,
+    /// Normalized Accept-Encoding bucket ("br", "gzip", "identity"). Part of
+    /// the cache key and sent upstream in place of the client's header.
+    pub encoding: &'static str,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -244,6 +268,8 @@ pub enum CacheStatus {
     Dynamic,
     Stale,
     Revalidating,
+    /// Origin answered the conditional request with 304; stored copy served.
+    Revalidated,
 }
 
 impl CacheStatus {
@@ -257,6 +283,7 @@ impl CacheStatus {
             CacheStatus::Dynamic => "DYNAMIC",
             CacheStatus::Stale => "STALE",
             CacheStatus::Revalidating => "REVALIDATING",
+            CacheStatus::Revalidated => "REVALIDATED",
         }
     }
 }
@@ -278,6 +305,8 @@ pub struct LoadBalancerResult {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TerminationPhase {
+    /// server.protection / server.limits (flood limit, ban, oversized body)
+    Protection,
     IpIntel,
     Firewall,
     RateLimit,

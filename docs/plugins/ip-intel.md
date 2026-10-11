@@ -158,6 +158,70 @@ Datacenter detection is **ASN-based**: the ASN MMDB resolves the client IP to it
 |----------|---------|-------------|
 | `QUAYEL_IP_INTEL_CACHE_SIZE` | `65536` | LRU cache size for IP lookups |
 
+## Forwarding to the Upstream
+
+By default the lookup results stay inside the gateway: firewall rules, rate
+limits and the access log use them, but your backend never sees them. Turn on
+`forward_headers` to send them along with each proxied request:
+
+```json
+{
+  "plugins": {
+    "ip_intel": {
+      "enabled": true,
+      "forward_headers": {
+        "enabled": true
+      }
+    }
+  }
+}
+```
+
+| Option | Default | Meaning |
+|---|---|---|
+| `enabled` | `false` | Turn forwarding on |
+| `prefix` | `"X-QG-"` | Header name prefix. Must end with `-` and be more specific than `X-` |
+| `fields` | all | Only send these fields, e.g. `["country", "is_datacenter"]` |
+
+| Field | Header (default prefix) | Example |
+|---|---|---|
+| `client_ip` | `X-QG-Client-IP` | `203.0.113.7` |
+| `country` | `X-QG-Country` | `DE` |
+| `region` | `X-QG-Region` | `Bavaria` |
+| `city` | `X-QG-City` | `M%C3%BCnchen` |
+| `asn` | `X-QG-ASN` | `24940` |
+| `as_org` | `X-QG-AS-Org` | `Hetzner Online GmbH` |
+| `provider` | `X-QG-Provider` | `Hetzner Online GmbH` |
+| `is_datacenter` | `X-QG-Datacenter` | `true` |
+| `is_vpn` | `X-QG-VPN` | `false` |
+| `is_proxy` | `X-QG-Proxy` | `false` |
+| `is_tor` | `X-QG-Tor` | `false` |
+| `is_mobile` | `X-QG-Mobile` | `false` |
+| `network_type` | `X-QG-Network-Type` | `datacenter` |
+| `risk_score` | `X-QG-Risk-Score` | `10` |
+
+How values are sent:
+
+- **Unknown values are left out**, not sent empty. Treat a missing header as
+  "unknown" in the backend.
+- **Flags** are `true` or `false`; numbers are plain digits.
+- **Text with non-ASCII characters** (such as city names) is percent-encoded
+  UTF-8, so `München` arrives as `M%C3%BCnchen`. URL-decode it in the backend.
+
+**Spoofing protection:** when forwarding is on, the gateway first removes every
+header the client sent that starts with the prefix, then adds its own, so a
+client can't send `X-QG-Datacenter: false` to fool your backend. When
+forwarding is off, nothing is removed, so the backend shouldn't trust `X-QG-*`
+headers unless forwarding is on.
+
+Cached responses and requests blocked by the firewall or rate limiter never
+reach the upstream, so they get no headers and cost nothing extra. For proxied
+requests the cost is a few microseconds and about 400 bytes per request with
+every field on. Use `fields` to send only what you need.
+
+An invalid `prefix` or an unknown field name is rejected when the config loads.
+On a live reload, the previous config stays in use.
+
 ## Using in Firewall Rules
 
 IP intel fields can be used in firewall conditions:

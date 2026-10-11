@@ -5,16 +5,24 @@ use crate::plugins::firewall::FirewallPlugin;
 use crate::plugins::ip_intel::IpIntelPlugin;
 use crate::plugins::load_balancer::LoadBalancerPlugin;
 use crate::plugins::rate_limit::RateLimitPlugin;
+use crate::plugins::transform::apply_request_transform;
 use crate::plugins::PluginFlow;
 use std::sync::Arc;
 
 // ── Plugin Runner ────────────────────────────────────────────────────────────
 // Central pipeline executor. Executes plugins in fixed order:
-//   ip_intel → firewall → rate_limiting → load_balancer → cache → logging
+//   ip_intel → firewall → rate_limiting → request_transform → cache → load_balancer → logging
 //
-// NOTE: load_balancer runs BEFORE cache so that cache can use upstream_target
-// for background revalidation (SWR). The plugin runner is the ONLY place
-// defining global plugin order.
+// request_transform runs after the protection plugins, so firewall and rate
+// limits always see the request the client actually sent, and before cache, so
+// the cache key is built from the rewritten request. response_transform is not
+// a pipeline step: it runs on the way out (gateway.rs).
+//
+// NOTE: cache runs BEFORE load_balancer so cache HITs never select a target or
+// bump connection counts. SWR revalidation is not a background fetch — the
+// request holding the revalidation lock returns Continue and falls through to
+// load_balancer like a MISS. The plugin runner is the ONLY place defining
+// global plugin order.
 
 pub struct PluginRunner {
     pub ip_intel: IpIntelPlugin,
@@ -81,23 +89,28 @@ impl PluginRunner {
             }
         }
 
-        // 4. Load Balancer (runs BEFORE cache so upstream_target is available for revalidation)
-        if let Some(lb_config) = &config.load_balancer {
-            if lb_config.enabled {
-                let flow = self.load_balancer.execute(ctx, config).await;
-                if let PluginFlow::Respond(_) = &flow {
-                    ctx.termination_phase = Some(TerminationPhase::LoadBalancer);
-                    return flow;
-                }
-            }
+        // 4. Request Transform — rewrites ctx; replayed upstream in upstream_request_filter
+        if let Some(rt) = &config.request_transform {
+            apply_request_transform(ctx, rt);
         }
 
-        // 5. Cache
+        // 5. Cache — HITs respond here without selecting a backend
         if let Some(cache_config) = &config.cache {
             if cache_config.enabled {
                 let flow = self.cache.execute(ctx, config).await;
                 if let PluginFlow::Respond(_) = &flow {
                     ctx.termination_phase = Some(TerminationPhase::Cache);
+                    return flow;
+                }
+            }
+        }
+
+        // 6. Load Balancer — only reached on MISS / BYPASS / EXPIRED / revalidation
+        if let Some(lb_config) = &config.load_balancer {
+            if lb_config.enabled {
+                let flow = self.load_balancer.execute(ctx, config).await;
+                if let PluginFlow::Respond(_) = &flow {
+                    ctx.termination_phase = Some(TerminationPhase::LoadBalancer);
                     return flow;
                 }
             }

@@ -23,6 +23,12 @@ use tokio::sync::Mutex;
 /// 3. Subsequent requests see fresh data → cache hit
 ///
 /// No background tasks. No separate HTTP client. The normal proxy flow IS the refresh.
+///
+/// The refresh request carries the stored validators (If-None-Match /
+/// If-Modified-Since). A 304 refreshes the stored copy without a body
+/// transfer; a 5xx or connect error inside the stale-if-error window serves
+/// the stored copy instead of the error. Both are handled in gateway.rs
+/// (response_filter → fail_to_proxy).
 #[derive(Debug)]
 pub struct CachePlugin {
     pub store: DashMap<String, CacheEntry>,
@@ -45,9 +51,10 @@ impl CacheEntry {
         self.stored_at.elapsed() < self.edge_ttl
     }
     pub fn is_fully_expired(&self) -> bool {
-        // Fully expired = past edge_ttl + stale_while_revalidate
-        // stale_if_error is separate — handled at origin error time, not here
-        self.stored_at.elapsed() >= self.edge_ttl + self.stale_while_revalidate
+        // Fully expired = past edge_ttl + the longer of the two stale windows.
+        // Between the end of SWR and the end of SIE the entry is kept only as
+        // an error fallback (CacheLookup::Expired).
+        self.stored_at.elapsed() >= self.edge_ttl + self.stale_while_revalidate.max(self.stale_if_error)
     }
     pub fn is_stale_if_error(&self) -> bool {
         if self.stale_if_error.is_zero() { return false; }
@@ -57,6 +64,11 @@ impl CacheEntry {
 
     /// Check if entry is within the stale-while-revalidate window.
     /// This is where revalidation (lock mechanism) is allowed.
+    /// Header value from the stored response (names are stored lowercase).
+    pub fn header(&self, name: &str) -> Option<&str> {
+        self.headers.iter().find(|(k, _)| k == name).map(|(_, v)| v.as_str())
+    }
+
     pub fn is_stale_revalidatable(&self) -> bool {
         if self.stale_while_revalidate.is_zero() { return false; }
         let age = self.stored_at.elapsed();
@@ -68,6 +80,9 @@ enum CacheLookup {
     Hit(CacheEntry),
     HitRevalidating(CacheEntry),
     Stale(CacheEntry),
+    /// Past the SWR window but inside stale-if-error: go to origin like a
+    /// miss, keep the entry for a 304 or an error fallback.
+    Expired(CacheEntry),
     Miss,
     Bypass,
 }
@@ -90,6 +105,9 @@ impl CachePlugin {
             ctx.cache.status = CacheStatus::Bypass;
             return PluginFlow::Continue;
         }
+        // HEAD can be served from cache but never fills it (no body to store).
+        // Range requests are passed through and not stored either.
+        let can_store = ctx.method.as_ref() == "GET" && !ctx.headers.contains_key(http::header::RANGE);
 
         for rule in &cache_config.rules {
             if !rule.enabled { continue; }
@@ -112,6 +130,7 @@ impl CachePlugin {
             // Generate cache key hash directly into the ctx-held String buffer.
             // take() is a pointer swap: the previous request's buffer is reused,
             // so steady-state requests allocate nothing here.
+            ctx.cache.encoding = accept_encoding_bucket(&ctx.headers);
             let mut kh = ctx.cache.key_hash.take().unwrap_or_default();
             make_cache_key_hash(ctx, &rule.cache_key, &mut kh);
 
@@ -128,6 +147,7 @@ impl CachePlugin {
                 ctx.cache.max_object_size_bytes = config.cache.as_ref()
                     .map(|c| c.max_object_size_bytes)
                     .unwrap_or(10 * 1024 * 1024);
+                ctx.cache.statuses = Some(Arc::clone(&rule.statuses));
             }
 
             match self.lookup(&kh) {
@@ -164,7 +184,8 @@ impl CachePlugin {
                             ctx.revalidation_guard = Some(RevalidationGuard(guard));
                             ctx.cache.status = CacheStatus::Revalidating;
                             ctx.cache.key_hash = Some(kh);
-                            ctx.cache_should_store = true;
+                            ctx.cache_should_store = can_store;
+                            ctx.cache_stale = Some(entry);
                             return PluginFlow::Continue;
                         }
                         Err(_) => {
@@ -178,11 +199,17 @@ impl CachePlugin {
                         }
                     }
                 }
+                CacheLookup::Expired(entry) => {
+                    ctx.cache.status = CacheStatus::Expired;
+                    ctx.cache.key_hash = Some(kh);
+                    ctx.cache_should_store = can_store;
+                    ctx.cache_stale = Some(entry);
+                }
                 CacheLookup::Miss => {
                     ctx.cache.status = CacheStatus::Miss;
                     ctx.cache.key_hash = Some(kh);
                     // Signal response_body_filter to capture and store the upstream response
-                    ctx.cache_should_store = true;
+                    ctx.cache_should_store = can_store;
                 }
                 CacheLookup::Bypass => {
                     ctx.cache.status = CacheStatus::Bypass;
@@ -211,6 +238,11 @@ impl CachePlugin {
             self.store.remove(kh);
             self.revalidating.remove(kh);
             return CacheLookup::Miss;
+        }
+
+        // Past SWR but still inside stale-if-error: origin fetch with fallback.
+        if !entry.is_stale_revalidatable() {
+            return CacheLookup::Expired(entry);
         }
 
         // Entry is stale but NOT fully expired (within SWR window).
@@ -249,11 +281,9 @@ impl CachePlugin {
         true
     }
 
-    /// Update a cache entry's stored_at timestamp (for 304 revalidation).
-    pub fn refresh_timestamp(&self, kh: &str) {
-        if let Some(mut entry) = self.store.get_mut(kh) {
-            entry.stored_at = Instant::now();
-        }
+    /// Replace an entry after a 304: same body, merged headers, new TTLs.
+    pub fn store_revalidated(&self, kh: &str, entry: CacheEntry) {
+        self.store.insert(kh.to_string(), entry);
     }
 }
 
@@ -386,6 +416,8 @@ fn make_cache_key_hash(ctx: &mut RequestContext, kc: &CacheKeyConfig, out: &mut 
         "|".hash(&mut hasher);
     }
     ctx.path.hash(&mut hasher);
+    "|".hash(&mut hasher);
+    ctx.cache.encoding.hash(&mut hasher);
 
     if kc.mode == CacheKeyMode::Custom {
         if let Some(cp) = &kc.parts {
@@ -430,6 +462,43 @@ fn make_cache_key_hash(ctx: &mut RequestContext, kc: &CacheKeyConfig, out: &mut 
     }
 }
 
+/// Collapse Accept-Encoding into the three variants the cache stores.
+/// Keeps the number of stored copies per URL at most three, and guarantees a
+/// client never receives an encoding it did not ask for.
+pub fn accept_encoding_bucket(headers: &http::HeaderMap) -> &'static str {
+    let mut gzip = false;
+    for value in headers.get_all(http::header::ACCEPT_ENCODING) {
+        let Ok(v) = value.to_str() else { continue };
+        for part in v.split(',') {
+            let mut it = part.split(';');
+            let coding = it.next().unwrap_or("").trim();
+            let refused = it.any(|p| matches!(p.trim().strip_prefix("q="), Some(q) if q.trim().parse::<f32>().map_or(false, |q| q == 0.0)));
+            if refused { continue; }
+            if coding.eq_ignore_ascii_case("br") { return "br"; }
+            if coding.eq_ignore_ascii_case("gzip") { gzip = true; }
+        }
+    }
+    if gzip { "gzip" } else { "identity" }
+}
+
+/// Accept-Encoding sent to the origin for a bucket (None = remove the header).
+pub fn bucket_accept_encoding(bucket: &str) -> Option<&'static str> {
+    match bucket {
+        "br" => Some("br, gzip"),
+        "gzip" => Some("gzip"),
+        _ => None,
+    }
+}
+
+/// True when the response varies only on headers the cache key already covers.
+pub fn vary_is_cacheable(headers: &http::HeaderMap) -> bool {
+    headers.get_all(http::header::VARY).iter().all(|v| {
+        v.to_str().map_or(false, |v| {
+            v.split(',').map(str::trim).all(|f| f.is_empty() || f.eq_ignore_ascii_case("accept-encoding"))
+        })
+    })
+}
+
 fn browser_ttl_mode_str(mode: &BrowserTtlMode) -> &'static str {
     match mode {
         BrowserTtlMode::Bypass => "bypass",
@@ -442,5 +511,61 @@ fn edge_ttl_mode_str(mode: &EdgeTtlMode) -> &'static str {
     match mode {
         EdgeTtlMode::Origin => "origin",
         EdgeTtlMode::Custom => "custom",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ae(v: &str) -> http::HeaderMap {
+        let mut h = http::HeaderMap::new();
+        h.insert(http::header::ACCEPT_ENCODING, v.parse().unwrap());
+        h
+    }
+
+    #[test]
+    fn encoding_buckets() {
+        assert_eq!(accept_encoding_bucket(&ae("gzip, deflate, br")), "br");
+        assert_eq!(accept_encoding_bucket(&ae("gzip;q=0.5")), "gzip");
+        assert_eq!(accept_encoding_bucket(&ae("br;q=0, gzip")), "gzip");
+        assert_eq!(accept_encoding_bucket(&ae("deflate")), "identity");
+        assert_eq!(accept_encoding_bucket(&http::HeaderMap::new()), "identity");
+    }
+
+    #[test]
+    fn vary_rules() {
+        let mut h = http::HeaderMap::new();
+        assert!(vary_is_cacheable(&h));
+        h.insert(http::header::VARY, "Accept-Encoding".parse().unwrap());
+        assert!(vary_is_cacheable(&h));
+        h.insert(http::header::VARY, "Accept-Encoding, Cookie".parse().unwrap());
+        assert!(!vary_is_cacheable(&h));
+        h.insert(http::header::VARY, "*".parse().unwrap());
+        assert!(!vary_is_cacheable(&h));
+    }
+
+    fn entry(age: u64, ttl: u64, swr: u64, sie: u64) -> CacheEntry {
+        CacheEntry {
+            status: 200, headers: Arc::new(vec![]), body: Bytes::from_static(b"x"),
+            stored_at: Instant::now() - Duration::from_secs(age),
+            edge_ttl: Duration::from_secs(ttl),
+            stale_while_revalidate: Duration::from_secs(swr),
+            stale_if_error: Duration::from_secs(sie),
+        }
+    }
+
+    #[test]
+    fn lookup_states() {
+        let c = CachePlugin::new();
+        c.store.insert("fresh".into(), entry(1, 10, 0, 0));
+        c.store.insert("swr".into(), entry(15, 10, 10, 0));
+        c.store.insert("sie".into(), entry(25, 10, 10, 60));
+        c.store.insert("gone".into(), entry(100, 10, 10, 60));
+        assert!(matches!(c.lookup("fresh"), CacheLookup::Hit(_)));
+        assert!(matches!(c.lookup("swr"), CacheLookup::Stale(_)));
+        assert!(matches!(c.lookup("sie"), CacheLookup::Expired(_)));
+        assert!(matches!(c.lookup("gone"), CacheLookup::Miss));
+        assert!(c.store.get("gone").is_none());
     }
 }

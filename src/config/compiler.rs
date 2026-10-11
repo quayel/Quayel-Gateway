@@ -1,5 +1,8 @@
 use crate::condition::CompiledCondition;
 use crate::config::schema::*;
+use crate::gateway::forward_headers::{compile_forward_headers, CompiledForwardHeaders};
+use crate::gateway::protection::{compile_server, CompiledServer};
+use crate::plugins::transform::{compile_transform, CompiledTransform, TransformPhase};
 use std::sync::Arc;
 
 // ── Compiled Configuration ───────────────────────────────────────────────────
@@ -16,10 +19,14 @@ pub struct CompiledConfig {
 
     pub client_ip: CompiledClientIp,
 
+    pub server: CompiledServer,
+
     pub ip_intel: Option<CompiledIpIntel>,
     pub firewall: Option<CompiledFirewall>,
     pub rate_limiting: Option<CompiledRateLimiting>,
+    pub request_transform: Option<CompiledTransform>,
     pub cache: Option<CompiledCache>,
+    pub response_transform: Option<CompiledTransform>,
     pub load_balancer: Option<CompiledLoadBalancerPlugin>,
     pub logging: Option<CompiledLogging>,
     pub auto_ssl: Option<CompiledAutoSsl>,
@@ -34,11 +41,13 @@ pub struct CompiledClientIp {
 }
 
 // ── IP Intel compiled ────────────────────────────────────────────────────────
-// All data is embedded in the binary — only `enabled` is needed.
+// All lookup data is embedded in the binary.
 
 #[derive(Debug, Clone)]
 pub struct CompiledIpIntel {
     pub enabled: bool,
+    /// None unless forward_headers.enabled is true.
+    pub forward_headers: Option<CompiledForwardHeaders>,
 }
 
 // ── Firewall compiled ────────────────────────────────────────────────────────
@@ -98,7 +107,8 @@ pub struct CompiledCacheRule {
     pub edge_ttl: EdgeTtlConfig,
     pub browser_ttl: Option<BrowserTtlConfig>,
     pub cache_key: CacheKeyConfig,
-    pub statuses: Vec<u16>,
+    /// Origin statuses that may be stored.
+    pub statuses: Arc<[u16]>,
     /// Gateway-level stale-while-revalidate override (seconds).
     /// If set, overrides origin Cache-Control header value.
     pub stale_while_revalidate: Option<u64>,
@@ -172,12 +182,16 @@ pub fn compile_config(raw: &GatewayConfig) -> Result<CompiledConfig, String> {
         fallback: raw.client_ip.fallback.clone(),
     };
 
-    let ip_intel = raw
-        .plugins
-        .ip_intel
-        .as_ref()
-        .filter(|c| c.enabled)
-        .map(|c| CompiledIpIntel { enabled: c.enabled });
+    let ip_intel = match raw.plugins.ip_intel.as_ref().filter(|c| c.enabled) {
+        Some(c) => Some(CompiledIpIntel {
+            enabled: c.enabled,
+            forward_headers: match &c.forward_headers {
+                Some(fh) => compile_forward_headers(fh)?,
+                None => None,
+            },
+        }),
+        None => None,
+    };
 
     let firewall = raw
         .plugins
@@ -192,6 +206,16 @@ pub fn compile_config(raw: &GatewayConfig) -> Result<CompiledConfig, String> {
         .as_ref()
         .filter(|c| c.enabled)
         .map(|c| compile_rate_limiting(c));
+
+    let request_transform = match &raw.plugins.request_transform {
+        Some(c) => compile_transform(c, TransformPhase::Request)?,
+        None => None,
+    };
+
+    let response_transform = match &raw.plugins.response_transform {
+        Some(c) => compile_transform(c, TransformPhase::Response)?,
+        None => None,
+    };
 
     let cache = raw
         .plugins
@@ -229,10 +253,13 @@ pub fn compile_config(raw: &GatewayConfig) -> Result<CompiledConfig, String> {
         listen_http: raw.listen.http.clone(),
         listen_https: raw.listen.https.clone(),
         client_ip,
+        server: compile_server(&raw.server)?,
         ip_intel,
         firewall,
         rate_limiting,
+        request_transform,
         cache,
+        response_transform,
         load_balancer,
         logging,
         auto_ssl,
@@ -298,7 +325,7 @@ fn compile_cache(c: &CacheConfig) -> CompiledCache {
                     mode: CacheKeyMode::Default,
                     parts: None,
                 }),
-                statuses: r.statuses.clone().unwrap_or_else(|| vec![200, 301, 404]),
+                statuses: Arc::from(r.statuses.clone().unwrap_or_else(|| vec![200, 301, 404])),
                 stale_while_revalidate: r.stale_while_revalidate,
                 stale_if_error: r.stale_if_error,
             })

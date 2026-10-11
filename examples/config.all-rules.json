@@ -321,7 +321,7 @@
           "enabled": true,
           "conditions": [
             { "left": "req.path", "operator": "starts_with", "value": "/test/fw/left-provider", "next": "and" },
-            { "left": "ip.provider", "operator": "equals", "value": "Google Cloud" }
+            { "left": "ip.provider", "operator": "equals", "value": "Google LLC" }
           ],
           "action": {
             "type": "set_request_header",
@@ -559,6 +559,107 @@
         }
       ]
     },
+    "request_transform": {
+      "enabled": true,
+      "rules": [
+        {
+          "id": "rt-prefix",
+          "name": "Path replace_prefix + header set/add/remove/rename",
+          "enabled": true,
+          "conditions": [
+            { "left": "req.path", "operator": "starts_with", "value": "/test/tf/api/" }
+          ],
+          "actions": [
+            { "type": "path", "operation": "replace_prefix", "from": "/test/tf/api", "to": "/test/tf/v1" },
+            { "type": "header", "operation": "set", "name": "X-Service", "value": "quayel" },
+            { "type": "header", "operation": "add", "name": "X-Tags", "value": "one" },
+            { "type": "header", "operation": "add", "name": "X-Tags", "value": "two" },
+            { "type": "header", "operation": "remove", "name": "X-Strip-Me" },
+            { "type": "header", "operation": "rename", "name": "X-Old-Name", "to": "X-New-Name" }
+          ]
+        },
+        {
+          "id": "rt-regex",
+          "name": "Path regex_replace",
+          "enabled": true,
+          "conditions": [
+            { "left": "req.path", "operator": "starts_with", "value": "/test/tf/u/" }
+          ],
+          "actions": [
+            { "type": "path", "operation": "regex_replace", "pattern": "^/test/tf/u/(\\d+)$", "replacement": "/test/tf/users/$1" }
+          ]
+        },
+        {
+          "id": "rt-set",
+          "name": "Path set + query set/add/remove/rename",
+          "enabled": true,
+          "conditions": [
+            { "left": "req.path", "operator": "starts_with", "value": "/test/tf/any" }
+          ],
+          "actions": [
+            { "type": "path", "operation": "set", "value": "/test/tf/fixed" },
+            { "type": "query", "operation": "set", "name": "v", "value": "2" },
+            { "type": "query", "operation": "add", "name": "tag", "value": "a b" },
+            { "type": "query", "operation": "remove", "name": "secret" },
+            { "type": "query", "operation": "rename", "name": "q", "to": "search" }
+          ]
+        },
+        {
+          "id": "rt-chained",
+          "name": "Sees the path and query written by rt-set",
+          "enabled": true,
+          "conditions": [
+            { "left": "req.path", "operator": "starts_with", "value": "/test/tf/fixed", "next": "and" },
+            { "left": "req.query.v", "operator": "equals", "value": "2" }
+          ],
+          "actions": [
+            { "type": "header", "operation": "set", "name": "X-Chained", "value": "yes" }
+          ]
+        },
+        {
+          "id": "rt-host",
+          "name": "Host rewrite",
+          "enabled": true,
+          "conditions": [
+            { "left": "req.path", "operator": "starts_with", "value": "/test/tf/host" }
+          ],
+          "actions": [
+            { "type": "header", "operation": "set", "name": "Host", "value": "internal.test" }
+          ]
+        },
+        {
+          "id": "rt-cache-alias",
+          "name": "Rewrite into the cached path (cache key = rewritten path)",
+          "enabled": true,
+          "conditions": [
+            { "left": "req.path", "operator": "starts_with", "value": "/test/tf/cached-alias" }
+          ],
+          "actions": [
+            { "type": "path", "operation": "set", "value": "/test/tf/cached" }
+          ]
+        },
+        {
+          "id": "rt-fw-bypass",
+          "name": "Rewrites a firewall-blocked path; the firewall must still block",
+          "enabled": true,
+          "conditions": [
+            { "left": "req.path", "operator": "starts_with", "value": "/test/fw/no-session" }
+          ],
+          "actions": [
+            { "type": "path", "operation": "set", "value": "/test/tf/should-not-reach" }
+          ]
+        },
+        {
+          "id": "rt-disabled",
+          "name": "Disabled rule never applies",
+          "enabled": false,
+          "conditions": [],
+          "actions": [
+            { "type": "header", "operation": "set", "name": "X-Disabled", "value": "yes" }
+          ]
+        }
+      ]
+    },
     "cache": {
       "enabled": true,
       "max_object_size_bytes": 10485760,
@@ -635,6 +736,82 @@
           "edge_ttl": { "mode": "custom", "seconds": 15 },
           "browser_ttl": { "mode": "bypass" },
           "statuses": [200]
+        },
+        {
+          "id": "cache-transform",
+          "name": "Entry reached through request_transform",
+          "enabled": true,
+          "conditions": [
+            { "left": "req.path", "operator": "starts_with", "value": "/test/tf/", "next": "and" },
+            { "left": "req.method", "operator": "equals", "value": "GET" }
+          ],
+          "cache": "eligible",
+          "edge_ttl": { "mode": "origin" },
+          "browser_ttl": { "mode": "origin" },
+          "cache_key": { "mode": "default" },
+          "statuses": [200]
+        }
+      ]
+    },
+    "response_transform": {
+      "enabled": true,
+      "rules": [
+        {
+          "id": "rs-tf-all",
+          "name": "Header set/add/remove/rename on /test/tf",
+          "enabled": true,
+          "conditions": [
+            { "left": "req.path", "operator": "starts_with", "value": "/test/tf/" }
+          ],
+          "actions": [
+            { "type": "header", "operation": "set", "name": "X-Powered-By", "value": "Quayel" },
+            { "type": "header", "operation": "add", "name": "X-Resp-Tags", "value": "r1" },
+            { "type": "header", "operation": "remove", "name": "Server" },
+            { "type": "header", "operation": "rename", "name": "Content-Type", "to": "X-Original-Content-Type" }
+          ]
+        },
+        {
+          "id": "rs-resp-header",
+          "name": "Condition on resp.header",
+          "enabled": true,
+          "conditions": [
+            { "left": "req.path", "operator": "starts_with", "value": "/test/tf/", "next": "and" },
+            { "left": "resp.header.cache-control", "operator": "contains", "value": "max-age" }
+          ],
+          "actions": [
+            { "type": "header", "operation": "set", "name": "X-Cacheable", "value": "yes" }
+          ]
+        },
+        {
+          "id": "rs-status",
+          "name": "Status override",
+          "enabled": true,
+          "conditions": [
+            { "left": "req.path", "operator": "starts_with", "value": "/test/tf/teapot" }
+          ],
+          "actions": [
+            { "type": "status", "operation": "set", "value": 418 }
+          ]
+        },
+        {
+          "id": "rs-status-chain",
+          "name": "Sees the status set by rs-status",
+          "enabled": true,
+          "conditions": [
+            { "left": "resp.status", "operator": "equals", "value": 418 }
+          ],
+          "actions": [
+            { "type": "header", "operation": "set", "name": "X-Was-Teapot", "value": "yes" }
+          ]
+        },
+        {
+          "id": "rs-every-response",
+          "name": "Tags every response; gateway blocks (403/429) must not get it",
+          "enabled": true,
+          "conditions": [],
+          "actions": [
+            { "type": "header", "operation": "set", "name": "X-Transformed", "value": "yes" }
+          ]
         }
       ]
     },

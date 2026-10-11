@@ -52,7 +52,9 @@ Each line is a complete JSON object:
   "ip_intel": { ... },
   "firewall": { ... },
   "rate_limit": { ... },
+  "request_transform": { ... },
   "cache": { ... },
+  "response_transform": { ... },
   "load_balancer": { ... },
   "termination_phase": null,
   "timings_us": { ... }
@@ -86,8 +88,8 @@ Each line is a complete JSON object:
 |-------|------|-------------|
 | `method` | string | HTTP method |
 | `scheme` | string | Request scheme (http/https) |
-| `host` | string | Request host |
-| `path` | string | Request path (including query string) |
+| `host` | string | Host the client sent (a `request_transform` rewrite is in `request_transform.host`) |
+| `path` | string | Path and query the client sent (a `request_transform` rewrite is in `request_transform.path`) |
 
 ### Response
 
@@ -179,6 +181,24 @@ See [IP Intelligence](plugins/ip-intel.md) for field details.
 | `blocked` | Whether the request was blocked |
 | `remaining` | Remaining requests in current window |
 
+### Request Transform
+
+```json
+{
+  "request_transform": {
+    "rules": ["rt-api-v1"],
+    "path": "/v1/users?page=2",
+    "host": null
+  }
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `rules` | IDs of the `request_transform` rules that matched, in order. Empty when none matched |
+| `path` | Path and query sent to the origin, when a rule rewrote them; otherwise `null` |
+| `host` | Host sent to the origin, when a rule changed the `Host` header; otherwise `null` |
+
 ### Cache
 
 ```json
@@ -204,11 +224,26 @@ See [IP Intelligence](plugins/ip-intel.md) for field details.
 | `NONE` | No cache rule matched |
 | `HIT` | Fresh cache hit — served from cache |
 | `MISS` | Cache miss — fetched from upstream |
-| `EXPIRED` | (Reserved for future use) |
+| `EXPIRED` | Entry past its stale-while-revalidate window, kept only as a stale-if-error fallback; fetched from upstream |
 | `BYPASS` | Cache bypassed by rule |
 | `DYNAMIC` | (Reserved for future use) |
-| `STALE` | Served stale data (lock race fallback) |
+| `STALE` | Stored copy served because the origin failed (stale-if-error) |
 | `REVALIDATING` | Served stale data while another request refreshes cache |
+| `REVALIDATED` | Origin answered 304; stored copy served and its TTL restarted |
+
+### Response Transform
+
+```json
+{
+  "response_transform": {
+    "rules": ["rs-powered-by", "rs-cors"]
+  }
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `rules` | IDs of the `response_transform` rules that matched, in order. Always empty for gateway blocks (403, 429, ...), which aren't transformed |
 
 ### Load Balancer
 

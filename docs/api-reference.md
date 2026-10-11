@@ -322,10 +322,18 @@ The access log records:
     "blocked": false,
     "remaining": null
   },
+  "request_transform": {
+    "rules": [],
+    "path": null,
+    "host": null
+  },
   "cache": {
     "rule_id": null,
     "status": "NONE",
     "key_hash": null
+  },
+  "response_transform": {
+    "rules": []
   },
   "load_balancer": {
     "lb_id": "default",

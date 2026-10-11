@@ -11,6 +11,9 @@
 #     in the request context for later plugins — verified via the RL-key probe)
 #   - rate limiting   → 429 after N requests per key mode
 #   - cache           → 200/200 + cache HIT events in the JSONL log
+#   - transforms      → what the echo origin received (request_transform) and
+#                       the response headers/status on MISS and HIT
+#                       (response_transform); blocks are never transformed
 #   - load balancer   → routing behavior per algorithm
 #   - logging         → JSONL events for every plugin
 #
@@ -56,6 +59,9 @@ for _ in $(seq 1 50); do
     curl -s -o /dev/null --max-time 1 "$GW_URL/lb/rr" && break
     sleep 0.2
 done
+if ! kill -0 "$GW_PID" 2>/dev/null; then
+    echo "gateway failed to start:"; tail -5 /tmp/quayel-all-rules-gw.log; exit 1
+fi
 
 # JWT for claim-based conditions/keys: {"user_id":"u-42","data":{"role":"admin"}}
 JWT=$(python3 - <<'EOF'
@@ -181,7 +187,102 @@ rl_burst_200 "cache:custom variant key"     "$GW_URL/test/cache/variant" -H "x-v
 rl_burst_200 "cache:bypass (cookied)"       "$GW_URL/test/cache/private" -H "Cookie: session=x"
 rl_burst_200 "cache:greater_than+not_in conds" "$GW_URL/test/cache/ops?other=1" -H "X-Forwarded-For: 8.8.8.8"
 
-# ── 7. Load balancer: algorithms ─────────────────────────────────────────────
+# ── 7. Request / response transforms ─────────────────────────────────────────
+# Every /test/tf/* GET is cacheable (cache-transform), so each check uses its
+# own path: the 1st request is a MISS, a repeat is a HIT.
+TF_H=/tmp/quayel-all-rules-tf.h; TF_B=/tmp/quayel-all-rules-tf.b
+tf_get() {  # tf_get <curl args...>  → prints status; headers/body in $TF_H/$TF_B
+    curl -s -D "$TF_H" -o "$TF_B" -w '%{http_code}' --max-time 5 "$@"
+}
+resp_hdr() {  # resp_hdr <name>  → values of a response header, joined with ", "
+    tr -d '\r' <"$TF_H" | awk -v n="$(tr '[:upper:]' '[:lower:]' <<<"$1")" -F': ' \
+        'tolower($1)==n { sub(/^[^:]*: /, ""); v = v (v=="" ? "" : ", ") $0 } END { print v }'
+}
+up() {  # up path | up header <name>  → what the echo origin received
+    python3 - "$TF_B" "$@" <<'EOF'
+import json, sys
+d = json.load(open(sys.argv[1]))
+if sys.argv[2] == "path":
+    print(d["path"])
+else:
+    h = {k.lower(): v for k, v in d["headers"].items()}
+    print(h.get(sys.argv[3].lower(), "<none>"))
+EOF
+}
+check() {  # check <name> <detail> <test args...>
+    local name="$1" detail="$2"; shift 2
+    record "$("$@" && echo 1 || echo 0)" "$name" "$detail"
+}
+
+tf_get "$GW_URL/test/tf/api/hello?k=1" -H "X-Strip-Me: 1" -H "X-Old-Name: legacy" >/dev/null
+p=$(up path)
+check "rt:path replace_prefix"              "upstream=$p" [ "$p" == "/test/tf/v1/hello?k=1" ]
+v="$(up header x-service)|$(up header x-tags)|$(up header x-strip-me)|$(up header x-new-name)|$(up header x-old-name)"
+check "rt:header set/add/remove/rename"     "$v" [ "$v" == "quayel|one, two|<none>|legacy|<none>" ]
+v=$(up header x-forwarded-proto)
+check "rt:gateway sets X-Forwarded-Proto"   "x-forwarded-proto=$v" [ "$v" == "http" ]
+v=$(up header x-disabled)
+check "rt:disabled rule skipped"            "x-disabled=$v" [ "$v" == "<none>" ]
+
+tf_get "$GW_URL/test/tf/u/42" >/dev/null; p1=$(up path)
+tf_get "$GW_URL/test/tf/u/abc" >/dev/null; p2=$(up path)
+check "rt:path regex_replace"               "$p1 $p2" [ "$p1|$p2" == "/test/tf/users/42|/test/tf/u/abc" ]
+
+tf_get "$GW_URL/test/tf/anything?secret=x&q=term&v=1" >/dev/null; p=$(up path)
+check "rt:path set + query set/add/remove/rename" "upstream=$p" [ "$p" == "/test/tf/fixed?search=term&v=2&tag=a%20b" ]
+v=$(up header x-chained)
+check "rt:later rule sees rewritten request" "x-chained=$v" [ "$v" == "yes" ]
+
+tf_get "$GW_URL/test/tf/xff-none" >/dev/null; v=$(up header x-forwarded-for)
+check "rt:X-Forwarded-For = client IP"      "x-forwarded-for=$v" [ "$v" == "127.0.0.1" ]
+tf_get "$GW_URL/test/tf/xff-chain" -H "X-Forwarded-For: 203.0.113.9" >/dev/null; v=$(up header x-forwarded-for)
+record "$([[ "$v" == "203.0.113.9, "* ]] && echo 1 || echo 0)" "rt:X-Forwarded-For keeps client chain" "x-forwarded-for=$v"
+
+# A rule that touches X-Forwarded-* is rejected when the config is loaded.
+for hdr in X-Forwarded-For X-Forwarded-Proto X-Forwarded-Host; do
+    bad=$(mktemp --suffix=.json)
+    jq --arg h "$hdr" '.listen = {"http": "127.0.0.1:8199"} | .plugins.logging.enabled = false
+        | .plugins.request_transform.rules[0].actions += [{"type":"header","operation":"set","name":$h,"value":"1.2.3.4"}]' \
+        "$CONFIG" >"$bad"
+    out=$(timeout 5 "$BIN" "$bad" 2>&1); rc=$?
+    rm -f "$bad"
+    record "$([[ $rc -eq 1 && "$out" == *"is managed by the gateway"* ]] && echo 1 || echo 0)" \
+        "rt:config rejects $hdr rule" "exit=$rc"
+done
+
+tf_get "$GW_URL/test/tf/host" >/dev/null
+v="$(up header host)|$(up header x-forwarded-host)"
+check "rt:Host rewrite, X-Forwarded-Host = client host" "$v" [ "$v" == "internal.test|127.0.0.1:8099" ]
+
+s=$(tf_get "$GW_URL/test/fw/no-session")
+check "rt:firewall sees the original path"  "status=$s" grep -q '"rule_id":"fw-op-not-exists"' "$TF_B"
+
+tf_get "$GW_URL/test/tf/cached" >/dev/null; c1=$(resp_hdr quayel-cache-status)
+tf_get "$GW_URL/test/tf/cached-alias" >/dev/null; c2=$(resp_hdr quayel-cache-status)
+check "rt:cache key uses the rewritten path" "statuses=$c1,$c2 path=$(up path)" [ "$c1|$c2" == "MISS|HIT" ]
+
+for phase in MISS HIT; do
+    tf_get "$GW_URL/test/tf/resp" >/dev/null
+    v="$(resp_hdr quayel-cache-status)|$(resp_hdr x-powered-by)|$(resp_hdr x-resp-tags)|$(resp_hdr server)|$(resp_hdr content-type)|$(resp_hdr x-original-content-type)"
+    check "rs:header set/add/remove/rename ($phase)" "$v" [ "$v" == "$phase|Quayel|r1|||application/json" ]
+    v=$(resp_hdr x-cacheable)
+    check "rs:resp.header condition ($phase)" "x-cacheable=$v" [ "$v" == "yes" ]
+done
+
+for phase in MISS HIT; do
+    s=$(tf_get "$GW_URL/test/tf/teapot")
+    v="$s|$(resp_hdr quayel-cache-status)|$(resp_hdr x-was-teapot)"
+    check "rs:status override + chained condition ($phase)" "$v" [ "$v" == "418|$phase|yes" ]
+done
+
+tf_get "$GW_URL/probe" >/dev/null; v=$(resp_hdr x-transformed)
+check "rs:applies outside /test/tf"         "x-transformed=$v" [ "$v" == "yes" ]
+s=$(tf_get "$GW_URL/test/fw/no-session"); v=$(resp_hdr x-transformed)
+check "rs:skips firewall block"             "status=$s x-transformed=$v" [ "$s|$v" == "403|" ]
+s=$(tf_get "$GW_URL/test/rl/single"); v=$(resp_hdr x-transformed)
+check "rs:skips rate-limit block"           "status=$s x-transformed=$v" [ "$s|$v" == "429|" ]
+
+# ── 8. Load balancer: algorithms ─────────────────────────────────────────────
 bodies=""
 for _ in 1 2 3 4; do
     bodies+=$(curl -s --max-time 5 "$GW_URL/lb/rr")
@@ -204,7 +305,7 @@ record "$([[ "$s" == "200" ]] && echo 1 || echo 0)" "lb:fast_response routes" "s
 s=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "$GW_URL/lb/wrr")
 record "$([[ "$s" == "200" ]] && echo 1 || echo 0)" "lb:weighted_round_robin routes" "status=$s"
 
-# ── 8. Logging: JSONL events written ─────────────────────────────────────────
+# ── 9. Logging: JSONL events written ─────────────────────────────────────────
 sleep 2.5
 if [[ -s "$LOG" ]]; then
     hit=$(grep -c '"status":"HIT"' "$LOG" || true)
@@ -220,6 +321,43 @@ if [[ -s "$LOG" ]]; then
     record "$([[ $missing -eq 0 ]] && echo 1 || echo 0)" \
         "logging:firewall action events for all rules" \
         "expected=${#EXPECTED_LOG[@]} missing=$missing"
+
+    # Transform fields: one line per check → "<ok> <name> <detail>"
+    while read -r ok name detail; do
+        record "$ok" "$name" "$detail"
+    done < <(python3 - "$LOG" <<'EOF'
+import json, sys
+ev = [json.loads(l) for l in open(sys.argv[1]) if l.strip()]
+def find(path, status=None):
+    return next((e for e in ev if e["path"] == path and (status is None or e["cache"]["status"] == status)), None)
+def out(ok, name, detail):
+    print(1 if ok else 0, name, detail or "-")
+
+e = find("/test/tf/api/hello?k=1")
+rt = e and e["request_transform"]
+out(rt and "rt-prefix" in rt["rules"] and rt["path"] == "/test/tf/v1/hello?k=1",
+    "logging:request_transform rules+path", rt and f'rules={",".join(rt["rules"])} path={rt["path"]}')
+e = find("/test/tf/host")
+rt = e and e["request_transform"]
+out(rt and "rt-host" in rt["rules"] and rt["host"] == "internal.test" and e["host"] == "127.0.0.1:8099",
+    "logging:request_transform host", rt and f'host={e["host"]} sent={rt["host"]}')
+e = find("/probe")
+rt = e and e["request_transform"]
+out(rt and rt["path"] is None and rt["host"] is None,
+    "logging:request_transform untouched", rt and f'path={rt["path"]} host={rt["host"]}')
+for phase in ("MISS", "HIT"):
+    e = find("/test/tf/resp", phase)
+    rs = e and e["response_transform"]["rules"]
+    out(rs and "rs-tf-all" in rs, f"logging:response_transform rules ({phase})", rs and ",".join(rs))
+e = find("/test/tf/teapot", "HIT")
+rs = e and e["response_transform"]["rules"]
+out(rs and {"rs-status", "rs-status-chain"} <= set(rs),
+    "logging:response_transform chained rules", rs and ",".join(rs))
+blocks = [e for e in ev if e["response_status"] in (403, 429) and e["termination_phase"]]
+out(blocks and all(e["response_transform"]["rules"] == [] for e in blocks),
+    "logging:no response_transform on blocks", f"blocks={len(blocks)}")
+EOF
+)
 else
     record 0 "logging:JSONL written" "$LOG missing or empty"
 fi
