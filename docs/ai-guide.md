@@ -19,7 +19,7 @@ services to install (no Redis/etcd/DB).
 | Fact | Value |
 |---|---|
 | Binary | `target/release/quayel-gateway` (~153 MB, data embedded) |
-| CLI | `--workers <N>` (default: all CPU cores), `--help`; positional `CONFIG_PATH` (if omitted: `$QUAYEL_GATEWAY_CONFIG`, then `/etc/quayel-gateway/config.json`, then `./config.json`) |
+| CLI | `--workers <N>` (default: all CPU cores), `--version`/`-V`, `--help`; positional `CONFIG_PATH` (if omitted: `$QUAYEL_GATEWAY_CONFIG`, then `/etc/quayel-gateway/config.json`, then `./config.json`) |
 | Env | `QUAYEL_GATEWAY_CONFIG`, `RUST_LOG` (`info` default), `QUAYEL_IP_INTEL_CACHE_SIZE` (default `65536`) |
 | Build | `./setup.sh` then `cargo build --release` (Linux x86_64) |
 | Config reload | Automatic — the file is watched; a valid edit hot-reloads (no restart). Invalid edits are rejected and the old config keeps serving. |

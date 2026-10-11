@@ -35,6 +35,8 @@ write entries for people running the gateway, not for people reading the diff.
 - **Slowloris, slow POST and slow-read protection.** A deadline for the whole
   request header (Pingora only timed out each read), a per-read body timeout
   and a per-write response timeout.
+- **`--version` / `-V` flag.** Prints the installed version and exits; the
+  startup log line now includes the version too.
 - **Connection and HTTP flood protection.** Per-IP limits on open connections,
   new connections per second and requests per second, with automatic temporary
   bans. Refused requests are logged with `termination_phase: "Protection"`.

@@ -38,11 +38,16 @@ fn parse_workers_from_args() -> (Option<usize>, Vec<String>) {
             println!();
             println!("Options:");
             println!("  --workers <N>   Number of worker threads (default: server.workers, else all CPU cores)");
+            println!("  --version, -V   Print the version and exit");
             println!("  --help, -h      Show this help message");
             println!();
             println!("Arguments:");
             println!("  CONFIG_PATH     Path to the config file. If omitted, the first that exists of:");
             println!("                    $QUAYEL_GATEWAY_CONFIG, {}, ./config.json", DEFAULT_CONFIG_PATH);
+            std::process::exit(0);
+        }
+        if args[i] == "--version" || args[i] == "-V" {
+            println!("quayel-gateway {}", env!("CARGO_PKG_VERSION"));
             std::process::exit(0);
         }
         if args[i] == "--workers" {
@@ -105,9 +110,10 @@ fn main() {
         .json()
         .init();
 
-    tracing::info!("Starting Quayel Gateway...");
-
+    // Parse args first so --help / --version print without a startup log line
     let (cli_workers, remaining_args) = parse_workers_from_args();
+
+    tracing::info!("Starting Quayel Gateway {}...", env!("CARGO_PKG_VERSION"));
 
     // Load configuration — positional arg, $QUAYEL_GATEWAY_CONFIG, system path, ./config.json
     let config_path = match resolve_config_path(

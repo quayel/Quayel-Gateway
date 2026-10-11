@@ -342,6 +342,7 @@ quayel-gateway [--workers N] [CONFIG_PATH]
 |--------|---------|---------|
 | `CONFIG_PATH` | see below | Path to the config file |
 | `--workers N` | `server.workers`, else all CPU cores | Number of worker threads |
+| `--version`, `-V` | | Print the version and exit |
 | `--help` | | Show help |
 
 If you don't pass `CONFIG_PATH`, the gateway uses the first of these that exists:
