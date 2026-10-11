@@ -35,7 +35,8 @@ else
 fi
 
 dl="https://github.com/${repo}/releases/download/${tag}"
-image="ghcr.io/$(echo "${repo%%/*}" | tr '[:upper:]' '[:lower:]')/quayel-gateway"
+owner="$(echo "${repo%%/*}" | tr '[:upper:]' '[:lower:]')"
+image="${owner}/quayel-gateway"
 
 cat <<EOF
 ${section}
@@ -59,7 +60,7 @@ docker run -d -p 80:80 -p 443:443 \\
   ${image}:${version}
 \`\`\`
 
-Without your own config the image starts the demo config on ports 8080/8443.
+Without your own config the image starts the demo config on ports 8080/8443. The same image is also at \`ghcr.io/${owner}/quayel-gateway\`.
 
 **Plain binary**, glibc 2.35+:
 

@@ -53,15 +53,17 @@ client ──▶ IP Intel ──▶ Firewall ──▶ Rate Limit ──▶ Cach
 The image comes with all IP data built in and a demo config that listens on ports 8080 (HTTP) and 8443 (HTTPS).
 
 ```bash
-docker run --rm -p 8080:8080 -p 8443:8443 ghcr.io/quayel/quayel-gateway
+docker run --rm -p 8080:8080 -p 8443:8443 quayel/quayel-gateway
 ```
+
+The same image is on Docker Hub (`quayel/quayel-gateway`) and GitHub's registry (`ghcr.io/quayel/quayel-gateway`). Use whichever you prefer.
 
 Then use your own config by mounting it over the default:
 
 ```bash
 docker run --rm -p 8080:8080 -p 8443:8443 \
   -v $PWD/config.json:/etc/quayel-gateway/config.json:ro \
-  ghcr.io/quayel/quayel-gateway
+  quayel/quayel-gateway
 ```
 
 For a production-style setup with HTTPS (ports 80/443 and saved certificates), use Docker Compose:
@@ -386,7 +388,7 @@ The access log has no built-in rotation, so set up `logrotate` or similar to sto
 docker build -t quayel-gateway .
 ```
 
-The build compiles the binary in `rust:1-bookworm` and runs it on `debian:bookworm-slim`. If the IP databases aren't in `src/data/`, the build downloads them automatically, so **rebuilding the image is how you refresh the IP data**. Do it about once a month to get the latest DB-IP data. Published images are tagged `ghcr.io/quayel/quayel-gateway:latest`, `:<version>` (for example `:0.2.0`) and `:<major>.<minor>`.
+The build compiles the binary in `rust:1-bookworm` and runs it on `debian:bookworm-slim`. If the IP databases aren't in `src/data/`, the build downloads them automatically, so **rebuilding the image is how you refresh the IP data**. Do it about once a month to get the latest DB-IP data. Published images (`quayel/quayel-gateway` on Docker Hub and `ghcr.io/quayel/quayel-gateway`) are tagged `:latest`, `:<version>` (for example `:0.2.0`) and `:<major>.<minor>`.
 
 ### Making a release
 
@@ -401,7 +403,7 @@ git tag v0.3.0
 git push origin main v0.3.0
 ```
 
-GitHub Actions then tests and builds the x86_64 and ARM64 binaries with fresh IP data, packages them as `.tar.gz` and `.deb` files, creates the GitHub release using that version's `CHANGELOG.md` section plus install instructions as the notes, and pushes the Docker image to `ghcr.io`. The build stops if the tag doesn't match `Cargo.toml` or `CHANGELOG.md` has no section for that version. A tag with a suffix, such as `v0.3.0-rc.1`, is published as a pre-release and doesn't move the `latest` image tag.
+GitHub Actions then tests and builds the x86_64 and ARM64 binaries with fresh IP data, packages them as `.tar.gz` and `.deb` files, creates the GitHub release using that version's `CHANGELOG.md` section plus install instructions as the notes, and pushes the Docker image to `ghcr.io` and Docker Hub. The Docker Hub push needs the `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` repo secrets; without them it's skipped. The build stops if the tag doesn't match `Cargo.toml` or `CHANGELOG.md` has no section for that version. A tag with a suffix, such as `v0.3.0-rc.1`, is published as a pre-release and doesn't move the `latest` image tag.
 
 ---
 
