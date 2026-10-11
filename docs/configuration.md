@@ -201,7 +201,9 @@ own stream limits; the header deadline applies to HTTP/1.x.
     "ip_intel": { ... },
     "firewall": { ... },
     "rate_limiting": { ... },
+    "request_transform": { ... },
     "cache": { ... },
+    "response_transform": { ... },
     "load_balancer": { ... },
     "logging": { ... }
   }
@@ -315,6 +317,39 @@ Sliding-window rate limiting.
 Any [condition path](conditions.md) can be used as a key part.
 
 See [Rate Limiting Plugin](plugins/rate-limiting.md) for details.
+
+### `plugins.request_transform` / `plugins.response_transform`
+
+Rewrite the request before the cache lookup (path, query, headers) and the
+response on its way to the client (headers, status). Every matching rule
+applies, in array order.
+
+```json
+{
+  "request_transform": {
+    "enabled": true,
+    "rules": [
+      {
+        "id": "api-v1",
+        "conditions": [{ "left": "req.path", "operator": "starts_with", "value": "/api/" }],
+        "actions": [{ "type": "path", "operation": "replace_prefix", "from": "/api", "to": "/v1" }]
+      }
+    ]
+  },
+  "response_transform": {
+    "enabled": true,
+    "rules": [
+      {
+        "id": "powered-by",
+        "actions": [{ "type": "header", "operation": "set", "name": "X-Powered-By", "value": "Quayel" }]
+      }
+    ]
+  }
+}
+```
+
+See [Request & Response Transform](plugins/transform.md) for every action and
+which headers can't be changed.
 
 ### `plugins.cache`
 
@@ -697,6 +732,9 @@ The gateway validates config on startup and rejects:
   IP/CIDR in `server.protection.exempt_ips`
 - `client_ip.source` is `header` or `header_index` but `header` is not set
 - `client_ip.source` is `header_index` but `index` is not set
+- Transform rules with an unknown or wrong-phase action, an invalid regex, a
+  status outside 200–599, or a protected header (`content-length`,
+  `x-forwarded-for`, ...)
 - Firewall rules with empty conditions
 - Rate limit rules with `limit: 0` or `window_seconds: 0`
 - Load balancers with no targets

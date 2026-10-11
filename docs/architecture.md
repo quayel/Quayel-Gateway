@@ -29,9 +29,13 @@
 │  │                                                  │   │
 │  │  3. Rate Limiting     ─→  throttle/block         │   │
 │  │                                                  │   │
-│  │  4. Load Balancer     ─→  select upstream target  │   │
+│  │  4. Request Transform ─→  path, query, headers   │   │
 │  │                                                  │   │
-│  │  5. Cache             ─→  HIT/MISS/REVALIDATING/STALE/BYPASS  │   │
+│  │  5. Cache             ─→  HIT/MISS/REVALIDATING  │   │
+│  │                           /REVALIDATED/STALE     │   │
+│  │                                                  │   │
+│  │  6. Load Balancer     ─→  select upstream target │   │
+│  │                           (MISS/BYPASS only)     │   │
 │  └──────────────────────┬──────────────────────────┘   │
 │                         │                               │
 │                         ▼                               │
@@ -41,7 +45,7 @@
 │                         │                               │
 │                         ▼                               │
 │  ┌─────────────────────────────────────────────────┐   │
-│  │        Response Filter + Logging (JSONL)         │   │
+│  │     Response Transform + Logging (JSONL)        │   │
 │  └─────────────────────────────────────────────────┘   │
 │                                                         │
 │  ┌─────────────────────────────────────────────────┐   │
@@ -71,23 +75,29 @@ Request In
        │   Any plugin can return Respond ──────┘
        │   (short-circuits remaining plugins)
        ▼
-┌──────────────┐    ┌──────────────┐
-│Load Balancer │───→│    Cache     │───→ Upstream
-│              │    │              │
-│ select target│    │ HIT → respond│
-│ round-robin  │    │ MISS → fetch │
-│              │    │ REVALIDATING │
-│              │    │ → serve stale│
-│              │    │ → first req  │
-│              │    │   fetches    │
-└──────────────┘    └──────────────┘
-                            │
-                            ▼
-                    ┌──────────────┐
-                    │   Logging    │
-                    │   (JSONL)    │
-                    └──────────────┘
+┌──────────────┐    ┌──────────────┐    ┌──────────────┐
+│  Request     │───→│    Cache     │───→│Load Balancer │───→ Upstream
+│  Transform   │    │              │    │              │
+│ path, query, │    │ HIT → respond│    │ select target│
+│ headers      │    │ MISS → fetch │    │ (only when   │
+│              │    │ REVALIDATING │    │  the cache   │
+│              │    │ → lock holder│    │  continues)  │
+│              │    │   fetches,   │    │              │
+│              │    │   others get │    │              │
+│              │    │   stored copy│    │              │
+└──────────────┘    └──────┬───────┘    └──────────────┘
+                           │
+                           ▼
+                   ┌──────────────┐    ┌──────────────┐
+                   │  Response    │───→│   Logging    │
+                   │  Transform   │    │   (JSONL)    │
+                   └──────────────┘    └──────────────┘
 ```
+
+Firewall and rate limiting see the request the client sent. The cache key uses
+the rewritten request. The cache stores the raw origin response, and response
+transforms run on every response sent (origin, HIT, STALE, REVALIDATED), never
+on gateway blocks.
 
 ### Short-circuit behavior
 
@@ -97,7 +107,8 @@ Request In
 | Firewall | Yes | Block, redirect, or set-header action |
 | Rate Limit | Yes | Limit exceeded → 429 |
 | Cache | Yes | Cache HIT → serve cached response; REVALIDATING/STALE → serve stale cached data |
-| Load Balancer | Yes | No healthy upstream → 503 |
+| Request Transform | No | Always continues |
+| Load Balancer | Yes | No healthy upstream → 503 (cache HITs are served without it) |
 
 ## Request Context
 
