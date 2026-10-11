@@ -1,0 +1,12 @@
+/var/log/quayel/*.jsonl {
+    daily
+    rotate 14
+    maxsize 1G
+    compress
+    delaycompress
+    missingok
+    notifempty
+    # The gateway keeps the file open in append mode, so truncating in place is safe.
+    copytruncate
+    su quayel quayel
+}

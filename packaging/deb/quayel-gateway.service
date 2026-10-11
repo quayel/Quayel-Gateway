@@ -1,0 +1,32 @@
+[Unit]
+Description=Quayel Gateway
+Documentation=https://github.com/quayel/Quayel-Gateway
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=quayel
+Group=quayel
+ExecStart=/usr/bin/quayel-gateway /etc/quayel-gateway/config.json
+Restart=always
+RestartSec=3
+LimitNOFILE=65536
+
+# Bind ports 80/443 without running as root.
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+
+# Hardening: the gateway only writes certificates and logs.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ReadWritePaths=/var/lib/quayel /var/log/quayel
+
+[Install]
+WantedBy=multi-user.target

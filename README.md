@@ -53,7 +53,7 @@ client ──▶ IP Intel ──▶ Firewall ──▶ Rate Limit ──▶ Cach
 The image comes with all IP data built in and a demo config that listens on ports 8080 (HTTP) and 8443 (HTTPS).
 
 ```bash
-docker run --rm -p 8080:8080 -p 8443:8443 quayel/quayel-gateway
+docker run --rm -p 8080:8080 -p 8443:8443 ghcr.io/quayel/quayel-gateway
 ```
 
 Then use your own config by mounting it over the default:
@@ -61,7 +61,7 @@ Then use your own config by mounting it over the default:
 ```bash
 docker run --rm -p 8080:8080 -p 8443:8443 \
   -v $PWD/config.json:/etc/quayel-gateway/config.json:ro \
-  quayel/quayel-gateway
+  ghcr.io/quayel/quayel-gateway
 ```
 
 For a production-style setup with HTTPS (ports 80/443 and saved certificates), use Docker Compose:
@@ -70,7 +70,55 @@ For a production-style setup with HTTPS (ports 80/443 and saved certificates), u
 docker compose up -d --build     # see docker-compose.yml
 ```
 
-### Option 2: Build from source
+### Option 2: Install the .deb (Ubuntu / Debian)
+
+Every [release](https://github.com/quayel/Quayel-Gateway/releases) has a `.deb` package for amd64 and arm64. It works on Ubuntu 22.04+ and Debian 12+.
+
+```bash
+VERSION=0.2.0                      # pick the latest from the releases page
+ARCH=$(dpkg --print-architecture)  # amd64 or arm64
+curl -LO https://github.com/quayel/Quayel-Gateway/releases/download/v$VERSION/quayel-gateway_${VERSION}_$ARCH.deb
+sudo apt install ./quayel-gateway_${VERSION}_$ARCH.deb
+```
+
+The package sets everything up:
+
+| What | Where |
+|------|-------|
+| The gateway | `/usr/bin/quayel-gateway` |
+| Your config | `/etc/quayel-gateway/config.json`: listens on port 80 and forwards to `127.0.0.1:3000`. Upgrades never overwrite your edits |
+| systemd service | `quayel-gateway.service`, runs as the `quayel` user and may bind ports 80/443 |
+| Access log | `/var/log/quayel/access.jsonl`, rotated daily (14 days kept) |
+| Certificates | `/var/lib/quayel/certs` |
+| Example configs | `/usr/share/doc/quayel-gateway/examples/` |
+
+The service is enabled but not started, so you can set your backend first:
+
+```bash
+sudo nano /etc/quayel-gateway/config.json
+sudo systemctl start quayel-gateway
+systemctl status quayel-gateway
+journalctl -u quayel-gateway -f
+```
+
+To upgrade, install the newer `.deb` the same way. `sudo apt remove quayel-gateway` keeps your config and certificates, and `sudo apt purge quayel-gateway` deletes them too.
+
+### Option 3: Download a Linux binary
+
+Every [release](https://github.com/quayel/Quayel-Gateway/releases) has ready-made binaries for Linux on x86_64 and ARM64 (aarch64). They need glibc 2.35 or newer: Ubuntu 22.04+ and Debian 12+. On older systems (including RHEL/Rocky/Alma 9 and Amazon Linux 2023), use the Docker image.
+
+```bash
+VERSION=v0.2.0                     # pick the latest from the releases page
+ARCH=x86_64                        # or aarch64
+curl -LO https://github.com/quayel/Quayel-Gateway/releases/download/$VERSION/quayel-gateway-$VERSION-$ARCH-unknown-linux-gnu.tar.gz
+tar xzf quayel-gateway-$VERSION-$ARCH-unknown-linux-gnu.tar.gz
+cd quayel-gateway-$VERSION-$ARCH-unknown-linux-gnu
+./quayel-gateway config.json       # config.json is the demo config; edit it first
+```
+
+Each release also lists a `SHA256SUMS` file you can check the download against with `sha256sum -c --ignore-missing SHA256SUMS`.
+
+### Option 4: Build from source
 
 ```bash
 git clone https://github.com/quayel/quayel-gateway.git
@@ -134,7 +182,7 @@ What each part does:
 | Field | Meaning |
 |-------|---------|
 | `gateway_id`, `gateway_name`, `config_version` | Labels that appear in the logs. Change `config_version` whenever you edit the file so you can tell versions apart |
-| `listen` | Where the gateway accepts traffic. Add `"https": "0.0.0.0:8443"` for TLS |
+| `listen` | Where the gateway accepts traffic. Optional: if you leave it out, HTTP uses port 80 and HTTPS (with Auto-SSL) uses port 443. Ports below 1024 need root or `CAP_NET_BIND_SERVICE` |
 | `client_ip` | How to find the real visitor IP. Use `header_index` on `X-Forwarded-For` **only** when another proxy (Cloudflare, a cloud load balancer) sits in front, because clients can fake that header. If the gateway faces the internet directly, use `{ "source": "peer_ip" }` |
 | `plugins.load_balancer` | Where requests go. `conditions: []` means "match every request" |
 
@@ -286,20 +334,29 @@ quayel-gateway [--workers N] [CONFIG_PATH]
 
 | Option | Default | Meaning |
 |--------|---------|---------|
-| `CONFIG_PATH` | `config.json` | Path to the config file |
+| `CONFIG_PATH` | see below | Path to the config file |
 | `--workers N` | all CPU cores | Number of worker threads |
 | `--help` | | Show help |
+
+If you don't pass `CONFIG_PATH`, the gateway uses the first of these that exists:
+
+1. the file named in `$QUAYEL_GATEWAY_CONFIG`
+2. `/etc/quayel-gateway/config.json` (the standard location for a server install, and the path the Docker image uses)
+3. `./config.json` in the current folder
+
+The log line `Config file: ...` at startup shows which one it picked.
 
 ### Environment variables
 
 | Variable | Default | Meaning |
 |----------|---------|---------|
+| `QUAYEL_GATEWAY_CONFIG` | | Config file to use when no `CONFIG_PATH` is given |
 | `RUST_LOG` | `info` | Log level of the gateway's own output (`debug`, `info`, `warn`, `error`) |
 | `QUAYEL_IP_INTEL_CACHE_SIZE` | `65536` | How many IP lookups to keep in memory |
 
 ### Changing the config
 
-Edit `config.json` while the gateway is running. It checks the file every 5 seconds:
+Edit the config file while the gateway is running. It checks the file every 5 seconds:
 
 - **Valid file:** applied right away, with no restart and no dropped connections. The log says `Config hot-reloaded successfully`.
 - **Invalid file:** rejected, and the gateway keeps running on the last good config. The log shows `Config validation FAILED` or `Config compilation FAILED` with the reason.
@@ -326,10 +383,21 @@ The access log has no built-in rotation, so set up `logrotate` or similar to sto
 ### Building the Docker image yourself
 
 ```bash
-docker build -t quayel/quayel-gateway .
+docker build -t quayel-gateway .
 ```
 
-The build compiles the binary in `rust:1-bookworm` and runs it on `debian:bookworm-slim`. If the IP databases aren't in `src/data/`, the build downloads them automatically, so **rebuilding the image is how you refresh the IP data**. Do it about once a month to get the latest DB-IP data. Tags: `quayel/quayel-gateway:latest` and `quayel/quayel-gateway:<version>`.
+The build compiles the binary in `rust:1-bookworm` and runs it on `debian:bookworm-slim`. If the IP databases aren't in `src/data/`, the build downloads them automatically, so **rebuilding the image is how you refresh the IP data**. Do it about once a month to get the latest DB-IP data. Published images are tagged `ghcr.io/quayel/quayel-gateway:latest`, `:<version>` (for example `:0.2.0`) and `:<major>.<minor>`.
+
+### Making a release
+
+Releases are built automatically by [`.github/workflows/release.yml`](.github/workflows/release.yml). Set `version` in `Cargo.toml`, commit, then push a matching tag:
+
+```bash
+git tag v0.2.0
+git push origin v0.2.0
+```
+
+GitHub Actions then tests and builds the x86_64 and ARM64 binaries with fresh IP data, packages them as `.tar.gz` and `.deb` files, creates the GitHub release with notes generated from the commits, and pushes the Docker image to `ghcr.io`. The build stops if the tag doesn't match `Cargo.toml`. A tag with a suffix, such as `v0.3.0-rc.1`, is published as a pre-release and doesn't move the `latest` image tag.
 
 ---
 
@@ -485,9 +553,11 @@ curl -X PUT http://127.0.0.1:9180/apisix/admin/routes/1 \
 
 ```
 quayel-gateway/
+├── .github/workflows/    # release.yml: builds + publishes releases on a version tag
 ├── config.json           # your live config (hot-reloaded; default path)
 ├── setup.sh              # downloads IP data, installs Rust + build tools
 ├── Dockerfile            # multi-stage image build
+├── Dockerfile.release    # release image from prebuilt binaries (used by CI)
 ├── docker-compose.yml    # production-style setup with HTTPS
 ├── examples/
 │   ├── config.demo.json       # every plugin turned on (the Docker image default)
@@ -506,6 +576,9 @@ quayel-gateway/
 ├── docs/
 │   ├── plugins/          # one page per plugin
 │   └── development/      # benchmark protocol, performance notes
+├── packaging/
+│   ├── build-deb.sh      # builds the .deb from a release binary (used by CI)
+│   └── deb/              # systemd unit, default config, logrotate, install scripts
 ├── scripts/
 │   ├── test/             # all-rules.sh (live rule test), check-config.sh
 │   └── bench/            # wrk benchmarks, Nginx/APISIX mirrors, results/

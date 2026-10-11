@@ -1,0 +1,20 @@
+#!/bin/sh
+set -e
+
+if [ -d /run/systemd/system ]; then
+    systemctl daemon-reload >/dev/null 2>&1 || true
+fi
+
+if [ "$1" = "purge" ]; then
+    # Certificates and logs go only on purge, never on a plain remove.
+    rm -rf /var/lib/quayel/certs /var/log/quayel/access.jsonl*
+    rmdir /var/lib/quayel /var/log/quayel 2>/dev/null || true
+    if getent passwd quayel >/dev/null; then
+        deluser --system quayel >/dev/null 2>&1 || true
+    fi
+    if getent group quayel >/dev/null; then
+        delgroup --system quayel >/dev/null 2>&1 || true
+    fi
+fi
+
+exit 0

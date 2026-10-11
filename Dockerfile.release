@@ -1,0 +1,37 @@
+# Quayel Gateway — release image (used by .github/workflows/release.yml)
+#
+# Packages the binaries the release workflow already built and tested, instead
+# of compiling again, so the arm64 image doesn't need an emulated Rust build.
+# Expects docker-bin/linux/<arch>/quayel-gateway in the build context.
+# To build an image from source, use the regular Dockerfile.
+
+FROM debian:bookworm-slim
+
+ARG TARGETARCH
+
+LABEL org.opencontainers.image.title="Quayel Gateway" \
+      org.opencontainers.image.description="High-performance Rust API gateway built on Cloudflare Pingora — IP intelligence, firewall, rate limiting, cache, load balancing, auto-SSL" \
+      org.opencontainers.image.source="https://github.com/quayel/Quayel-Gateway" \
+      org.opencontainers.image.licenses="Apache-2.0"
+
+RUN apt-get update -qq \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        ca-certificates libgcc-s1 \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY docker-bin/linux/${TARGETARCH}/quayel-gateway /usr/local/bin/quayel-gateway
+COPY LICENSE NOTICE /usr/share/doc/quayel-gateway/
+
+# Same layout as the regular Dockerfile — see the comments there.
+RUN mkdir -p /var/lib/quayel/certs /var/log/quayel
+VOLUME ["/var/lib/quayel/certs"]
+
+COPY examples/config.demo.json /etc/quayel-gateway/config.json
+
+WORKDIR /etc/quayel-gateway
+
+EXPOSE 80 443 8080 8443
+STOPSIGNAL SIGTERM
+
+ENTRYPOINT ["/usr/local/bin/quayel-gateway"]
+CMD ["/etc/quayel-gateway/config.json"]

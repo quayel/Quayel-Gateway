@@ -1,0 +1,192 @@
+# Quayel Gateway — automatic release
+#
+# To release: set `version` in Cargo.toml, commit, then push a matching tag:
+#
+#     git tag v0.2.0 && git push origin v0.2.0
+#
+# This workflow then:
+#   1. builds + tests release binaries for Linux x86_64 and aarch64
+#      (native runners, so no slow emulation of the fat-LTO build)
+#   2. creates a GitHub Release with the .tar.gz archives, .deb packages
+#      (amd64 + arm64) and SHA256SUMS, with notes generated from the commits since the previous tag
+#   3. pushes a multi-arch Docker image to ghcr.io/<owner>/quayel-gateway
+#
+# The IP datasets are downloaded fresh at build time (setup.sh --data-only),
+# so every release also ships the latest DB-IP / Tor / VPN / proxy data.
+# Tags with a suffix (v1.0.0-rc.1) become pre-releases and don't move `latest`.
+
+name: Release
+
+on:
+  push:
+    tags: ['v*.*.*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to (re)build, e.g. v0.2.0'
+        required: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  TAG: ${{ inputs.tag || github.ref_name }}
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          # Ubuntu 22.04 = glibc 2.35, so the binaries also run on
+          # Debian 12+ and Ubuntu 22.04+ (not RHEL 9: glibc 2.34).
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-22.04
+            docker_arch: amd64
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-22.04-arm
+            docker_arch: arm64
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+
+      - name: Check tag matches Cargo.toml version
+        run: |
+          cargo_version="$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)"
+          if [ "v${cargo_version}" != "${TAG}" ]; then
+            echo "::error::Tag ${TAG} does not match Cargo.toml version ${cargo_version}"
+            exit 1
+          fi
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config cmake clang libclang-dev curl jq gzip
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Download IP datasets
+        run: ./setup.sh --data-only
+
+      - name: Test
+        run: cargo test --locked
+
+      - name: Build release binary
+        run: cargo build --release --locked
+
+      - name: Package
+        run: |
+          name="quayel-gateway-${TAG}-${{ matrix.target }}"
+          mkdir -p "dist/${name}" "docker-bin/linux/${{ matrix.docker_arch }}"
+          cp target/release/quayel-gateway LICENSE NOTICE README.md "dist/${name}/"
+          cp examples/config.demo.json "dist/${name}/config.json"
+          tar -C dist -czf "dist/${name}.tar.gz" "${name}"
+          (cd dist && sha256sum "${name}.tar.gz" > "${name}.tar.gz.sha256")
+          cp target/release/quayel-gateway "docker-bin/linux/${{ matrix.docker_arch }}/"
+
+      - name: Build .deb package
+        run: |
+          deb="$(packaging/build-deb.sh target/release/quayel-gateway "${TAG}" "${{ matrix.docker_arch }}" dist)"
+          (cd dist && sha256sum "$(basename "${deb}")" > "$(basename "${deb}").sha256")
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.target }}
+          path: |
+            dist/*.tar.gz
+            dist/*.deb
+            dist/*.sha256
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: docker-bin-${{ matrix.docker_arch }}
+          path: docker-bin/
+          if-no-files-found: error
+
+  release:
+    name: GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: dist
+          merge-multiple: true
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd dist
+          cat ./*.sha256 > SHA256SUMS
+          rm ./*.sha256
+          prerelease=""
+          case "${TAG}" in *-*) prerelease="--prerelease" ;; esac
+          if gh release view "${TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            gh release upload "${TAG}" ./* --clobber --repo "${GITHUB_REPOSITORY}"
+          else
+            gh release create "${TAG}" ./* --repo "${GITHUB_REPOSITORY}" \
+              --title "Quayel Gateway ${TAG}" --generate-notes --verify-tag ${prerelease}
+          fi
+
+  docker:
+    name: Docker image
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: docker-bin-*
+          path: docker-bin
+          merge-multiple: true
+
+      - name: Restore execute bit
+        run: chmod +x docker-bin/linux/*/quayel-gateway
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/quayel-gateway
+          tags: |
+            type=semver,pattern={{version}},value=${{ env.TAG }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ env.TAG }}
+          flavor: |
+            latest=${{ !contains(env.TAG, '-') }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.release
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}

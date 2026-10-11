@@ -1,0 +1,50 @@
+#!/bin/sh
+set -e
+
+if [ "$1" = "configure" ]; then
+    if ! getent group quayel >/dev/null; then
+        addgroup --system quayel
+    fi
+    if ! getent passwd quayel >/dev/null; then
+        adduser --system --ingroup quayel --home /var/lib/quayel \
+            --no-create-home --shell /usr/sbin/nologin \
+            --gecos "Quayel Gateway" quayel
+    fi
+
+    mkdir -p /var/lib/quayel/certs /var/log/quayel
+    chown quayel:quayel /var/lib/quayel /var/lib/quayel/certs /var/log/quayel
+    chmod 0750 /var/lib/quayel /var/lib/quayel/certs /var/log/quayel
+
+    # The config may hold JWT secrets: readable by the service, not by everyone.
+    chown root:quayel /etc/quayel-gateway/config.json
+    chmod 0640 /etc/quayel-gateway/config.json
+fi
+
+if [ -d /run/systemd/system ]; then
+    systemctl daemon-reload >/dev/null || true
+    if [ "$1" = "configure" ] && [ -z "$2" ]; then
+        # Fresh install: enable on boot, but don't start yet. Ports 80/443
+        # may be taken and the default backend (127.0.0.1:3000) is a placeholder.
+        systemctl enable quayel-gateway.service >/dev/null 2>&1 || true
+    elif systemctl is-active --quiet quayel-gateway.service; then
+        # Upgrade: pick up the new binary.
+        systemctl restart quayel-gateway.service || true
+    fi
+fi
+
+if [ "$1" = "configure" ] && [ -z "$2" ]; then
+    cat <<'EOF'
+
+Quayel Gateway is installed.
+
+  1. Edit the config:   sudo nano /etc/quayel-gateway/config.json
+  2. Start it:          sudo systemctl start quayel-gateway
+  3. Check it:          systemctl status quayel-gateway
+                        journalctl -u quayel-gateway -f
+
+By default it listens on port 80 and forwards to 127.0.0.1:3000.
+
+EOF
+fi
+
+exit 0
