@@ -24,6 +24,16 @@ write entries for people running the gateway, not for people reading the diff.
   (`acme-account-*.json`, mode `0600`) and reused for every certificate and
   renewal. `key.pem` files are now written `0600` too (they were
   world-readable). Keep `cert_storage_path` on a persistent volume.
+- **Auto-SSL renewal hung on its first attempt.** The renewal check held a
+  lock on the domain's state while starting the renewal, which needs the same
+  lock, so the renewal task deadlocked and no certificate was ever renewed.
+- **A valid certificate was dropped at startup** when it was inside its
+  renewal window: HTTPS served the self-signed fallback until the new
+  certificate arrived, or for 24 hours if renewal failed. Stored certificates
+  are now served until they actually expire, and renewal replaces them in the
+  background. The renewal window is also capped at a third of the
+  certificate's lifetime, so short-lived certificates aren't re-issued on
+  every restart.
 
 ### Added
 

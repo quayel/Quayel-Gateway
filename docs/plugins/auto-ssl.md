@@ -94,7 +94,7 @@ When cert provisioning fails:
 | `staging` | bool | `false` | — | Use Let's Encrypt staging environment (for testing) |
 | `directory_url` | string | — | — | ACME directory of another CA. Overrides `staging` |
 | `ca_root` | string | — | — | PEM file with the root CA of a private ACME server's HTTPS endpoint |
-| `renewal_days_before` | int | `30` | — | Renew certificates this many days before expiry |
+| `renewal_days_before` | int | `30` | — | Renew certificates this many days before expiry (at most a third of the cert's lifetime) |
 
 ### `email`
 
@@ -157,6 +157,8 @@ The gateway registers one ACME account the first time it needs a certificate and
 ### `renewal_days_before`
 
 The daily renewal check renews certificates that will expire within this many days. Default is 30 days (Let's Encrypt certs are valid for 90 days).
+
+The window is capped at a third of the certificate's lifetime, so short-lived certificates aren't re-issued on every check: a 90-day cert renews 30 days before expiry, a 6-day cert 2 days before.
 
 ## In-Memory Architecture
 
@@ -234,10 +236,10 @@ Adding a new domain to the config only updates the allowed list. The cert is pro
 
 ## Daily Renewal
 
-A background task runs every 24 hours:
+A background task runs at startup and then every 24 hours:
 
 1. Check all domains in `allowed_domains`
-2. If a cert expires within `renewal_days_before` days → re-provision
+2. If a cert is inside its renewal window (`renewal_days_before`, capped at a third of its lifetime) → re-provision. The current cert keeps being served until the new one is loaded, and stays in place if renewal fails
 3. If a cert is expired → re-provision
 4. If a cert is failed AND `failed_at >= 24h` → retry (max 1 failed cert per cycle)
 

@@ -11,11 +11,13 @@ and checks:
   - the account file and private keys are written owner-only (0600)
   - a domain not in `domains` never gets a certificate
   - a domain the CA refuses fails cleanly; the fallback cert is still served
-  - after a restart: certs are served from disk at once, and the stored
+  - after a restart: certs are served from disk at once (Pebble issues 6-day
+    certs, which used to count as expired), aren't re-issued, and the stored
     account is loaded instead of registering a new one
 
 Usage:  python3 scripts/test/auto-ssl.py
 Env:    BIN=./target/debug/quayel-gateway (default)
+        KEEP_TMP=1 keeps the temp dir (certs, account, config) for inspection
 Needs:  docker, python3 with cryptography. Ports 5002 (Pebble validates
         HTTP-01 there), 8053, 8055, 14000, 15000 and 18443 must be free.
 """
@@ -269,13 +271,17 @@ def main():
         check("new domain issued after restart", is_pebble(c), issuer_cn(c))
         text = log_text(log2)
         check("stored account loaded", "Loaded ACME account" in text)
+        check("valid stored certs not re-issued at startup", "triggering renewal" not in text)
         check("no new account registered", "ACME account registered" not in text
               and pebble_new_accounts() == 1, f"{pebble_new_accounts()} newAccount calls")
     finally:
         if gw:
             gw.terminate()
         stop_pebble()
-        shutil.rmtree(tmp, ignore_errors=True)
+        if os.environ.get("KEEP_TMP"):
+            print(f"  kept {tmp}")
+        else:
+            shutil.rmtree(tmp, ignore_errors=True)
 
     print("────────────────────────────────────────────────────────────────────")
     print(f"  TOTAL: {len(PASS) + len(FAIL)}   PASS: \033[0;32m{len(PASS)}\033[0m   FAIL: \033[0;31m{len(FAIL)}\033[0m")
