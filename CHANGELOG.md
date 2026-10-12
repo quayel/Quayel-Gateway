@@ -27,8 +27,8 @@ write entries for people running the gateway, not for people reading the diff.
   tokens are decoded without checking, and the gateway now logs a startup
   warning when rules read JWT claims in that mode.
 - `scripts/test/jwt-verify.py` end-to-end test, also run by `run-all.sh`.
-- **Auto-SSL: `directory_url` and `ca_root`** to use another ACME CA, such as
-  a private step-ca. CAs that need External Account Binding aren't supported.
+
+## [0.3.1] - 2026-10-12
 
 ### Fixed
 
@@ -39,7 +39,7 @@ write entries for people running the gateway, not for people reading the diff.
   One ACME account is now registered, saved in `cert_storage_path`
   (`acme-account-*.json`, mode `0600`) and reused for every certificate and
   renewal. `key.pem` files are now written `0600` too (they were
-  world-readable).
+  world-readable). Keep `cert_storage_path` on a persistent volume.
 - **Auto-SSL renewal hung on its first attempt.** The renewal check held a
   lock on the domain's state while starting the renewal, which needs the same
   lock, so the renewal task deadlocked and no certificate was ever renewed.
@@ -50,9 +50,22 @@ write entries for people running the gateway, not for people reading the diff.
   background. The renewal window is also capped at a third of the
   certificate's lifetime, so short-lived certificates aren't re-issued on
   every restart.
+
+### Added
+
+- **Auto-SSL: `directory_url` and `ca_root`** to use another ACME CA, such as
+  a private step-ca. CAs that need External Account Binding aren't supported.
 - `scripts/test/auto-ssl.py` tests Auto-SSL end to end against Pebble,
   Let's Encrypt's ACME test server. It needs Docker, so `run-all.sh` runs it
   only when Docker is available.
+
+### ⚠️ Security note
+
+- **JWT claims are not verified in 0.3.x.** Condition fields like
+  `header.authorization.jwt.data.role` decode the token without checking its
+  signature or expiry, so a client can forge any claim. Only rely on them when
+  something in front of the gateway, or the origin, verifies the token.
+  Verification is planned for 0.4.0. The conditions docs now say this.
 
 ## [0.3.0] - 2026-10-11
 
@@ -209,7 +222,8 @@ Initial version (not published as a release): reverse proxy built on Pingora
 with IP intelligence, firewall rules, rate limiting, caching, load balancing,
 Auto-SSL and JSONL access logs.
 
-[Unreleased]: https://github.com/quayel/Quayel-Gateway/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/quayel/Quayel-Gateway/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/quayel/Quayel-Gateway/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/quayel/Quayel-Gateway/releases/tag/v0.3.0
 [0.2.0]: https://github.com/quayel/Quayel-Gateway/releases/tag/v0.2.0
 [0.1.0]: https://github.com/quayel/Quayel-Gateway/commit/7480536
