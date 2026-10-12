@@ -206,7 +206,8 @@ Initial version (not published as a release): reverse proxy built on Pingora
 with IP intelligence, firewall rules, rate limiting, caching, load balancing,
 Auto-SSL and JSONL access logs.
 
-[Unreleased]: https://github.com/quayel/Quayel-Gateway/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/quayel/Quayel-Gateway/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/quayel/Quayel-Gateway/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/quayel/Quayel-Gateway/releases/tag/v0.3.0
 [0.2.0]: https://github.com/quayel/Quayel-Gateway/releases/tag/v0.2.0
 [0.1.0]: https://github.com/quayel/Quayel-Gateway/commit/7480536

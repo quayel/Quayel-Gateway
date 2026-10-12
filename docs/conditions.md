@@ -76,6 +76,11 @@ A header path ending in `.jwt.<claim.path>` decodes the header value as a JWT
 | `req.header.authorization.jwt.data.role` | nested claim `data.role` |
 | `header.token.jwt.user_id` | bare `header.` prefix also works (same for rate-limit keys) |
 
+> ⚠️ **Claims aren't verified in 0.3.x.** The gateway decodes the token's payload without checking its
+> signature or expiry, so a client can put any claim in a token it made itself, such as `"role": "admin"`
+> or a new `user_id` on every request. Only base allow decisions or per-user rate limits on JWT fields when
+> something in front of the gateway, or the origin, verifies the token. Verification is planned for 0.4.0.
+
 ## Operators
 
 | Operator | Description | Example |
