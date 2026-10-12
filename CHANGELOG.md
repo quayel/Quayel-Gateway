@@ -27,6 +27,22 @@ write entries for people running the gateway, not for people reading the diff.
   tokens are decoded without checking, and the gateway now logs a startup
   warning when rules read JWT claims in that mode.
 - `scripts/test/jwt-verify.py` end-to-end test, also run by `run-all.sh`.
+- **Auto-SSL: `directory_url` and `ca_root`** to use another ACME CA, such as
+  a private step-ca. CAs that need External Account Binding aren't supported.
+
+### Fixed
+
+- **Auto-SSL never issued a certificate.** The ACME client sent a placeholder
+  instead of a signature and made a new account key for every request, so
+  Let's Encrypt rejected the first call (`newAccount` → `400`) and HTTPS kept
+  using the self-signed fallback. It's replaced with the `instant-acme` client.
+  One ACME account is now registered, saved in `cert_storage_path`
+  (`acme-account-*.json`, mode `0600`) and reused for every certificate and
+  renewal. `key.pem` files are now written `0600` too (they were
+  world-readable).
+- `scripts/test/auto-ssl.py` tests Auto-SSL end to end against Pebble,
+  Let's Encrypt's ACME test server. It needs Docker, so `run-all.sh` runs it
+  only when Docker is available.
 
 ## [0.3.0] - 2026-10-11
 

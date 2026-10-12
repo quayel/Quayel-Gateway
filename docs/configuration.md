@@ -662,6 +662,8 @@ On-demand TLS certificate provisioning using ACME (Let's Encrypt). Certificates 
 | `domains` | string[] | `[]` | Domain names to provision certificates for (required) |
 | `cert_storage_path` | string | `"/var/lib/quayel/certs"` | Directory to store PEM files (write-through cache) |
 | `staging` | bool | `false` | Use Let's Encrypt staging environment (for testing) |
+| `directory_url` | string | — | ACME directory of another CA (e.g. step-ca). Overrides `staging` |
+| `ca_root` | string | — | PEM root CA for a private ACME server's HTTPS endpoint |
 | `renewal_days_before` | int | `30` | Renew certificates this many days before expiry |
 
 #### How it works
@@ -669,7 +671,7 @@ On-demand TLS certificate provisioning using ACME (Let's Encrypt). Certificates 
 1. Gateway starts with a self-signed fallback cert — HTTP and HTTPS serve immediately
 2. First TLS handshake for a domain in `domains` → spawns a background ACME worker
 3. Worker obtains cert from Let's Encrypt via HTTP-01 challenge
-4. Cert loaded into memory + persisted to disk
+4. Cert loaded into memory + persisted to disk (`key.pem` is `0600`); the ACME account is saved once and reused
 5. Next handshake → real cert served
 
 #### Key behaviors

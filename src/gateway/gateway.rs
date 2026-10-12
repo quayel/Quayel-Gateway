@@ -49,13 +49,7 @@ impl GatewayState {
 
         // Initialize Auto-SSL manager if configured
         let auto_ssl = config.auto_ssl.as_ref().map(|ssl_config| {
-            let manager = Arc::new(AutoSslManager::new(
-                &ssl_config.email,
-                &ssl_config.domains,
-                &ssl_config.cert_storage_path,
-                ssl_config.staging,
-                ssl_config.renewal_days_before,
-            ));
+            let manager = Arc::new(AutoSslManager::new(ssl_config));
             // Give it the background runtime handle so the sync SNI callback can
             // spawn ACME workers (it runs on a tokio worker and cannot block/spawn
             // on its own runtime).

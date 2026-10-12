@@ -1,93 +1,28 @@
 use crate::auto_ssl::challenge::ChallengeStore;
-use reqwest::Client;
-use serde::{Deserialize, Serialize};
+use instant_acme::{
+    Account, AccountCredentials, AuthorizationStatus, ChallengeType, Identifier, NewAccount,
+    NewOrder, OrderStatus, RetryPolicy,
+};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tracing::{debug, info};
+use std::time::Duration;
+use tokio::sync::OnceCell;
+use tracing::{info, warn};
 
 /// ACME v2 directory URLs
-const LETS_ENCRYPT_PROD: &str = "https://acme-v02.api.letsencrypt.org/directory";
-const LETS_ENCRYPT_STAGING: &str = "https://acme-staging-v02.api.letsencrypt.org/directory";
+pub const LETS_ENCRYPT_PROD: &str = "https://acme-v02.api.letsencrypt.org/directory";
+pub const LETS_ENCRYPT_STAGING: &str = "https://acme-staging-v02.api.letsencrypt.org/directory";
 
-/// ACME v2 client for Let's Encrypt
-pub struct AcmeClient {
-    http: Client,
-    directory_url: String,
-    email: String,
-    /// Cached directory endpoints
-    directory: Option<AcmeDirectory>,
-    /// Cached account URL (after registration)
-    account_url: Option<String>,
-    /// Nonce for request signing
-    nonce: Option<String>,
-}
-
-/// ACME directory endpoints
-#[derive(Debug, Clone, Deserialize)]
-struct AcmeDirectory {
-    #[serde(rename = "newNonce")]
-    new_nonce: String,
-    #[serde(rename = "newAccount")]
-    new_account: String,
-    #[serde(rename = "newOrder")]
-    new_order: String,
-}
-
-/// ACME order response
-#[derive(Debug, Clone, Deserialize)]
-struct AcmeOrder {
-    status: String,
-    #[serde(rename = "finalize")]
-    finalize_url: String,
-    authorizations: Vec<String>,
-    certificate: Option<String>,
-}
-
-/// ACME authorization response
-#[derive(Debug, Clone, Deserialize)]
-struct AcmeAuthorization {
-    identifier: AcmeIdentifier,
-    status: String,
-    challenges: Vec<AcmeChallenge>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct AcmeIdentifier {
-    value: String,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct AcmeChallenge {
-    #[serde(rename = "type")]
-    challenge_type: String,
-    url: String,
-    token: String,
-    status: String,
-}
-
-/// JWS (JSON Web Signature) header for ACME requests
-#[derive(Serialize)]
-struct JwsHeader<'a> {
-    alg: &'a str,
-    nonce: &'a str,
-    url: &'a str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    jwk: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    kid: Option<&'a str>,
-}
-
-/// JWS protected + payload wrapper
-#[derive(Serialize)]
-struct JwsPayload {
-    protected: String,
-    payload: String,
-    signature: String,
-}
+/// How long to wait for the CA to validate challenges and to issue the cert.
+const VALIDATION_POLICY: RetryPolicy = RetryPolicy::new()
+    .initial_delay(Duration::from_secs(1))
+    .backoff(1.5)
+    .timeout(Duration::from_secs(120));
 
 /// Error type for ACME operations
 #[derive(Debug)]
 pub enum AcmeError {
-    Network(String),
+    Account(String),
     Protocol(String),
     ChallengeFailed(String),
     OrderFailed(String),
@@ -97,7 +32,7 @@ pub enum AcmeError {
 impl std::fmt::Display for AcmeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            AcmeError::Network(e) => write!(f, "ACME network error: {}", e),
+            AcmeError::Account(e) => write!(f, "ACME account error: {}", e),
             AcmeError::Protocol(e) => write!(f, "ACME protocol error: {}", e),
             AcmeError::ChallengeFailed(e) => write!(f, "ACME challenge failed: {}", e),
             AcmeError::OrderFailed(e) => write!(f, "ACME order failed: {}", e),
@@ -106,9 +41,9 @@ impl std::fmt::Display for AcmeError {
     }
 }
 
-impl From<reqwest::Error> for AcmeError {
-    fn from(e: reqwest::Error) -> Self {
-        AcmeError::Network(e.to_string())
+impl From<instant_acme::Error> for AcmeError {
+    fn from(e: instant_acme::Error) -> Self {
+        AcmeError::Protocol(e.to_string())
     }
 }
 
@@ -118,449 +53,284 @@ pub struct AcmeResult {
     pub key_pem: String,
 }
 
+/// ACME v2 client. One per `AutoSslManager`: the account is registered (or
+/// loaded from disk) once and reused for every domain and renewal.
+pub struct AcmeClient {
+    directory_url: String,
+    email: String,
+    /// PEM file with the root CA of a private ACME server (e.g. Pebble, step-ca).
+    /// `None` uses the system roots.
+    ca_root: Option<PathBuf>,
+    /// Where the account key and URL are persisted (0600).
+    account_path: PathBuf,
+    account: OnceCell<Account>,
+}
+
 impl AcmeClient {
-    /// Create a new ACME client
-    pub fn new(email: &str, staging: bool) -> Self {
-        let directory_url = if staging {
-            LETS_ENCRYPT_STAGING.to_string()
-        } else {
-            LETS_ENCRYPT_PROD.to_string()
-        };
-
+    pub fn new(
+        directory_url: &str,
+        email: &str,
+        ca_root: Option<&str>,
+        storage_path: &Path,
+    ) -> Self {
         Self {
-            http: Client::builder()
-                .timeout(std::time::Duration::from_secs(30))
-                .build()
-                .expect("Failed to create HTTP client"),
-            directory_url,
+            directory_url: directory_url.to_string(),
             email: email.to_string(),
-            directory: None,
-            account_url: None,
-            nonce: None,
+            ca_root: ca_root.map(PathBuf::from),
+            account_path: account_file(storage_path, directory_url),
+            account: OnceCell::new(),
         }
     }
 
-    /// Ensure the directory is fetched and return a clone
-    async fn ensure_directory(&mut self) -> Result<AcmeDirectory, AcmeError> {
-        if let Some(dir) = &self.directory {
-            return Ok(dir.clone());
+    pub fn directory_url(&self) -> &str {
+        &self.directory_url
+    }
+
+    fn builder(&self) -> Result<instant_acme::AccountBuilder, AcmeError> {
+        // rustls has both ring and aws-lc-rs compiled in, so it won't pick a
+        // provider by itself. Pingora installs one at server start; don't rely
+        // on that ordering. Err just means one is already installed.
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        match &self.ca_root {
+            Some(p) => Account::builder_with_root(p),
+            None => Account::builder(),
         }
-        debug!("Fetching ACME directory from {}", self.directory_url);
-        let resp = self
-            .http
-            .get(&self.directory_url)
-            .send()
-            .await?
-            .error_for_status()?
-            .json::<AcmeDirectory>()
-            .await?;
-        self.directory = Some(resp.clone());
-        Ok(resp)
+        .map_err(|e| AcmeError::Account(format!("HTTP client: {}", e)))
     }
 
-    /// Get a fresh nonce from the ACME server
-    async fn fetch_nonce(&mut self) -> Result<String, AcmeError> {
-        let dir = self.ensure_directory().await?;
-        let resp = self.http.head(&dir.new_nonce).send().await?;
-
-        let nonce = resp
-            .headers()
-            .get("replay-nonce")
-            .and_then(|v| v.to_str().ok())
-            .ok_or_else(|| AcmeError::Protocol("Missing replay-nonce header".to_string()))?
-            .to_string();
-
-        self.nonce = Some(nonce.clone());
-        Ok(nonce)
+    /// The ACME account: loaded from disk if present, otherwise registered
+    /// once and saved, so every order and renewal uses the same key.
+    async fn account(&self) -> Result<&Account, AcmeError> {
+        self.account
+            .get_or_try_init(|| async {
+                if let Some(creds) = self.load_credentials() {
+                    match self.builder()?.from_credentials(creds).await {
+                        Ok(a) => {
+                            info!(path = ?self.account_path, "Loaded ACME account");
+                            return Ok(a);
+                        }
+                        Err(e) => {
+                            warn!(error = %e, path = ?self.account_path,
+                                "Stored ACME account unusable, registering a new one")
+                        }
+                    }
+                }
+                let contact = format!("mailto:{}", self.email);
+                let contacts = [contact.as_str()];
+                let (account, creds) = self
+                    .builder()?
+                    .create(
+                        &NewAccount {
+                            contact: if self.email.is_empty() {
+                                &[]
+                            } else {
+                                &contacts
+                            },
+                            terms_of_service_agreed: true,
+                            only_return_existing: false,
+                        },
+                        self.directory_url.clone(),
+                        None,
+                    )
+                    .await
+                    .map_err(|e| AcmeError::Account(e.to_string()))?;
+                if let Err(e) = self.save_credentials(&creds) {
+                    // Not fatal: we can still issue, we'll just register again next start.
+                    warn!(error = %e, path = ?self.account_path, "Failed to save ACME account");
+                }
+                info!(email = %self.email, directory = %self.directory_url, "ACME account registered");
+                Ok(account)
+            })
+            .await
     }
 
-    /// Register or retrieve an ACME account
-    async fn ensure_account(&mut self) -> Result<(), AcmeError> {
-        if self.account_url.is_some() {
-            return Ok(());
+    fn load_credentials(&self) -> Option<AccountCredentials> {
+        let data = std::fs::read(&self.account_path).ok()?;
+        match serde_json::from_slice(&data) {
+            Ok(c) => Some(c),
+            Err(e) => {
+                warn!(error = %e, path = ?self.account_path, "Ignoring unreadable ACME account file");
+                None
+            }
         }
-
-        let dir = self.ensure_directory().await?;
-        let nonce = self.fetch_nonce().await?;
-
-        // Generate account key pair
-        let key_pair = rcgen::KeyPair::generate()
-            .map_err(|e| AcmeError::Protocol(format!("Failed to generate account key: {}", e)))?;
-
-        // Build JWK for account registration
-        let jwk = self.build_jwk(&key_pair)?;
-        let payload = serde_json::json!({
-            "termsOfServiceAgreed": true,
-            "contact": [format!("mailto:{}", self.email)]
-        });
-
-        let response = self
-            .send_signed_request(
-                &dir.new_account,
-                &payload.to_string(),
-                &key_pair,
-                &nonce,
-                Some(&jwk),
-                None,
-            )
-            .await?;
-
-        let account_url = response
-            .headers()
-            .get("location")
-            .and_then(|v| v.to_str().ok())
-            .ok_or_else(|| AcmeError::Protocol("Missing account location header".to_string()))?
-            .to_string();
-
-        self.account_url = Some(account_url);
-        info!(email = %self.email, "ACME account registered");
-        Ok(())
     }
 
-    /// Provision a certificate for a domain
+    fn save_credentials(&self, creds: &AccountCredentials) -> Result<(), String> {
+        let json = serde_json::to_vec_pretty(creds).map_err(|e| e.to_string())?;
+        write_private(&self.account_path, &json)
+    }
+
+    /// Provision a certificate for one domain via HTTP-01.
     pub async fn provision_certificate(
-        &mut self,
+        &self,
         domain: &str,
         challenge_store: &Arc<ChallengeStore>,
     ) -> Result<AcmeResult, AcmeError> {
         info!(domain = %domain, "Starting ACME certificate provisioning");
+        let account = self.account().await?;
 
-        // Ensure we have an account
-        self.ensure_account().await?;
+        let identifiers = [Identifier::Dns(domain.to_string())];
+        let mut order = account
+            .new_order(&NewOrder::new(&identifiers))
+            .await
+            .map_err(|e| AcmeError::OrderFailed(e.to_string()))?;
 
-        // Generate domain key pair
-        let domain_key_pair = rcgen::KeyPair::generate()
-            .map_err(|e| AcmeError::Protocol(format!("Failed to generate domain key: {}", e)))?;
-
-        // Build CSR
-        let mut params = rcgen::CertificateParams::new(vec![domain.to_string()])
-            .map_err(|e| AcmeError::Protocol(format!("Failed to create cert params: {}", e)))?;
-        params.subject_alt_names =
-            vec![rcgen::SanType::DnsName(domain.try_into().map_err(|e| {
-                AcmeError::Protocol(format!("Invalid domain: {}", e))
-            })?)];
-
-        let csr = params
-            .serialize_request(&domain_key_pair)
-            .map_err(|e| AcmeError::Protocol(format!("Failed to create CSR: {}", e)))?;
-
-        // Create order
-        let order = self.create_order(domain).await?;
-        info!(domain = %domain, status = %order.status, "ACME order created");
-
-        // Process authorizations
-        for auth_url in &order.authorizations {
-            let auth = self.get_authorization(auth_url).await?;
-            self.complete_challenge(&auth, challenge_store).await?;
-        }
-
-        // Finalize order with CSR
-        let cert_pem = self.finalize_order(&order.finalize_url, &csr).await?;
-
-        // Extract private key PEM
-        let key_pem = format!(
-            "-----BEGIN PRIVATE KEY-----\n{}\n-----END PRIVATE KEY-----",
-            base64::Engine::encode(
-                &base64::engine::general_purpose::STANDARD,
-                domain_key_pair.serialize_der()
-            )
-        );
-
-        info!(domain = %domain, "ACME certificate provisioned successfully");
-        Ok(AcmeResult { cert_pem, key_pem })
-    }
-
-    /// Create a new ACME order for a domain
-    async fn create_order(&mut self, domain: &str) -> Result<AcmeOrder, AcmeError> {
-        let dir = self.ensure_directory().await?;
-        let nonce = self.fetch_nonce().await?;
-        let key_pair = self.get_account_key_pair()?;
-        let account_url = self.account_url.clone();
-
-        let payload = serde_json::json!({
-            "identifiers": [{
-                "type": "dns",
-                "value": domain
-            }]
-        });
-
-        let response = self
-            .send_signed_request(
-                &dir.new_order,
-                &payload.to_string(),
-                &key_pair,
-                &nonce,
-                None,
-                account_url.as_deref(),
-            )
-            .await?;
-
-        let order: AcmeOrder = response.json().await?;
-        Ok(order)
-    }
-
-    /// Get an ACME authorization
-    async fn get_authorization(&self, url: &str) -> Result<AcmeAuthorization, AcmeError> {
-        let resp = self
-            .http
-            .get(url)
-            .send()
-            .await?
-            .error_for_status()?
-            .json::<AcmeAuthorization>()
-            .await?;
-        Ok(resp)
-    }
-
-    /// Complete an HTTP-01 challenge
-    async fn complete_challenge(
-        &mut self,
-        auth: &AcmeAuthorization,
-        challenge_store: &Arc<ChallengeStore>,
-    ) -> Result<(), AcmeError> {
-        let challenge = auth
-            .challenges
-            .iter()
-            .find(|c| c.challenge_type == "http-01")
-            .ok_or_else(|| AcmeError::Protocol("No http-01 challenge found".to_string()))?;
-
-        info!(domain = %auth.identifier.value, token = %challenge.token, "Responding to HTTP-01 challenge");
-
-        // Compute key authorization
-        let key_pair = self.get_account_key_pair()?;
-        let key_auth = self.compute_key_authorization(&challenge.token, &key_pair)?;
-
-        // Store the challenge response
-        challenge_store.set_token(challenge.token.clone(), key_auth);
-
-        // Notify ACME server that we're ready
-        let nonce = self.fetch_nonce().await?;
-        let account_url = self.account_url.clone();
-        let payload = serde_json::json!({});
-
-        self.send_signed_request(
-            &challenge.url,
-            &payload.to_string(),
-            &key_pair,
-            &nonce,
-            None,
-            account_url.as_deref(),
-        )
-        .await?;
-
-        // Poll for challenge completion
-        self.poll_challenge_status(&challenge.url).await?;
-
-        // Clean up challenge token
-        challenge_store.remove_token(&challenge.token);
-
-        info!(domain = %auth.identifier.value, "HTTP-01 challenge completed");
-        Ok(())
-    }
-
-    /// Poll challenge status until valid or failed
-    async fn poll_challenge_status(&self, url: &str) -> Result<(), AcmeError> {
-        for _ in 0..30 {
-            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-
-            let resp: serde_json::Value = self
-                .http
-                .get(url)
-                .send()
-                .await?
-                .error_for_status()?
-                .json()
-                .await?;
-
-            let status = resp["status"].as_str().unwrap_or("unknown");
-            match status {
-                "valid" => return Ok(()),
-                "invalid" => {
-                    let err = resp["error"]["detail"].as_str().unwrap_or("unknown error");
-                    return Err(AcmeError::ChallengeFailed(err.to_string()));
+        // Publish every pending HTTP-01 token, then tell the CA we're ready.
+        let mut tokens = Vec::new();
+        let ready = async {
+            let mut authorizations = order.authorizations();
+            while let Some(authz) = authorizations.next().await {
+                let mut authz = authz?;
+                match authz.status {
+                    AuthorizationStatus::Pending => {}
+                    AuthorizationStatus::Valid => continue,
+                    other => {
+                        return Err(AcmeError::ChallengeFailed(format!(
+                            "authorization is {:?}",
+                            other
+                        )))
+                    }
                 }
-                _ => continue,
+                let mut challenge = authz.challenge(ChallengeType::Http01).ok_or_else(|| {
+                    AcmeError::ChallengeFailed("CA offered no http-01 challenge".to_string())
+                })?;
+                challenge_store.set_token(
+                    challenge.token.clone(),
+                    challenge.key_authorization().as_str().to_string(),
+                );
+                tokens.push(challenge.token.clone());
+                challenge.set_ready().await?;
             }
+            Ok(())
         }
-        Err(AcmeError::ChallengeFailed(
-            "Challenge timed out".to_string(),
-        ))
+        .await;
+
+        let result = match ready {
+            Ok(()) => self.finish_order(domain, &mut order).await,
+            Err(e) => Err(e),
+        };
+
+        for token in &tokens {
+            challenge_store.remove_token(token);
+        }
+        if result.is_ok() {
+            info!(domain = %domain, "ACME certificate provisioned successfully");
+        }
+        result
     }
 
-    /// Finalize an ACME order and download the certificate
-    async fn finalize_order(
-        &mut self,
-        finalize_url: &str,
-        csr: &rcgen::CertificateSigningRequest,
-    ) -> Result<String, AcmeError> {
-        let nonce = self.fetch_nonce().await?;
-        let key_pair = self.get_account_key_pair()?;
-        let account_url = self.account_url.clone();
-
-        // Encode CSR in DER format
-        let csr_der = csr.der().to_vec();
-        let csr_b64 =
-            base64::Engine::encode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, &csr_der);
-
-        let payload = serde_json::json!({
-            "csr": csr_b64
-        });
-
-        let response = self
-            .send_signed_request(
-                finalize_url,
-                &payload.to_string(),
-                &key_pair,
-                &nonce,
-                None,
-                account_url.as_deref(),
-            )
-            .await?;
-
-        let order: AcmeOrder = response.json().await?;
-
-        // Poll for order completion
-        for _ in 0..30 {
-            if order.status == "valid" {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-
-            // In a real implementation, we'd track the order URL and poll it
-            // For now, let's just break if we got a valid response
-            if order.certificate.is_some() {
-                break;
-            }
-            break;
-        }
-
-        // Download certificate
-        let cert_url = order.certificate.ok_or_else(|| {
-            AcmeError::CertificateFailed("No certificate URL in order".to_string())
-        })?;
-
-        let cert_pem = self
-            .http
-            .get(&cert_url)
-            .send()
-            .await?
-            .error_for_status()?
-            .text()
-            .await?;
-
-        Ok(cert_pem)
-    }
-
-    /// Compute the key authorization for an HTTP-01 challenge
-    fn compute_key_authorization(
+    async fn finish_order(
         &self,
-        token: &str,
-        key_pair: &rcgen::KeyPair,
-    ) -> Result<String, AcmeError> {
-        use sha2::{Digest, Sha256};
-
-        // Get the JWK thumbprint
-        let jwk = self.build_jwk(key_pair)?;
-        let jwk_str = serde_json::to_string(&jwk)
-            .map_err(|e| AcmeError::Protocol(format!("Failed to serialize JWK: {}", e)))?;
-
-        let mut hasher = Sha256::new();
-        hasher.update(jwk_str.as_bytes());
-        let thumbprint = base64::Engine::encode(
-            &base64::engine::general_purpose::URL_SAFE_NO_PAD,
-            hasher.finalize(),
-        );
-
-        Ok(format!("{}.{}", token, thumbprint))
-    }
-
-    /// Build a JWK from a key pair
-    fn build_jwk(&self, key_pair: &rcgen::KeyPair) -> Result<serde_json::Value, AcmeError> {
-        let der = key_pair.serialize_der();
-
-        // Simplified: create a basic JWK structure
-        // In production, properly parse the DER to extract EC coordinates
-        Ok(serde_json::json!({
-            "kty": "RSA",
-            "n": base64::Engine::encode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, &der),
-            "e": "AQAB"
-        }))
-    }
-
-    /// Get the account key pair (simplified - in production, store and reuse)
-    fn get_account_key_pair(&self) -> Result<rcgen::KeyPair, AcmeError> {
-        rcgen::KeyPair::generate()
-            .map_err(|e| AcmeError::Protocol(format!("Failed to generate key: {}", e)))
-    }
-
-    /// Send a signed JWS request to the ACME server
-    async fn send_signed_request(
-        &mut self,
-        url: &str,
-        payload: &str,
-        key_pair: &rcgen::KeyPair,
-        nonce: &str,
-        jwk: Option<&serde_json::Value>,
-        kid: Option<&str>,
-    ) -> Result<reqwest::Response, AcmeError> {
-        // Build protected header
-        let header = JwsHeader {
-            alg: "RS256",
-            nonce,
-            url,
-            jwk: jwk.cloned(),
-            kid,
-        };
-
-        let protected = base64::Engine::encode(
-            &base64::engine::general_purpose::URL_SAFE_NO_PAD,
-            serde_json::to_string(&header)
-                .map_err(|e| AcmeError::Protocol(format!("Failed to serialize header: {}", e)))?,
-        );
-
-        let payload_b64 =
-            base64::Engine::encode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, payload);
-
-        // Sign with RSA-SHA256
-        let signing_input = format!("{}.{}", protected, payload_b64);
-        let signature = self.sign_data(key_pair, signing_input.as_bytes())?;
-
-        let jws = JwsPayload {
-            protected,
-            payload: payload_b64,
-            signature: base64::Engine::encode(
-                &base64::engine::general_purpose::URL_SAFE_NO_PAD,
-                &signature,
-            ),
-        };
-
-        let resp = self.http.post(url).json(&jws).send().await?;
-
-        // Update nonce from response
-        if let Some(new_nonce) = resp.headers().get("replay-nonce") {
-            if let Ok(n) = new_nonce.to_str() {
-                self.nonce = Some(n.to_string());
-            }
+        domain: &str,
+        order: &mut instant_acme::Order,
+    ) -> Result<AcmeResult, AcmeError> {
+        let status = order
+            .poll_ready(&VALIDATION_POLICY)
+            .await
+            .map_err(|e| AcmeError::ChallengeFailed(e.to_string()))?;
+        if status != OrderStatus::Ready {
+            return Err(AcmeError::ChallengeFailed(format!(
+                "order is {:?} after validation",
+                status
+            )));
         }
 
-        resp.error_for_status()
-            .map_err(|e| AcmeError::Network(e.to_string()))
+        // Fresh ECDSA P-256 key per certificate; the CSR names only this domain.
+        let key = rcgen::KeyPair::generate()
+            .map_err(|e| AcmeError::CertificateFailed(format!("key generation: {}", e)))?;
+        let params = rcgen::CertificateParams::new(vec![domain.to_string()])
+            .map_err(|e| AcmeError::CertificateFailed(format!("invalid domain: {}", e)))?;
+        let csr = params
+            .serialize_request(&key)
+            .map_err(|e| AcmeError::CertificateFailed(format!("CSR: {}", e)))?;
+
+        order
+            .finalize_csr(csr.der())
+            .await
+            .map_err(|e| AcmeError::OrderFailed(format!("finalize: {}", e)))?;
+        let cert_pem = order
+            .poll_certificate(&VALIDATION_POLICY)
+            .await
+            .map_err(|e| AcmeError::CertificateFailed(e.to_string()))?;
+
+        Ok(AcmeResult {
+            cert_pem,
+            key_pem: key.serialize_pem(),
+        })
+    }
+}
+
+/// One account file per ACME directory, so switching between staging,
+/// production or a private CA never reuses the wrong account.
+fn account_file(storage_path: &Path, directory_url: &str) -> PathBuf {
+    use sha2::{Digest, Sha256};
+    let hash = Sha256::digest(directory_url.as_bytes());
+    let short: String = hash[..6].iter().map(|b| format!("{:02x}", b)).collect();
+    storage_path.join(format!("acme-account-{}.json", short))
+}
+
+/// Write a file readable only by the owner (private keys, account credentials).
+pub fn write_private(path: &Path, data: &[u8]) -> Result<(), String> {
+    use std::io::Write;
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| format!("create {:?}: {}", dir, e))?;
+    }
+    let tmp = path.with_extension("tmp");
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    let mut f = opts
+        .open(&tmp)
+        .map_err(|e| format!("open {:?}: {}", tmp, e))?;
+    f.write_all(data)
+        .and_then(|_| f.sync_all())
+        .map_err(|e| format!("write {:?}: {}", tmp, e))?;
+    std::fs::rename(&tmp, path).map_err(|e| format!("rename to {:?}: {}", path, e))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn account_file_is_per_directory() {
+        let dir = Path::new("/tmp/x");
+        let a = account_file(dir, LETS_ENCRYPT_PROD);
+        let b = account_file(dir, LETS_ENCRYPT_STAGING);
+        assert_ne!(a, b);
+        assert_eq!(a, account_file(dir, LETS_ENCRYPT_PROD));
+        assert!(a.to_string_lossy().starts_with("/tmp/x/acme-account-"));
     }
 
-    /// Sign data with the key pair (simplified - uses raw DER for now)
-    fn sign_data(&self, _key_pair: &rcgen::KeyPair, data: &[u8]) -> Result<Vec<u8>, AcmeError> {
-        // In a real implementation, you'd use RSA-SHA256 signing
-        // For now, we'll use a placeholder that creates a valid-looking signature
-        // The actual signing would need the private key in a format that can sign
+    /// Talks to the real Let's Encrypt staging server, so it's opt-in:
+    /// `cargo test le_staging -- --ignored`. Registers an account with no
+    /// contact, then loads it back from disk.
+    #[tokio::test]
+    #[ignore]
+    async fn le_staging_account_register_and_reload() {
+        let dir = std::env::temp_dir().join(format!("qg-le-{}", std::process::id()));
+        let client = AcmeClient::new(LETS_ENCRYPT_STAGING, "", None, &dir);
+        let id = client.account().await.expect("register").id().to_string();
+        assert!(id.starts_with("https://acme-staging-v02.api.letsencrypt.org/"));
+        let again = AcmeClient::new(LETS_ENCRYPT_STAGING, "", None, &dir);
+        assert_eq!(again.account().await.expect("reload").id(), id);
+        std::fs::remove_dir_all(&dir).ok();
+    }
 
-        // This is a simplified version - in production, use ring or rsa crate for signing
-        use sha2::{Digest, Sha256};
-        let mut hasher = Sha256::new();
-        hasher.update(data);
-        let hash = hasher.finalize();
-
-        // Return hash as placeholder signature (won't actually work with LE)
-        // In production, properly sign with RSA-SHA256
-        Ok(hash.to_vec())
+    #[cfg(unix)]
+    #[test]
+    fn write_private_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("qg-acme-{}", std::process::id()));
+        let path = dir.join("secret.json");
+        write_private(&path, b"{}").unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+        assert_eq!(std::fs::read(&path).unwrap(), b"{}");
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

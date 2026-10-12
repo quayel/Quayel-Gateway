@@ -765,6 +765,8 @@
         },
         "cert_storage_path": { "type": "string", "default": "/var/lib/quayel/certs" },
         "staging": { "type": "boolean", "default": false },
+        "directory_url": { "type": "string", "description": "ACME directory URL of another CA (e.g. step-ca, Pebble). Overrides staging. CAs that need External Account Binding aren't supported." },
+        "ca_root": { "type": "string", "description": "PEM file with the root CA of a private ACME server's HTTPS endpoint. Default: system roots." },
         "renewal_days_before": { "type": "integer", "minimum": 1, "default": 30 }
       }
     }

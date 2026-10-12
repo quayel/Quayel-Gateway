@@ -2,6 +2,8 @@
 
 On-demand TLS certificate provisioning using ACME (Let's Encrypt). Certificates are obtained automatically when the first HTTPS request arrives for a configured domain — no manual certificate management required.
 
+> **Fixed in 0.3.1.** In 0.3.0 and earlier the ACME client didn't sign its requests correctly, so Let's Encrypt rejected them and no certificate was ever issued (the gateway kept serving its self-signed fallback). 0.3.1 uses the [`instant-acme`](https://crates.io/crates/instant-acme) client, keeps one ACME account on disk, and is tested end to end against Pebble, Let's Encrypt's ACME test server.
+
 ## How It Works
 
 ```
@@ -90,6 +92,8 @@ When cert provisioning fails:
 | `domains` | string[] | `[]` | ✅ | Domain names to provision certificates for |
 | `cert_storage_path` | string | `"/var/lib/quayel/certs"` | — | Directory to store PEM files (write-through cache) |
 | `staging` | bool | `false` | — | Use Let's Encrypt staging environment (for testing) |
+| `directory_url` | string | — | — | ACME directory of another CA. Overrides `staging` |
+| `ca_root` | string | — | — | PEM file with the root CA of a private ACME server's HTTPS endpoint |
 | `renewal_days_before` | int | `30` | — | Renew certificates this many days before expiry |
 
 ### `email`
@@ -107,6 +111,7 @@ Directory where PEM files are stored as a write-through cache. On startup, cache
 Directory structure:
 ```
 /var/lib/quayel/certs/
+├── acme-account-1a2b3c4d5e6f.json   ← ACME account key + URL (0600), one per directory_url
 ├── example.com/
 │   ├── cert.pem
 │   └── key.pem
@@ -118,14 +123,36 @@ Directory structure:
     └── key.pem
 ```
 
+`key.pem` and the account file are written with mode `0600` (owner only). Keep this directory on a persistent volume: losing it means registering a new account and issuing new certificates, which counts against Let's Encrypt's rate limits.
+
 ### `staging`
 
-When `true`, uses Let's Encrypt's staging environment (`acme-staging-v02.api.letsencrypt.org`). Staging certificates are not trusted by browsers but have no rate limits. Use this for testing.
+When `true`, uses Let's Encrypt's staging environment (`acme-staging-v02.api.letsencrypt.org`). Staging certificates are not trusted by browsers but have much higher rate limits. Use this for testing.
 
 | Environment | URL | Rate Limits | Trusted |
 |-------------|-----|-------------|---------|
 | Production | `acme-v02.api.letsencrypt.org` | 50 certs/domain/week | ✅ |
-| Staging | `acme-staging-v02.api.letsencrypt.org` | Unlimited | ❌ |
+| Staging | `acme-staging-v02.api.letsencrypt.org` | Much higher | ❌ |
+
+### `directory_url` and `ca_root`
+
+Use another ACME CA instead of Let's Encrypt, for example a private [step-ca](https://smallstep.com/docs/step-ca/) or [Pebble](https://github.com/letsencrypt/pebble) for tests. `directory_url` overrides `staging`. If the CA's own HTTPS endpoint uses a private root, point `ca_root` at that root's PEM file; otherwise the system roots are used.
+
+```json
+"auto_ssl": {
+  "enabled": true,
+  "email": "ops@example.com",
+  "domains": ["internal.example.com"],
+  "directory_url": "https://ca.internal:9000/acme/acme/directory",
+  "ca_root": "/etc/quayel/step-ca-root.pem"
+}
+```
+
+CAs that require External Account Binding (ZeroSSL, Google Trust Services) aren't supported yet.
+
+### ACME account
+
+The gateway registers one ACME account the first time it needs a certificate and saves it as `acme-account-<hash>.json` in `cert_storage_path`. Every later certificate and renewal uses that account, also after restarts. Switching `staging` or `directory_url` uses a separate account file, so accounts never get mixed between CAs.
 
 ### `renewal_days_before`
 
@@ -379,7 +406,7 @@ ACME provisioning typically takes 5-30 seconds. If it's taking longer:
 
 - Check network connectivity to `acme-v02.api.letsencrypt.org`
 - Check logs for timeout errors
-- The challenge poll timeout is 60 seconds (30 polls × 2s interval)
+- The gateway waits up to 120 seconds each for challenge validation and for issuance, polling with backoff
 
 ### Fallback cert shown in browser
 
@@ -406,4 +433,8 @@ If browsers show a certificate warning:
 - **Single domain per cert**: Each certificate covers one domain (no multi-SAN)
 - **No wildcard certs**: Wildcard certificates require DNS-01 challenges
 - **Port 80 required**: HTTP-01 challenges need port 80 accessible from the internet
-- **Let's Encrypt only**: Currently hardcoded to Let's Encrypt (not other ACME CAs)
+- **No External Account Binding**: ACME CAs that require EAB (ZeroSSL, Google Trust Services) aren't supported yet
+
+## Testing
+
+`scripts/test/auto-ssl.py` runs the whole flow against [Pebble](https://github.com/letsencrypt/pebble) in Docker: issuance on the first handshake, a certificate that verifies against the CA root, account reuse across domains and restarts, `0600` files, unlisted and refused domains. `cargo test le_staging -- --ignored` registers and reloads an account on the real Let's Encrypt staging server.

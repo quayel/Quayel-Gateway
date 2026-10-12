@@ -78,7 +78,8 @@ impl CertificateManager {
 
         std::fs::write(&cert_path, cert_pem)
             .map_err(|e| format!("Failed to write cert PEM: {}", e))?;
-        std::fs::write(&key_path, key_pem)
+        // The private key must not be readable by other users.
+        crate::auto_ssl::acme::write_private(&key_path, key_pem.as_bytes())
             .map_err(|e| format!("Failed to write key PEM: {}", e))?;
 
         info!("Saved cert for domain '{}' to {:?}", domain, domain_dir);
