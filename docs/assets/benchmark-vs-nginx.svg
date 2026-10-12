@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="304" viewBox="0 0 800 304" role="img" aria-label="Requests per second, Quayel Gateway vs Nginx 1.31.6. Cache HIT: 82,610 vs 59,040 (+40%). Cache HIT with stale-while-revalidate: 79,823 vs 57,612 (+39%). Proxied to origin: 21,939 vs 18,550 (+18%).">
+  <style>
+    text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; fill: #1f2328; }
+    .muted { fill: #59636e; }
+    .nginx { fill: #afb8c1; }
+    .quayel { fill: #0969da; }
+    .delta { fill: #1a7f37; font-weight: 600; }
+    .grid { stroke: #d1d9e0; stroke-width: 1; }
+  </style>
+  <rect x="0.5" y="0.5" width="799" height="303" rx="8" fill="#ffffff" stroke="#d1d9e0"/>
+
+  <text x="20" y="30" font-size="17" font-weight="600">Requests per second (higher is better)</text>
+  <rect x="20" y="44" width="12" height="12" rx="2" class="quayel"/>
+  <text x="38" y="54" font-size="13">Quayel Gateway 0.3.0</text>
+  <rect x="196" y="44" width="12" height="12" rx="2" class="nginx"/>
+  <text x="214" y="54" font-size="13">Nginx 1.31.6</text>
+
+  <line x1="230" y1="76" x2="230" y2="128" class="grid"/>
+  <text x="20" y="96" font-size="14" font-weight="600">Cache HIT</text>
+  <text x="20" y="114" font-size="12" class="muted">/cache-test, 1 h TTL</text>
+  <rect x="230" y="78" width="428" height="20" rx="3" class="quayel"/>
+  <text x="666" y="93" font-size="13" font-weight="600">82,610</text>
+  <text x="724" y="93" font-size="13" class="delta">+40%</text>
+  <rect x="230" y="102" width="306" height="20" rx="3" class="nginx"/>
+  <text x="544" y="117" font-size="13" class="muted">59,040</text>
+
+  <line x1="230" y1="150" x2="230" y2="202" class="grid"/>
+  <text x="20" y="170" font-size="14" font-weight="600">Cache HIT + SWR</text>
+  <text x="20" y="188" font-size="12" class="muted">/cache-test-second, 2 s TTL</text>
+  <rect x="230" y="152" width="413" height="20" rx="3" class="quayel"/>
+  <text x="651" y="167" font-size="13" font-weight="600">79,823</text>
+  <text x="709" y="167" font-size="13" class="delta">+39%</text>
+  <rect x="230" y="176" width="298" height="20" rx="3" class="nginx"/>
+  <text x="536" y="191" font-size="13" class="muted">57,612</text>
+
+  <line x1="230" y1="224" x2="230" y2="276" class="grid"/>
+  <text x="20" y="244" font-size="14" font-weight="600">Proxied to origin</text>
+  <text x="20" y="262" font-size="12" class="muted">/no-cache, every request</text>
+  <rect x="230" y="226" width="114" height="20" rx="3" class="quayel"/>
+  <text x="352" y="241" font-size="13" font-weight="600">21,939</text>
+  <text x="410" y="241" font-size="13" class="delta">+18%</text>
+  <rect x="230" y="250" width="96" height="20" rx="3" class="nginx"/>
+  <text x="334" y="265" font-size="13" class="muted">18,550</text>
+
+  <text x="20" y="296" font-size="11" class="muted">wrk -t12 -c1000 -d10s, median of 10 interleaved runs, 6 vCPU AMD EPYC. Quayel ran with IP intel, firewall and rate limiting on.</text>
+</svg>

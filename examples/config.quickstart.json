@@ -1,0 +1,62 @@
+{
+  "gateway_id": "quickstart",
+  "gateway_name": "quickstart",
+  "server_name": "localhost",
+  "config_version": "1",
+  "listen": { "http": "0.0.0.0:8080" },
+  "client_ip": { "source": "peer_ip" },
+  "plugins": {
+    "ip_intel": { "enabled": true },
+    "firewall": {
+      "enabled": true,
+      "rules": [
+        {
+          "id": "block-tor", "name": "Block Tor exit nodes", "enabled": true,
+          "conditions": [{ "left": "ip.is_tor", "operator": "equals", "value": true }],
+          "action": { "type": "block", "status": 403 }
+        }
+      ]
+    },
+    "cache": {
+      "enabled": true,
+      "max_object_size_bytes": 10485760,
+      "rules": [
+        {
+          "id": "cache-everything", "name": "Cache every GET for a minute", "enabled": true,
+          "conditions": [],
+          "cache": "eligible",
+          "edge_ttl":    { "mode": "custom", "seconds": 60 },
+          "browser_ttl": { "mode": "custom", "seconds": 0 },
+          "cache_key":   { "mode": "default" },
+          "statuses": [200]
+        }
+      ]
+    },
+    "response_transform": {
+      "enabled": true,
+      "rules": [
+        {
+          "id": "powered-by",
+          "actions": [
+            { "type": "header", "operation": "set", "name": "X-Powered-By", "value": "Quayel Gateway" }
+          ]
+        }
+      ]
+    },
+    "load_balancer": {
+      "enabled": true,
+      "load_balancers": [
+        {
+          "id": "local", "name": "Local backend", "enabled": true,
+          "conditions": [],
+          "algorithm": { "type": "round_robin" },
+          "targets": [
+            { "id": "t1", "host": "127.0.0.1", "port": 3000, "protocol": "http", "weight": 100, "enabled": true }
+          ],
+          "host_header": { "mode": "visitor" },
+          "health_check": { "mode": "off" }
+        }
+      ]
+    }
+  }
+}

@@ -1,499 +1,164 @@
+<div align="center">
+
 # Quayel Gateway
 
-**A fast, single-binary API gateway with IP intelligence built in.**
+**The API gateway that knows who's calling, and serves cached traffic 40% faster than Nginx.**
 
-Quayel Gateway sits in front of your backends and handles firewall rules, rate limiting, caching, load balancing and automatic HTTPS. It is written in Rust on [Pingora](https://github.com/cloudflare/pingora), the framework behind Cloudflare's edge.
+Firewall, rate limiting, caching, transforms, load balancing and automatic HTTPS in one Rust binary,<br>
+with country, ASN, VPN, Tor and datacenter data for every visitor built in. Nothing else to run.
 
-It knows who is calling: every request is tagged with country, city, ASN, hosting provider and VPN / Tor / proxy / datacenter flags. About 140 MB of IP data is compiled into the binary, so there is **nothing else to install**: no Redis, no etcd, no database, no downloads at runtime.
+[![Release](https://img.shields.io/github/v/release/quayel/Quayel-Gateway?label=release&color=0969da)](https://github.com/quayel/Quayel-Gateway/releases)
+[![Docker pulls](https://img.shields.io/docker/pulls/quayel/quayel-gateway?logo=docker&logoColor=white)](https://hub.docker.com/r/quayel/quayel-gateway)
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue)](LICENSE)
+[![Built on Pingora](https://img.shields.io/badge/built%20on-Pingora-f38020?logo=rust&logoColor=white)](https://github.com/cloudflare/pingora)
+[![Platforms](https://img.shields.io/badge/linux-x86__64%20%7C%20arm64-lightgrey?logo=linux&logoColor=white)](#install)
 
-```
-client ──▶ IP Intel ──▶ Firewall ──▶ Rate Limit ──▶ Cache ──▶ Load Balancer ──▶ your backend
-                                                                     │
-                                                          JSONL access log
-```
+[**Quick start**](#try-it-in-30-seconds) · [**Benchmarks**](#benchmarks) · [**Features**](#what-you-get) · [**Install**](#install) · [**Docs**](https://docs.quayel.com/quayel-gateway/getting-started/installation)
 
----
+</div>
 
-## Contents
+<table>
+<tr>
+<td align="center" width="25%">
+<h3>+40%</h3>
+requests per second on cache hits vs Nginx
+</td>
+<td align="center" width="25%">
+<h3>+18%</h3>
+requests per second proxying to the origin vs Nginx
+</td>
+<td align="center" width="25%">
+<h3>1 binary</h3>
+no Redis, etcd, database or sidecars
+</td>
+<td align="center" width="25%">
+<h3>~5 μs</h3>
+to tag a visitor with country, ASN, VPN, Tor and risk score
+</td>
+</tr>
+</table>
 
-- [Why Quayel Gateway](#why-quayel-gateway)
-- [Quick start](#quick-start)
-- [Your first config](#your-first-config)
-- [Common recipes](#common-recipes)
-- [Features](#features)
-- [Running it](#running-it)
-- [Embedded IP data](#embedded-ip-data)
-- [Troubleshooting](#troubleshooting)
-- [Performance vs Nginx](#performance-vs-nginx)
-- [How it compares](#how-it-compares)
-- [Documentation](#documentation)
-- [Repository layout](#repository-layout)
-- [Requirements](#requirements)
-
----
-
-## Why Quayel Gateway
-
-| | |
-|---|---|
-| **One file to deploy** | A single binary (~153 MB with data) plus one `config.json` |
-| **Nothing to run beside it** | No Redis, etcd, database or sidecars |
-| **Small footprint** | ~29 MB of memory at startup |
-| **Knows every visitor** | Country / region / city, ASN and organisation, hosting provider, VPN · Tor · proxy · datacenter · Cloudflare edge, risk score. About 5 μs per lookup (LRU-cached) |
-| **Rules on anything** | Match on method, path, host, headers, cookies or any IP field such as `ip.is_tor` or `ip.risk_score` |
-| **HTTPS without certbot** | Let's Encrypt certificates are issued on the first request and renewed automatically |
-| **Change config live** | Edit `config.json` and it is reloaded within 5 seconds. A broken file is rejected and the running config stays in place |
-| **Useful logs** | One JSON line per request with IP data, the decision each plugin made and per-phase timing |
-
----
-
-## Quick start
-
-### Option 1: Docker (fastest)
-
-The image comes with all IP data built in and a demo config that listens on ports 8080 (HTTP) and 8443 (HTTPS).
+## Try it in 30 seconds
 
 ```bash
-docker run --rm -p 8080:8080 -p 8443:8443 quayel/quayel-gateway
+# 1. Something to put the gateway in front of
+python3 -m http.server 3000 &
+
+# 2. A starter config: IP intel, a Tor block, a 60 s cache and a response header
+curl -sLo config.json https://raw.githubusercontent.com/quayel/Quayel-Gateway/main/examples/config.quickstart.json
+
+# 3. Run the gateway (Linux; host networking lets it reach port 3000)
+docker run --rm -d --name quayel --network host \
+  -v $PWD/config.json:/etc/quayel-gateway/config.json:ro quayel/quayel-gateway
+
+# 4. Ask twice
+curl -s -o /dev/null -D - http://localhost:8080/ | grep -i cache-status   # MISS
+curl -s -o /dev/null -D - http://localhost:8080/ | grep -i cache-status   # HIT
 ```
 
-The same image is on Docker Hub (`quayel/quayel-gateway`) and GitHub's registry (`ghcr.io/quayel/quayel-gateway`). Use whichever you prefer.
+The second request never reaches the backend, and both carry `X-Powered-By: Quayel Gateway` from a response transform. Edit `config.json` while it runs and the change applies within 5 seconds. Stop it with `docker stop quayel`. No Docker? Run the [binary](#linux-binary) with `./quayel-gateway config.json`. For a real setup, see [Install](#install) and [Your first config](#your-first-config).
 
-Then use your own config by mounting it over the default:
+## Benchmarks
 
-```bash
-docker run --rm -p 8080:8080 -p 8443:8443 \
-  -v $PWD/config.json:/etc/quayel-gateway/config.json:ro \
-  quayel/quayel-gateway
-```
+Same machine, same origin, same cache rules, same load. Quayel Gateway served **40% more requests per second than Nginx on cache hits** and **18% more when proxying to the origin**, with lower latency on every route. It did that with IP intelligence, the firewall and rate limiting **switched on**, work Nginx wasn't doing.
 
-For a production-style setup with HTTPS (ports 80/443 and saved certificates), use Docker Compose:
+<p align="center">
+  <img src="docs/assets/benchmark-vs-nginx.svg" alt="Requests per second: Quayel Gateway 82,610 vs Nginx 59,040 on cache hits (+40%), 79,823 vs 57,612 on cache hits with stale-while-revalidate (+39%), 21,939 vs 18,550 proxied to the origin (+18%)" width="800">
+</p>
 
-```bash
-docker compose up -d --build     # see docker-compose.yml
-```
+| Route | Nginx 1.31.6 | **Quayel 0.3.0** | Faster by | p50 latency | p99 latency |
+|---|---:|---:|---:|---|---|
+| Cache HIT (1 h TTL) | 59,040 rps | **82,610 rps** | **+40%** | 15.2 → **10.7 ms** | 50.2 → **43.9 ms** |
+| Cache HIT (2 s TTL, stale-while-revalidate) | 57,612 rps | **79,823 rps** | **+39%** | 15.3 → **11.1 ms** | 55.0 → **44.1 ms** |
+| Proxied to the origin every time | 18,550 rps | **21,939 rps** | **+18%** | 50.2 → **42.1 ms** | 108.2 → **91.9 ms** |
 
-### Option 2: Install the .deb (Ubuntu / Debian)
-
-Every [release](https://github.com/quayel/Quayel-Gateway/releases) has a `.deb` package for amd64 and arm64. It works on Ubuntu 22.04+ and Debian 12+.
-
-```bash
-VERSION=0.3.0                      # pick the latest from the releases page
-ARCH=$(dpkg --print-architecture)  # amd64 or arm64
-curl -LO https://github.com/quayel/Quayel-Gateway/releases/download/v$VERSION/quayel-gateway_${VERSION}_$ARCH.deb
-sudo apt install ./quayel-gateway_${VERSION}_$ARCH.deb
-```
-
-The package sets everything up:
-
-| What | Where |
-|------|-------|
-| The gateway | `/usr/bin/quayel-gateway` |
-| Your config | `/etc/quayel-gateway/config.json`: listens on port 80 and forwards to `127.0.0.1:3000`. Upgrades never overwrite your edits |
-| systemd service | `quayel-gateway.service`, runs as the `quayel` user and may bind ports 80/443 |
-| Access log | `/var/log/quayel/access.jsonl`, rotated daily (14 days kept) |
-| Certificates | `/var/lib/quayel/certs` |
-| Example configs | `/usr/share/doc/quayel-gateway/examples/` |
-
-The service is enabled but not started, so you can set your backend first:
-
-```bash
-sudo nano /etc/quayel-gateway/config.json
-sudo systemctl start quayel-gateway
-systemctl status quayel-gateway
-journalctl -u quayel-gateway -f
-```
-
-To upgrade, install the newer `.deb` the same way. `sudo apt remove quayel-gateway` keeps your config and certificates, and `sudo apt purge quayel-gateway` deletes them too.
-
-### Option 3: Download a Linux binary
-
-Every [release](https://github.com/quayel/Quayel-Gateway/releases) has ready-made binaries for Linux on x86_64 and ARM64 (aarch64). They need glibc 2.35 or newer: Ubuntu 22.04+ and Debian 12+. On older systems (including RHEL/Rocky/Alma 9 and Amazon Linux 2023), use the Docker image.
-
-```bash
-VERSION=v0.3.0                     # pick the latest from the releases page
-ARCH=x86_64                        # or aarch64
-curl -LO https://github.com/quayel/Quayel-Gateway/releases/download/$VERSION/quayel-gateway-$VERSION-$ARCH-unknown-linux-gnu.tar.gz
-tar xzf quayel-gateway-$VERSION-$ARCH-unknown-linux-gnu.tar.gz
-cd quayel-gateway-$VERSION-$ARCH-unknown-linux-gnu
-./quayel-gateway config.json       # config.json is the demo config; edit it first
-```
-
-Each release also lists a `SHA256SUMS` file you can check the download against with `sha256sum -c --ignore-missing SHA256SUMS`.
-
-### Option 4: Build from source
-
-```bash
-git clone https://github.com/quayel/quayel-gateway.git
-cd quayel-gateway
-
-./setup.sh                    # 1. downloads the IP data and installs Rust + build tools
-cargo build --release         # 2. builds the binary (the data is compiled in)
-./target/release/quayel-gateway examples/config.demo.json   # 3. runs it
-```
-
-### Check it works
-
-```bash
-curl -v http://localhost:8080/
-```
-
-You should see the response from the backend in your config. Every response carries a `Quayel-Cache-Status` header, which is a quick way to confirm the request went through the gateway.
-
----
-
-## Your first config
-
-This sends all traffic for `api.example.com` to a backend on `127.0.0.1:3000`, with IP intelligence turned on:
-
-```json
-{
-  "gateway_id": "gw-01",
-  "gateway_name": "default",
-  "server_name": "api.example.com",
-  "config_version": "1",
-  "listen": { "http": "0.0.0.0:8080" },
-  "client_ip": {
-    "source": "header_index",
-    "header": "X-Forwarded-For",
-    "index": 0,
-    "fallback": "peer_ip"
-  },
-  "plugins": {
-    "ip_intel": { "enabled": true },
-    "load_balancer": {
-      "enabled": true,
-      "load_balancers": [{
-        "id": "default",
-        "name": "Backend",
-        "enabled": true,
-        "conditions": [],
-        "algorithm": { "type": "round_robin" },
-        "targets": [
-          { "id": "t1", "host": "127.0.0.1", "port": 3000, "protocol": "http", "weight": 100, "enabled": true }
-        ],
-        "host_header": { "mode": "visitor" },
-        "health_check": { "mode": "off" }
-      }]
-    }
-  }
-}
-```
-
-What each part does:
-
-| Field | Meaning |
-|-------|---------|
-| `gateway_id`, `gateway_name`, `config_version` | Labels that appear in the logs. Change `config_version` whenever you edit the file so you can tell versions apart |
-| `listen` | Where the gateway accepts traffic. Optional: if you leave it out, HTTP uses port 80 and HTTPS (with Auto-SSL) uses port 443. Ports below 1024 need root or `CAP_NET_BIND_SERVICE` |
-| `client_ip` | How to find the real visitor IP. Use `header_index` on `X-Forwarded-For` **only** when another proxy (Cloudflare, a cloud load balancer) sits in front, because clients can fake that header. If the gateway faces the internet directly, use `{ "source": "peer_ip" }` |
-| `plugins.load_balancer` | Where requests go. `conditions: []` means "match every request" |
-
-Start it with:
-
-```bash
-./target/release/quayel-gateway config.json
-```
-
-[`examples/config.demo.json`](examples/config.demo.json) shows every plugin turned on, and [docs/configuration.md](docs/configuration.md) lists every field.
-
----
-
-## Common recipes
-
-Every firewall, rate-limit, cache and load-balancer rule uses the same **conditions**. All conditions in a rule must match:
-
-```json
-{ "left": "<field>", "operator": "<operator>", "value": <value> }
-```
-
-Fields include `req.path`, `req.method`, `req.host`, `req.headers.<name>`, `req.client_ip` and every `ip.*` field. Operators include `equals`, `starts_with`, `regex` and `greater_than`. See [docs/conditions.md](docs/conditions.md) for the full list.
+Median of 10 interleaved runs per route. Quayel won 28 of the 30 head-to-head runs, and neither server returned a single error. The new request and response transforms add no measurable cost, even on every cache hit.
 
 <details>
-<summary><b>Block Tor exit nodes and high-risk IPs</b></summary>
-
-```json
-"firewall": {
-  "enabled": true,
-  "rules": [
-    {
-      "id": "block-tor", "name": "Block Tor exit nodes", "enabled": true,
-      "conditions": [{ "left": "ip.is_tor", "operator": "equals", "value": true }],
-      "action": { "type": "block", "status": 403 }
-    },
-    {
-      "id": "block-high-risk", "name": "Block risk score above 30", "enabled": true,
-      "conditions": [{ "left": "ip.risk_score", "operator": "greater_than", "value": 30 }],
-      "action": { "type": "block", "status": 403 }
-    }
-  ]
-}
-```
-</details>
-
-<details>
-<summary><b>Rate-limit a login endpoint (10 requests per minute per IP)</b></summary>
-
-```json
-"rate_limiting": {
-  "enabled": true,
-  "rules": [{
-    "id": "login-rate", "name": "Login rate limit", "enabled": true,
-    "conditions": [
-      { "left": "req.path",   "operator": "equals", "value": "/api/auth/login" },
-      { "left": "req.method", "operator": "equals", "value": "POST" }
-    ],
-    "key": "req.client_ip",
-    "limit": 10,
-    "window_seconds": 60,
-    "action": { "type": "block", "status": 429 }
-  }]
-}
-```
-</details>
-
-<details>
-<summary><b>Redirect <code>www</code> to the bare domain</b></summary>
-
-```json
-{
-  "id": "redirect-www", "name": "Redirect www", "enabled": true,
-  "conditions": [{ "left": "req.host", "operator": "equals", "value": "www.example.com" }],
-  "action": { "type": "redirect", "status": 301, "location": "https://example.com" }
-}
-```
-Add this to `plugins.firewall.rules`.
-</details>
-
-<details>
-<summary><b>Cache static files for a day</b></summary>
-
-```json
-"cache": {
-  "enabled": true,
-  "max_object_size_bytes": 10485760,
-  "rules": [{
-    "id": "cache-static", "name": "Cache static assets", "enabled": true,
-    "conditions": [{ "left": "req.path", "operator": "regex", "value": "\\.(css|js|woff2?|png|jpg|jpeg|gif|webp|svg|ico)$" }],
-    "cache": "eligible",
-    "edge_ttl":    { "mode": "custom", "seconds": 86400 },
-    "browser_ttl": { "mode": "custom", "seconds": 3600 },
-    "cache_key":   { "mode": "default" },
-    "statuses": [200, 301]
-  }]
-}
-```
-Check the `Quayel-Cache-Status` response header: `MISS` on the first request, then `HIT`.
-</details>
-
-<details>
-<summary><b>Send <code>/api/</code> to a separate pool with health checks</b></summary>
-
-Load balancers are checked in order, and the first one whose conditions match handles the request. Put specific pools first and a catch-all (`"conditions": []`) last.
-
-```json
-{
-  "id": "api-backend", "name": "API pool", "enabled": true,
-  "conditions": [{ "left": "req.path", "operator": "starts_with", "value": "/api/" }],
-  "algorithm": { "type": "round_robin" },
-  "targets": [
-    { "id": "api-1", "host": "10.0.1.10", "port": 8080, "protocol": "http", "weight": 100, "enabled": true },
-    { "id": "api-2", "host": "10.0.1.11", "port": 8080, "protocol": "http", "weight": 100, "enabled": true }
-  ],
-  "host_header": { "mode": "visitor" },
-  "health_check": {
-    "mode": "https", "path": "/health", "interval_seconds": 5, "timeout_ms": 2000,
-    "expected_statuses": [200], "healthy_threshold": 2, "unhealthy_threshold": 3
-  }
-}
-```
-Health-check modes are `https` (request `path` and check the status; it uses each target's own `protocol`, so it works for plain-HTTP targets too), `accepts_connections` (TCP connect only) and `off`.
-</details>
-
----
-
-## Features
-
-| Plugin | What it does | Docs |
-|--------|--------------|------|
-| **IP Intelligence** | Adds country / region / city, ASN and organisation, hosting provider name (`Hetzner Online GmbH`, `Amazon.com, Inc.`, …), `is_vpn`, `is_tor`, `is_datacenter`, `is_proxy`, network type and risk score to every request | [ip-intel.md](docs/plugins/ip-intel.md) |
-| **Firewall** | Allow, block or redirect based on any request field or IP field | [firewall.md](docs/plugins/firewall.md) |
-| **Rate Limiting** | Sliding-window limits keyed by IP, header, cookie or expression | [rate-limiting.md](docs/plugins/rate-limiting.md) |
-| **Cache** | Edge cache with custom TTLs, bypass rules, cache keys and stale-while-revalidate | [cache.md](docs/plugins/cache.md) |
-| **Request / Response Transform** | Rewrite path, query and headers before the cache and origin; set headers and status on every response, including cache HITs | [transform.md](docs/plugins/transform.md) |
-| **Load Balancer** | Round-robin, weighted, least-connections, sticky sessions and fast-response; health checks; Host header control | [load-balancer.md](docs/plugins/load-balancer.md) |
-| **Auto-SSL** | Let's Encrypt certificates issued on the first request and renewed automatically | [auto-ssl.md](docs/plugins/auto-ssl.md) |
-
-**Built-in DoS protection**, on by default with generous limits: a deadline for the whole request header (Slowloris), body and write timeouts (slow POST, slow read), per-IP connection and request limits (connection and HTTP floods) and automatic temporary bans. Every timeout and limit can be changed in the [`server` section](docs/configuration.md#server).
-
-Plugins run in this order: **IP Intel → Firewall → Rate Limit → Cache → Load Balancer → Logging**. Any plugin can stop the request early. For example, the firewall returns `403` before a backend is ever contacted.
-
----
-
-## Running it
-
-### Command line
-
-```
-quayel-gateway [--workers N] [CONFIG_PATH]
-```
-
-| Option | Default | Meaning |
-|--------|---------|---------|
-| `CONFIG_PATH` | see below | Path to the config file |
-| `--workers N` | `server.workers`, else all CPU cores | Number of worker threads |
-| `--version`, `-V` | | Print the version and exit |
-| `--help` | | Show help |
-
-If you don't pass `CONFIG_PATH`, the gateway uses the first of these that exists:
-
-1. the file named in `$QUAYEL_GATEWAY_CONFIG`
-2. `/etc/quayel-gateway/config.json` (the standard location for a server install, and the path the Docker image uses)
-3. `./config.json` in the current folder
-
-The log line `Config file: ...` at startup shows which one it picked.
-
-### Environment variables
-
-| Variable | Default | Meaning |
-|----------|---------|---------|
-| `QUAYEL_GATEWAY_CONFIG` | | Config file to use when no `CONFIG_PATH` is given |
-| `RUST_LOG` | `info` | Log level of the gateway's own output (`debug`, `info`, `warn`, `error`) |
-| `QUAYEL_IP_INTEL_CACHE_SIZE` | `65536` | How many IP lookups to keep in memory |
-
-### Changing the config
-
-Edit the config file while the gateway is running. It checks the file every 5 seconds:
-
-- **Valid file:** applied right away, with no restart and no dropped connections. The log says `Config hot-reloaded successfully`.
-- **Invalid file:** rejected, and the gateway keeps running on the last good config. The log shows `Config validation FAILED` or `Config compilation FAILED` with the reason.
-
-### Logs
-
-The gateway writes two kinds of logs:
-
-- **Its own output** (startup, reloads, errors) goes to stdout as JSON.
-- **Access logs** are one JSON line per request, written to the file set in `plugins.logging`, for example `/var/log/quayel/access.jsonl`. Turn this on with `"enabled": true`.
-
-```bash
-tail -f /var/log/quayel/access.jsonl | jq .
-```
-
-The access log has no built-in rotation, so set up `logrotate` or similar to stop it growing without limit. The field list is in [docs/logging.md](docs/logging.md).
-
-### Auto-SSL in Docker
-
-- **Keep your certificates.** Certificates and the ACME account key live in `cert_storage_path` (`/var/lib/quayel/certs` in the image). Mount a volume there (`-v quayel-certs:/var/lib/quayel/certs`, or use the compose file). Without it, every restart requests new certificates and you will hit Let's Encrypt rate limits.
-- **Open port 80.** Let's Encrypt checks your domain over port 80 from the internet. Map `80:8080` and `443:8443` when using the demo listeners, or listen on 80/443 directly.
-- **Shutdown is clean.** On `SIGTERM` the gateway finishes in-flight requests (5 s grace + 5 s drain), well inside Docker's 10 s stop timeout. `docker-compose.yml` sets `stop_grace_period: 15s` for headroom.
-
-### Building the Docker image yourself
-
-```bash
-docker build -t quayel-gateway .
-```
-
-The build compiles the binary in `rust:1-bookworm` and runs it on `debian:bookworm-slim`. If the IP databases aren't in `src/data/`, the build downloads them automatically, so **rebuilding the image is how you refresh the IP data**. Do it about once a month to get the latest DB-IP data. Published images (`quayel/quayel-gateway` on Docker Hub and `ghcr.io/quayel/quayel-gateway`) are tagged `:latest`, `:<version>` (for example `:0.2.0`) and `:<major>.<minor>`.
-
-### Making a release
-
-Releases are built automatically by [`.github/workflows/release.yml`](.github/workflows/release.yml).
-
-1. As you make changes, add a line for each user-visible one under `## [Unreleased]` in [`CHANGELOG.md`](CHANGELOG.md), in **Breaking changes**, **Added**, **Changed** or **Fixed**.
-2. When releasing, rename `## [Unreleased]` to `## [0.3.0] - YYYY-MM-DD`, add a new empty `## [Unreleased]` above it, and set `version` in `Cargo.toml` to match. Preview the notes with `scripts/release-notes.sh v0.3.0`.
-3. Commit, then push a matching tag:
-
-```bash
-git tag v0.3.0
-git push origin main v0.3.0
-```
-
-GitHub Actions then tests and builds the x86_64 and ARM64 binaries with fresh IP data, packages them as `.tar.gz` and `.deb` files, creates the GitHub release using that version's `CHANGELOG.md` section plus install instructions as the notes, and pushes the Docker image to `ghcr.io` and Docker Hub. The Docker Hub push needs the `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` repo secrets; without them it's skipped. The build stops if the tag doesn't match `Cargo.toml` or `CHANGELOG.md` has no section for that version. A tag with a suffix, such as `v0.3.0-rc.1`, is published as a pre-release and doesn't move the `latest` image tag.
-
----
-
-## Embedded IP data
-
-`./setup.sh` downloads the latest datasets into `src/data/`, and `cargo build` compiles them into the binary.
-
-| File | Contents | Source |
-|------|----------|--------|
-| `dbip-city-lite.mmdb` | Country, region, city, latitude/longitude | DB-IP City Lite |
-| `dbip-asn-lite.mmdb` | ASN and organisation | DB-IP ASN Lite |
-| `dbip-country.mmdb` | Country (fallback) | DB-IP Country Lite |
-| `cloudflare.txt` | Cloudflare edge IP ranges (IPv4 + IPv6) | Cloudflare |
-| `proxy.txt` | Anonymous proxy ranges | FireHOL |
-| `tor.txt` | Tor exit nodes | Tor Project |
-| `vpn.txt` | VPN provider ranges | X4BNet |
-| `datacenter-asns.txt` | Datacenter and hosting ASNs with provider names | **Kept in this repo, edited by hand** |
-
-**How datacenter detection works.** The gateway looks up the visitor's ASN in the ASN database, then checks it against `datacenter-asns.txt`. If it's listed, the request gets `ip.is_datacenter = true` and the provider name. No datacenter IP ranges are shipped.
-
-**Adding a hosting provider.** `setup.sh` never downloads or changes `datacenter-asns.txt`. Add one line in `ASN|Label` format, then rebuild:
-
-```
-24940|Hetzner Online GmbH
-```
-
-The label is the organisation registered for the ASN. Use `Unknown` when there isn't one.
-
-`setup.sh` options:
-
-| Command | What it does |
-|---------|--------------|
-| `./setup.sh` | Downloads data and installs Rust + build tools |
-| `./setup.sh --data-only` | Downloads data only |
-| `./setup.sh --cargo-only` | Installs Rust and fetches crates only |
-
-> **Tip: smaller binary.** `proxy.txt` is large (~2.9M ranges, ~40 MB). If you don't need `ip.is_proxy`, empty `src/data/proxy.txt` before building.
-
----
-
-## Troubleshooting
-
-| Problem | What to check |
-|---------|---------------|
-| Gateway exits right after starting | Look for `Failed to load config` or `Failed to compile config` in the output. The message names the bad field. Validate against [docs/config.schema.json](docs/config.schema.json) |
-| Config edits don't take effect | Look for `Config validation FAILED` in the output. The gateway keeps the last good config until the file is fixed |
-| Every visitor has the same IP, or IP data looks wrong | `client_ip` doesn't match your setup. Use `peer_ip` when clients connect directly, and `header_index` / `header` only when behind a trusted proxy |
-| Requests fail or hang with no backend response | Check the target `host` and `port`, and make sure no target points back at the gateway's own `listen` address. That creates a loop |
-| `503` with a "no healthy upstream" body | Every target in the pool failed its health check. Check that the `health_check.path` returns one of `expected_statuses` |
-| HTTPS certificate isn't issued | Port 80 must be reachable from the internet, the domain must be in `auto_ssl.domains` and its DNS must point at this server |
-| Let's Encrypt rate-limit errors in Docker | Certificates aren't being kept. Mount a volume at `/var/lib/quayel/certs` |
-| Clients get `429` with an `X-Quayel-Block-Reason` header | The built-in flood protection refused them (`request_rate` or `banned`). If it's real traffic, raise `server.protection.max_requests_per_ip_per_sec` or add the IPs to `exempt_ips`. Behind a proxy, set `client_ip` so the limit applies per visitor, not per proxy IP |
-| Large uploads fail with `413` | Raise `server.limits.max_body_bytes` (default 100 MB) |
-| `localhost` / `127.0.0.1` has no country | Expected. Private and local IPs aren't in the GeoIP databases |
-
-For more detail, run with `RUST_LOG=debug`.
-
----
-
-## Performance vs Nginx
-
-Same machine, same origin, same three routes, same cache rules. Quayel Gateway serves **~39% more requests per second than Nginx on cache hits** and **~18% more when proxying to the origin**, with lower latency on every route.
-
-| Route | What it tests | Nginx rps | **Quayel rps** | Faster by | p50 Nginx → Quayel | p99 Nginx → Quayel |
-|---|---|---:|---:|---:|---|---|
-| `/cache-test` | cache HIT (1 h TTL) | 59,040 | **82,610** | **+40%** | 15.2 → **10.7 ms** | 50.2 → **43.9 ms** |
-| `/cache-test-second` | cache HIT (2 s TTL, stale-while-revalidate) | 57,612 | **79,823** | **+39%** | 15.3 → **11.1 ms** | 55.0 → **44.1 ms** |
-| `/no-cache` | proxied to the origin every time | 18,550 | **21,939** | **+18%** | 50.2 → **42.1 ms** | 108.2 → **91.9 ms** |
-
-Median of 10 runs per route. Quayel won 28 of the 30 head-to-head runs. Both had zero errors and zero non-2xx responses.
-
-<details>
-<summary><b>How it was measured</b></summary>
+<summary><b>How it was measured, and how to reproduce it</b></summary>
 
 - **Load:** `wrk -t12 -c1000 -d10s --latency` (12 threads, 1,000 connections, 10 seconds) per run, after a 2-second warm-up per route.
 - **Interleaved:** every rep runs both servers back to back and alternates which goes first, so drift on the box affects both equally.
 - **Machine:** 6 vCPU AMD EPYC, 11 GB RAM. `wrk`, both servers and nothing else on the same box. Both started with `ulimit -n 100000`.
 - **Nginx 1.31.6** (`nginx:alpine`, host networking), config in [`scripts/bench/nginx-mirror/nginx.conf`](scripts/bench/nginx-mirror/nginx.conf): `worker_processes auto`, upstream keepalive, `proxy_cache` with `proxy_cache_lock`, `use_stale updating` and background update, access log off.
-- **Quayel Gateway** release build with `ip_intel`, `firewall` and `rate_limiting` **switched on** (Nginx does none of that work), cache keyed on the path, round-robin to the same origin, access log off.
-- **Not a lab:** results on this box vary by ±10–15% between single runs, which is why it takes 10 interleaved reps. Nginx's cache is file-backed (served from the page cache), Quayel's is in memory.
+- **Quayel Gateway** release build with `ip_intel`, `firewall` and `rate_limiting` on, cache keyed on the path, round-robin to the same origin, access log off.
+- **Caveats:** results on this box vary by ±10–15% between single runs, which is why it takes 10 interleaved reps. Nginx's cache is file-backed (served from the page cache); Quayel's is in memory.
 
-Reproduce: start both, then `bash scripts/bench/bench_vs_nginx.sh 10`. Raw results: [`scripts/bench/results/gateway-vs-nginx-20261011.csv`](scripts/bench/results/gateway-vs-nginx-20261011.csv).
+Reproduce: start both, then `bash scripts/bench/bench_vs_nginx.sh 10`. Raw results: [`scripts/bench/results/gateway-vs-nginx-20261011.csv`](scripts/bench/results/gateway-vs-nginx-20261011.csv). Full write-up: [Benchmarks](https://docs.quayel.com/quayel-gateway/operations/benchmarks).
 </details>
 
----
+## What you get
+
+Every request goes through one fixed pipeline. Any step can answer early: the firewall returns `403` before a backend is ever contacted, and a cache hit never touches the load balancer.
+
+```
+client ─▶ IP Intel ─▶ Firewall ─▶ Rate Limit ─▶ Request Transform ─▶ Cache ─▶ Load Balancer ─▶ backend
+                                                                       │
+                                               HIT / STALE ◀───────────┘
+                                                    │
+client ◀──────────────── Response Transform ◀───────┴──────────────────────── origin response
+                                                    │
+                                            JSONL access log
+```
+
+<table>
+<tr>
+<td width="50%" valign="top">
+
+### 🌍 Knows every visitor
+Country, region and city, ASN and organisation, hosting provider (`Hetzner Online GmbH`, `Amazon.com, Inc.`), VPN, Tor, proxy, datacenter and Cloudflare-edge flags, and a risk score. About 140 MB of IP data is compiled into the binary, so there are no downloads or lookups at runtime. [IP Intelligence →](docs/plugins/ip-intel.md)
+
+</td>
+<td width="50%" valign="top">
+
+### 🛡️ Firewall on anything
+Allow, block or redirect on method, path, host, headers, cookies or any IP field: `ip.is_tor`, `ip.risk_score > 30`, `ip.country != "DE"`. Every plugin uses the same rule conditions. [Firewall →](docs/plugins/firewall.md)
+
+</td>
+</tr>
+<tr>
+<td width="50%" valign="top">
+
+### ⏱️ Rate limiting and DoS protection
+Sliding-window limits keyed by IP, header, cookie or expression. Slowloris, slow-POST, connection-flood and request-flood protection is on by default, with automatic temporary bans. [Rate Limiting →](docs/plugins/rate-limiting.md)
+
+</td>
+<td width="50%" valign="top">
+
+### ⚡ In-memory cache
+Custom TTLs, cache keys and bypass rules. Stale-while-revalidate with a single-request lock, conditional revalidation (`304`), and stale-if-error when the origin fails. [Cache →](docs/plugins/cache.md)
+
+</td>
+</tr>
+<tr>
+<td width="50%" valign="top">
+
+### 🔀 Request and response transforms
+Rewrite the path, query and headers before the cache and origin. Set headers and status codes on every response, including cache hits. The cache stores the raw origin response, so one visitor's output never leaks to another. [Transform →](docs/plugins/transform.md)
+
+</td>
+<td width="50%" valign="top">
+
+### ⚖️ Load balancing
+Round-robin, weighted, least-connections, sticky sessions and fast-response, with active health checks. Cached responses are still served when every backend is down. [Load Balancer →](docs/plugins/load-balancer.md)
+
+</td>
+</tr>
+<tr>
+<td width="50%" valign="top">
+
+### 🔒 HTTPS without certbot
+Let's Encrypt certificates are issued on the first request for a domain and renewed automatically. [Auto-SSL →](docs/plugins/auto-ssl.md)
+
+</td>
+<td width="50%" valign="top">
+
+### 📜 Logs you can query
+One JSON line per request with the visitor's IP data, each plugin's decision, the transform rules that ran and per-phase timing. Config changes are hot-reloaded within 5 seconds, and a broken file is rejected while the old config keeps running. [Logging →](docs/logging.md)
+
+</td>
+</tr>
+</table>
 
 ## How it compares
 
@@ -504,7 +169,8 @@ Reproduce: start both, then `bash scripts/bench/bench_vs_nginx.sh 10`. Raw resul
 | Extra services needed | — | — | etcd | **none** |
 | IP intelligence (Geo / ASN / VPN / Tor / proxy) | 3rd-party modules | 3rd-party modules | plugins (partial) | **built in, data in the binary** |
 | Rate limiting | `limit_req` (fixed window) | `mod_ratelimit` / ModSecurity | limit-req / limit-count | **sliding window, built in** |
-| Caching | `proxy_cache` | `mod_cache` | proxy-cache plugin | **built in** |
+| Caching | `proxy_cache` | `mod_cache` | proxy-cache plugin | **built in, in memory** |
+| Request / response transforms | `rewrite`, `add_header`, `more_set_headers` | `mod_rewrite`, `mod_headers` | proxy-rewrite, response-rewrite | **built in, applied on cache hits** |
 | Load balancing | RR, hash, least_conn | `mod_proxy_balancer` | RR, chash, ewma | **RR, weighted, least-conn, sticky, fast-response** |
 | HTTPS automation | certbot | certbot | plugin / external | **built in (ACME)** |
 | Access logs | text | text | JSON via plugins | **JSONL with IP data and timing** |
@@ -563,49 +229,356 @@ curl -X PUT http://127.0.0.1:9180/apisix/admin/routes/1 \
 **Quayel Gateway:** see [Your first config](#your-first-config).
 </details>
 
----
+## Install
+
+| Method | Best for | Platforms |
+|---|---|---|
+| [Docker](#docker) | Trying it out, containers, any Linux distro | amd64, arm64 |
+| [`.deb` package](#deb-package-ubuntu--debian) | Servers, with a systemd service and log rotation set up | Ubuntu 22.04+, Debian 12+ |
+| [Linux binary](#linux-binary) | Anything else with glibc 2.35+ | x86_64, aarch64 |
+| [From source](#from-source) | Development, custom builds | Linux |
+
+### Docker
+
+```bash
+docker run --rm -p 8080:8080 -p 8443:8443 \
+  -v $PWD/config.json:/etc/quayel-gateway/config.json:ro \
+  quayel/quayel-gateway
+```
+
+Also on GitHub's registry as `ghcr.io/quayel/quayel-gateway`. Tags: `:latest`, `:0.3.0`, `:0.3`. For a production-style setup with HTTPS on ports 80/443 and saved certificates, use `docker compose up -d` with the included [`docker-compose.yml`](docker-compose.yml).
+
+<details>
+<summary><b>Auto-SSL in Docker</b></summary>
+
+- **Keep your certificates.** Certificates and the ACME account key live in `/var/lib/quayel/certs`. Mount a volume there (`-v quayel-certs:/var/lib/quayel/certs`, or use the compose file). Without it, every restart requests new certificates and you will hit Let's Encrypt rate limits.
+- **Open port 80.** Let's Encrypt checks your domain over port 80 from the internet. Map `80:8080` and `443:8443` when using the demo listeners, or listen on 80/443 directly.
+- **Shutdown is clean.** On `SIGTERM` the gateway finishes in-flight requests (5 s grace + 5 s drain), inside Docker's 10 s stop timeout.
+
+To build the image yourself, run `docker build -t quayel-gateway .`. The build downloads the IP data if `src/data/` is empty, so rebuilding is also how you refresh it.
+</details>
+
+### `.deb` package (Ubuntu / Debian)
+
+```bash
+VERSION=0.3.0
+ARCH=$(dpkg --print-architecture)  # amd64 or arm64
+curl -LO https://github.com/quayel/Quayel-Gateway/releases/download/v$VERSION/quayel-gateway_${VERSION}_$ARCH.deb
+sudo apt install ./quayel-gateway_${VERSION}_$ARCH.deb
+
+sudo nano /etc/quayel-gateway/config.json   # point it at your backend
+sudo systemctl start quayel-gateway
+```
+
+<details>
+<summary><b>What the package installs</b></summary>
+
+| What | Where |
+|------|-------|
+| The gateway | `/usr/bin/quayel-gateway` |
+| Your config | `/etc/quayel-gateway/config.json`: listens on port 80 and forwards to `127.0.0.1:3000`. Upgrades never overwrite your edits |
+| systemd service | `quayel-gateway.service`, runs as the `quayel` user and may bind ports 80/443. Enabled but not started |
+| Access log | `/var/log/quayel/access.jsonl`, rotated daily (14 days kept) |
+| Certificates | `/var/lib/quayel/certs` |
+| Example configs | `/usr/share/doc/quayel-gateway/examples/` |
+
+Follow the logs with `journalctl -u quayel-gateway -f`. To upgrade, install the newer `.deb` the same way. `sudo apt remove quayel-gateway` keeps your config and certificates; `sudo apt purge quayel-gateway` deletes them too.
+</details>
+
+### Linux binary
+
+```bash
+VERSION=v0.3.0
+ARCH=x86_64                        # or aarch64
+curl -LO https://github.com/quayel/Quayel-Gateway/releases/download/$VERSION/quayel-gateway-$VERSION-$ARCH-unknown-linux-gnu.tar.gz
+tar xzf quayel-gateway-$VERSION-$ARCH-unknown-linux-gnu.tar.gz
+cd quayel-gateway-$VERSION-$ARCH-unknown-linux-gnu
+./quayel-gateway config.json       # the demo config; edit it first
+```
+
+Needs glibc 2.35 or newer (Ubuntu 22.04+, Debian 12+). On older systems, including RHEL/Rocky/Alma 9 and Amazon Linux 2023, use the Docker image. Check the download with `sha256sum -c --ignore-missing SHA256SUMS` from the release page.
+
+### From source
+
+```bash
+git clone https://github.com/quayel/Quayel-Gateway.git
+cd Quayel-Gateway
+./setup.sh                    # downloads the IP data and installs Rust + build tools
+cargo build --release         # the data is compiled into the binary
+./target/release/quayel-gateway examples/config.demo.json
+```
+
+## Your first config
+
+This sends all traffic for `api.example.com` to a backend on `127.0.0.1:3000`, with IP intelligence turned on:
+
+```json
+{
+  "gateway_id": "gw-01",
+  "gateway_name": "default",
+  "server_name": "api.example.com",
+  "config_version": "1",
+  "listen": { "http": "0.0.0.0:8080" },
+  "client_ip": { "source": "peer_ip" },
+  "plugins": {
+    "ip_intel": { "enabled": true },
+    "load_balancer": {
+      "enabled": true,
+      "load_balancers": [{
+        "id": "default",
+        "name": "Backend",
+        "enabled": true,
+        "conditions": [],
+        "algorithm": { "type": "round_robin" },
+        "targets": [
+          { "id": "t1", "host": "127.0.0.1", "port": 3000, "protocol": "http", "weight": 100, "enabled": true }
+        ],
+        "host_header": { "mode": "visitor" },
+        "health_check": { "mode": "off" }
+      }]
+    }
+  }
+}
+```
+
+| Field | Meaning |
+|-------|---------|
+| `gateway_id`, `gateway_name`, `config_version` | Labels that appear in the logs. Bump `config_version` when you edit the file so you can tell versions apart |
+| `listen` | Where the gateway accepts traffic. Optional: without it, HTTP uses port 80 and HTTPS (with Auto-SSL) uses 443 |
+| `client_ip` | How to find the real visitor IP. `peer_ip` is right when clients connect directly. Behind Cloudflare or a cloud load balancer, read `X-Forwarded-For` with `{ "source": "header_index", "header": "X-Forwarded-For", "index": 0, "fallback": "peer_ip" }`. Never do that when the gateway faces the internet directly, because clients can fake the header |
+| `plugins.load_balancer` | Where requests go. `conditions: []` means "match every request" |
+
+Start it with `quayel-gateway config.json`. [`examples/config.demo.json`](examples/config.demo.json) turns on every plugin, and the [Configuration Reference](docs/configuration.md) lists every field. [`docs/config.schema.json`](docs/config.schema.json) validates a config in any editor.
+
+## Common recipes
+
+Every firewall, rate-limit, transform, cache and load-balancer rule uses the same **conditions**, and all conditions in a rule must match:
+
+```json
+{ "left": "<field>", "operator": "<operator>", "value": <value> }
+```
+
+Fields include `req.path`, `req.method`, `req.host`, `req.headers.<name>`, `req.client_ip` and every `ip.*` field. Operators include `equals`, `starts_with`, `regex` and `greater_than`. See [Conditions](docs/conditions.md) for the full list.
+
+<details>
+<summary><b>Block Tor exit nodes and high-risk IPs</b></summary>
+
+```json
+"firewall": {
+  "enabled": true,
+  "rules": [
+    {
+      "id": "block-tor", "name": "Block Tor exit nodes", "enabled": true,
+      "conditions": [{ "left": "ip.is_tor", "operator": "equals", "value": true }],
+      "action": { "type": "block", "status": 403 }
+    },
+    {
+      "id": "block-high-risk", "name": "Block risk score above 30", "enabled": true,
+      "conditions": [{ "left": "ip.risk_score", "operator": "greater_than", "value": 30 }],
+      "action": { "type": "block", "status": 403 }
+    }
+  ]
+}
+```
+</details>
+
+<details>
+<summary><b>Rate-limit a login endpoint (10 requests per minute per IP)</b></summary>
+
+```json
+"rate_limiting": {
+  "enabled": true,
+  "rules": [{
+    "id": "login-rate", "name": "Login rate limit", "enabled": true,
+    "conditions": [
+      { "left": "req.path",   "operator": "equals", "value": "/api/auth/login" },
+      { "left": "req.method", "operator": "equals", "value": "POST" }
+    ],
+    "key": "req.client_ip",
+    "limit": 10,
+    "window_seconds": 60,
+    "action": { "type": "block", "status": 429 }
+  }]
+}
+```
+</details>
+
+<details>
+<summary><b>Cache static files for a day</b></summary>
+
+```json
+"cache": {
+  "enabled": true,
+  "max_object_size_bytes": 10485760,
+  "rules": [{
+    "id": "cache-static", "name": "Cache static assets", "enabled": true,
+    "conditions": [{ "left": "req.path", "operator": "regex", "value": "\\.(css|js|woff2?|png|jpg|jpeg|gif|webp|svg|ico)$" }],
+    "cache": "eligible",
+    "edge_ttl":    { "mode": "custom", "seconds": 86400 },
+    "browser_ttl": { "mode": "custom", "seconds": 3600 },
+    "cache_key":   { "mode": "default" },
+    "statuses": [200, 301]
+  }]
+}
+```
+Check the `Quayel-Cache-Status` response header: `MISS` on the first request, then `HIT`.
+</details>
+
+<details>
+<summary><b>Rewrite <code>/api/*</code> to <code>/v1/*</code> and add headers to every response</b></summary>
+
+```json
+"request_transform": {
+  "enabled": true,
+  "rules": [{
+    "id": "api-v1",
+    "conditions": [{ "left": "req.path", "operator": "starts_with", "value": "/api/" }],
+    "actions": [
+      { "type": "path",   "operation": "replace_prefix", "from": "/api", "to": "/v1" },
+      { "type": "header", "operation": "set", "name": "X-Service", "value": "quayel" }
+    ]
+  }]
+},
+"response_transform": {
+  "enabled": true,
+  "rules": [{
+    "id": "powered-by",
+    "actions": [
+      { "type": "header", "operation": "set",    "name": "X-Powered-By", "value": "Quayel" },
+      { "type": "header", "operation": "remove", "name": "Server" }
+    ]
+  }]
+}
+```
+The firewall and rate limiter still see the original `/api/...` path, so a rewrite can't get around them. The cache key uses the rewritten path.
+</details>
+
+<details>
+<summary><b>Redirect <code>www</code> to the bare domain</b></summary>
+
+```json
+{
+  "id": "redirect-www", "name": "Redirect www", "enabled": true,
+  "conditions": [{ "left": "req.host", "operator": "equals", "value": "www.example.com" }],
+  "action": { "type": "redirect", "status": 301, "location": "https://example.com" }
+}
+```
+Add this to `plugins.firewall.rules`.
+</details>
+
+<details>
+<summary><b>Send <code>/api/</code> to a separate pool with health checks</b></summary>
+
+Load balancers are checked in order, and the first one whose conditions match handles the request. Put specific pools first and a catch-all (`"conditions": []`) last.
+
+```json
+{
+  "id": "api-backend", "name": "API pool", "enabled": true,
+  "conditions": [{ "left": "req.path", "operator": "starts_with", "value": "/api/" }],
+  "algorithm": { "type": "round_robin" },
+  "targets": [
+    { "id": "api-1", "host": "10.0.1.10", "port": 8080, "protocol": "http", "weight": 100, "enabled": true },
+    { "id": "api-2", "host": "10.0.1.11", "port": 8080, "protocol": "http", "weight": 100, "enabled": true }
+  ],
+  "host_header": { "mode": "visitor" },
+  "health_check": {
+    "mode": "https", "path": "/health", "interval_seconds": 5, "timeout_ms": 2000,
+    "expected_statuses": [200], "healthy_threshold": 2, "unhealthy_threshold": 3
+  }
+}
+```
+Health-check modes are `https` (request `path` and check the status, using each target's own `protocol`), `accepts_connections` (TCP connect only) and `off`.
+</details>
+
+## Running it
+
+```
+quayel-gateway [--workers N] [CONFIG_PATH]
+```
+
+| Option / variable | Default | Meaning |
+|---|---|---|
+| `CONFIG_PATH` | `$QUAYEL_GATEWAY_CONFIG`, then `/etc/quayel-gateway/config.json`, then `./config.json` | Config file. The startup line `Config file: ...` shows which one was picked |
+| `--workers N` | `server.workers`, else all CPU cores | Worker threads |
+| `--version`, `-V` | | Print the version and exit |
+| `RUST_LOG` | `info` | Level of the gateway's own output (`debug`, `info`, `warn`, `error`) |
+| `QUAYEL_IP_INTEL_CACHE_SIZE` | `65536` | IP lookups kept in memory |
+
+- **Hot reload:** the config file is checked every 5 seconds. A valid file is applied with no restart and no dropped connections (`Config hot-reloaded successfully`). An invalid one is rejected and the last good config keeps running (`Config validation FAILED`, with the reason).
+- **Logs:** the gateway's own output goes to stdout as JSON. Access logs are one JSON line per request, written to the file set in `plugins.logging` (`tail -f /var/log/quayel/access.jsonl | jq .`). Outside the `.deb`, set up `logrotate` for that file. Fields: [Logging](docs/logging.md).
+
+<details>
+<summary><b>Troubleshooting</b></summary>
+
+| Problem | What to check |
+|---------|---------------|
+| Gateway exits right after starting | Look for `Failed to load config` or `Failed to compile config` in the output. The message names the bad field |
+| Config edits don't take effect | Look for `Config validation FAILED`. The gateway keeps the last good config until the file is fixed |
+| Every visitor has the same IP, or IP data looks wrong | `client_ip` doesn't match your setup. Use `peer_ip` when clients connect directly, and `header_index` / `header` only behind a trusted proxy |
+| Requests fail or hang with no backend response | Check the target `host` and `port`, and make sure no target points back at the gateway's own `listen` address |
+| `503` with a "no healthy upstream" body | Every target in the pool failed its health check. Check that `health_check.path` returns one of `expected_statuses` |
+| HTTPS certificate isn't issued | Port 80 must be reachable from the internet, the domain must be in `auto_ssl.domains` and its DNS must point at this server |
+| Let's Encrypt rate-limit errors in Docker | Certificates aren't being kept. Mount a volume at `/var/lib/quayel/certs` |
+| Clients get `429` with an `X-Quayel-Block-Reason` header | The built-in flood protection refused them. If it's real traffic, raise `server.protection.max_requests_per_ip_per_sec` or add the IPs to `exempt_ips`. Behind a proxy, set `client_ip` so the limit applies per visitor |
+| Large uploads fail with `413` | Raise `server.limits.max_body_bytes` (default 100 MB) |
+| `localhost` / `127.0.0.1` has no country | Expected. Private and local IPs aren't in the GeoIP databases |
+
+For more detail, run with `RUST_LOG=debug`.
+</details>
+
+> [!IMPORTANT]
+> Quayel Gateway is young. It's tested by five suites on every release (unit tests, config validation, 88 end-to-end rule checks, cache and transform checks, DoS checks), but it doesn't yet have HTTP/3, JSON body transforms or a cluster-wide cache. Read the [CHANGELOG](CHANGELOG.md) before upgrading: 0.x releases can include breaking changes.
 
 ## Documentation
 
-| Document | What's in it |
-|----------|--------------|
-| [Documentation index](docs/README.md) | Start here |
-| [Getting Started](docs/getting-started.md) | Install, configure, run, systemd |
-| [Configuration Reference](docs/configuration.md) | Every `config.json` field |
-| [Conditions](docs/conditions.md) | Fields and operators for writing rules |
-| [API Reference](docs/api-reference.md) | Headers added to requests and responses, error bodies |
-| [Architecture](docs/architecture.md) | Design, plugin pipeline, data flow |
-| [Data Sources](docs/data-sources.md) | Every embedded IP dataset |
-| [Logging](docs/logging.md) | Access log format |
+The full documentation lives at **[docs.quayel.com](https://docs.quayel.com/quayel-gateway/getting-started/installation)**. The same pages are in [`docs/`](docs/README.md):
 
-### For AI agents
+| | |
+|---|---|
+| **Start** | [Getting Started](docs/getting-started.md) · [Configuration Reference](docs/configuration.md) · [Conditions](docs/conditions.md) |
+| **Plugins** | [IP Intel](docs/plugins/ip-intel.md) · [Firewall](docs/plugins/firewall.md) · [Rate Limiting](docs/plugins/rate-limiting.md) · [Transform](docs/plugins/transform.md) · [Cache](docs/plugins/cache.md) · [Load Balancer](docs/plugins/load-balancer.md) · [Auto-SSL](docs/plugins/auto-ssl.md) |
+| **Reference** | [Architecture](docs/architecture.md) · [API Reference](docs/api-reference.md) · [Logging](docs/logging.md) · [Data Sources](docs/data-sources.md) |
+| **AI agents** | [AGENTS.md](AGENTS.md) · [AI Guide](docs/ai-guide.md) · [config.schema.json](docs/config.schema.json) · [Skill package](skills/quayel-gateway/SKILL.md) |
 
-| Document | What's in it |
-|----------|--------------|
-| [AGENTS.md](AGENTS.md) | Start here when working on or with this repo as an agent |
-| [AI Guide](docs/ai-guide.md) | Schema, enums, defaults, validation loop and recipes |
-| [config.schema.json](docs/config.schema.json) | JSON Schema for validating a generated `config.json` |
-| [SKILL.md](skills/quayel-gateway/SKILL.md) | Portable skill package for AI tools |
+## Contributing
 
----
+```bash
+./setup.sh && cargo build --release
+bash scripts/test/run-all.sh      # every test suite, one PASS / FAIL line per check
+```
 
-## Repository layout
+Performance changes should follow the [benchmark protocol](docs/development/benchmark-protocol.md), and releases follow [Making a release](docs/development/releasing.md).
+
+<details>
+<summary><b>Embedded IP data</b></summary>
+
+`./setup.sh` downloads the datasets into `src/data/` (`--data-only` skips the toolchain, `--cargo-only` skips the data), and `cargo build` compiles them into the binary.
+
+| File | Contents | Source |
+|------|----------|--------|
+| `dbip-city-lite.mmdb` | Country, region, city, latitude/longitude | DB-IP City Lite |
+| `dbip-asn-lite.mmdb` | ASN and organisation | DB-IP ASN Lite |
+| `dbip-country.mmdb` | Country (fallback) | DB-IP Country Lite |
+| `cloudflare.txt` | Cloudflare edge IP ranges (IPv4 + IPv6) | Cloudflare |
+| `proxy.txt` | Anonymous proxy ranges | FireHOL |
+| `tor.txt` | Tor exit nodes | Tor Project |
+| `vpn.txt` | VPN provider ranges | X4BNet |
+| `datacenter-asns.txt` | Datacenter and hosting ASNs with provider names | **Kept in this repo, edited by hand** |
+
+**Datacenter detection** looks up the visitor's ASN and checks it against `datacenter-asns.txt`; a match sets `ip.is_datacenter = true` and the provider name. To add a provider, add a line like `24940|Hetzner Online GmbH` and rebuild. `setup.sh` never changes this file.
+
+**Smaller binary:** `proxy.txt` is about 40 MB. If you don't need `ip.is_proxy`, empty it before building.
+</details>
+
+<details>
+<summary><b>Repository layout</b></summary>
 
 ```
 quayel-gateway/
-├── .github/workflows/    # release.yml: builds + publishes releases on a version tag
-├── config.json           # your live config (hot-reloaded; default path)
-├── setup.sh              # downloads IP data, installs Rust + build tools
-├── Dockerfile            # multi-stage image build
-├── Dockerfile.release    # release image from prebuilt binaries (used by CI)
-├── docker-compose.yml    # production-style setup with HTTPS
-├── examples/
-│   ├── config.demo.json       # every plugin turned on (the Docker image default)
-│   └── config.all-rules.json  # every rule type, used by the rules test
 ├── src/
 │   ├── main.rs           # entry point and CLI
 │   ├── gateway/          # Pingora proxy pipeline
-│   ├── plugins/          # ip_intel, firewall, rate_limit, cache, load_balancer
+│   ├── plugins/          # ip_intel, firewall, rate_limit, transform, cache, load_balancer
 │   ├── lb/               # load-balancer targets and health checks
 │   ├── auto_ssl/         # Let's Encrypt (ACME)
 │   ├── condition/        # rule matching engine
@@ -613,31 +586,31 @@ quayel-gateway/
 │   ├── logging/          # JSONL access log writer
 │   ├── data/             # embedded IP datasets
 │   └── utils/            # embedded data loading, CIDR sets, helpers
-├── docs/
-│   ├── plugins/          # one page per plugin
-│   └── development/      # benchmark protocol, performance notes
-├── packaging/
-│   ├── build-deb.sh      # builds the .deb from a release binary (used by CI)
-│   └── deb/              # systemd unit, default config, logrotate, install scripts
+├── docs/                 # user docs, plugins/, development/
+├── examples/             # config.quickstart.json, config.demo.json (Docker default), config.all-rules.json (tests)
+├── packaging/            # .deb build script, systemd unit, logrotate
 ├── scripts/
-│   ├── test/             # run-all.sh runs every suite: cargo test, check-config.sh,
-│   │                     # all-rules.sh, transform-cache.py, dos-protection.py
+│   ├── test/             # run-all.sh and every test suite
 │   └── bench/            # wrk benchmarks, Nginx/APISIX mirrors, results/
-└── skills/               # AI skill package
+├── skills/               # AI skill package
+├── setup.sh              # downloads IP data, installs Rust + build tools
+├── Dockerfile            # multi-stage image build
+└── docker-compose.yml    # production-style setup with HTTPS
 ```
+</details>
 
----
-
-## Requirements
+<details>
+<summary><b>Requirements</b></summary>
 
 | | Minimum | Recommended |
 |---|---------|-------------|
 | CPU | 1 core | 2+ cores |
 | RAM | 64 MB | 128 MB |
 | Disk | 200 MB | 500 MB+ (for access logs) |
-| OS | Linux x86_64 (Ubuntu 22.04+) | |
+| OS | Linux x86_64 or arm64, glibc 2.35+ (or Docker) | |
 
-To build from source you need Rust stable, `build-essential`, `pkg-config`, `cmake` and `clang`. `./setup.sh` installs all of them.
+Building from source needs Rust stable, `build-essential`, `pkg-config`, `cmake` and `clang`. `./setup.sh` installs all of them.
+</details>
 
 ## License
 
