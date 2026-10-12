@@ -3,7 +3,6 @@ use crate::plugins::cache::CacheEntry;
 use crate::plugins::ip_intel::IpIntel;
 use crate::plugins::transform::{RequestTransformState, ResponseTransformState};
 use http::HeaderMap;
-use serde_json::Value;
 use std::collections::HashMap;
 use std::net::IpAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -61,7 +60,11 @@ pub struct RequestContext {
     // Lazy parsed data (populated on first access)
     pub query_cache: Option<HashMap<String, String>>,
     pub cookie_cache: Option<HashMap<String, String>>,
-    pub jwt_cache: HashMap<String, Value>, // key: token hash
+    /// Per-token JWT result for this request (key: the raw token).
+    pub jwt_cache: HashMap<String, crate::jwt::JwtOutcome>,
+    /// JWT keys from the config snapshot this request runs under. None →
+    /// tokens are decoded without checking.
+    pub jwt: Option<Arc<crate::jwt::CompiledJwt>>,
 
     // IP intelligence
     pub ip_intel: Option<Arc<IpIntel>>,
@@ -160,6 +163,7 @@ impl RequestContext {
             query_cache: None,
             cookie_cache: None,
             jwt_cache: HashMap::new(),
+            jwt: None,
             ip_intel: None,
             firewall: FirewallResult::default(),
             request_transform: RequestTransformState::default(),

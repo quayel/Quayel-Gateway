@@ -98,7 +98,10 @@ Request: `req.host` `req.path` (path + query) `req.method` `req.scheme`
 `req.ip` `req.peer_ip` `req.user_agent` (each also as `http.*`).
 Headers/query/cookies: `req.header.<Name>` `req.query.<name>` `req.cookie.<name>`.
 JWT claims: `req.header.authorization.jwt.<claim.path>` (Bearer prefix auto-stripped;
-e.g. `req.header.authorization.jwt.data.role`).
+e.g. `req.header.authorization.jwt.data.role`). Add a top-level `jwt` section with
+keys (`public_key`, `jwks_url`, `secret_env`, ...) to verify tokens; without it claims
+are decoded unchecked. Block bad tokens with `req.header.authorization.jwt_valid`
+`not_equals` `true`; `jwt_error` gives the reason.
 
 IP intelligence (needs `ip_intel.enabled: true`; values may be `null`):
 `ip.country` `ip.region` `ip.city` `ip.asn` `ip.as_org` `ip.provider`

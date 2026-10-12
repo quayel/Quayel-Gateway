@@ -4,6 +4,7 @@ mod auto_ssl;
 mod condition;
 mod config;
 mod gateway;
+mod jwt;
 mod lb;
 mod logging;
 mod plugins;

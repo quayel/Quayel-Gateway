@@ -65,16 +65,57 @@ Conditions are the core matching mechanism used by Firewall, Rate Limiting, Cach
 | `req.cookie.<name>` | string | Cookie value |
 | `http.cookie.<name>` | string | Cookie value |
 
-### JWT claim extraction
+### JWT fields
 
-A header path ending in `.jwt.<claim.path>` decodes the header value as a JWT
-(a leading `Bearer ` is stripped), then navigates the payload by dotted claim path:
+A header path ending in `.jwt.<claim.path>` reads a claim from the JWT in that
+header (a leading `Bearer ` is stripped, any case):
 
-| Path | Meaning |
-|------|---------|
+| Path | Value |
+|------|-------|
 | `req.header.authorization.jwt.user_id` | `user_id` claim of the Bearer token |
 | `req.header.authorization.jwt.data.role` | nested claim `data.role` |
 | `header.token.jwt.user_id` | bare `header.` prefix also works (same for rate-limit keys) |
+| `req.header.authorization.jwt_valid` | `true` only for a token that passed every check, otherwise `false` |
+| `req.header.authorization.jwt_error` | why it failed (table below); absent for a valid token |
+
+**Whether tokens are checked depends on the top-level [`jwt` section](configuration.md#jwt):**
+
+- **No `jwt` section:** tokens are decoded **without checking the signature**.
+  Claims resolve from any token, so a client can forge any claim. Only use this
+  when something in front of the gateway (or the origin) verifies tokens.
+  `jwt_valid` is always `false` and `jwt_error` is `unverified`. The gateway
+  logs a warning at startup when rules read JWT claims in this mode.
+- **With `jwt` keys:** a token must pass the signature check against one of the
+  keys plus the `exp` / `nbf` / `iss` / `aud` checks. Claims only resolve for
+  tokens that pass; for any other token they're absent, so
+  `jwt.data.role equals admin` can't be matched with a forged token, and a
+  rate limit keyed on `jwt.sub` only counts real users.
+
+| `jwt_error` | Meaning |
+|-------------|---------|
+| `missing` | no header, or it's empty |
+| `malformed` | not a JWT (includes `alg: none`) |
+| `alg_not_allowed` | the token's `alg` isn't in any key's `algorithms` |
+| `unknown_kid` | no key matches the token's `kid` (a JWKS URL is refetched early) |
+| `keys_unavailable` | a JWKS URL hasn't loaded yet |
+| `bad_signature` | signature doesn't match any key |
+| `expired` / `not_yet_valid` | `exp` passed / `nbf` in the future (after `leeway_secs`) |
+| `wrong_issuer` / `wrong_audience` | `iss` / `aud` not accepted by the key |
+| `missing_claim` | a claim in `required_claims` (default `exp`) is missing |
+| `unverified` | no `jwt` section: decoded but not checked |
+
+Each token is checked once per request, however many rules read it.
+
+```json
+{
+  "id": "api-needs-jwt", "name": "API needs a valid token", "enabled": true,
+  "conditions": [
+    { "left": "req.path", "operator": "starts_with", "value": "/api", "next": "and" },
+    { "left": "req.header.authorization.jwt_valid", "operator": "not_equals", "value": true }
+  ],
+  "action": { "type": "block", "status": 401 }
+}
+```
 
 ## Operators
 

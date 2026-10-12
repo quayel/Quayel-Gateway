@@ -2,6 +2,7 @@ use crate::condition::CompiledCondition;
 use crate::config::schema::*;
 use crate::gateway::forward_headers::{compile_forward_headers, CompiledForwardHeaders};
 use crate::gateway::protection::{compile_server, CompiledServer};
+use crate::jwt::{compile_jwt, CompiledJwt};
 use crate::plugins::transform::{compile_transform, CompiledTransform, TransformPhase};
 use std::sync::Arc;
 
@@ -20,6 +21,9 @@ pub struct CompiledConfig {
     pub client_ip: CompiledClientIp,
 
     pub server: CompiledServer,
+
+    /// None → JWT fields decode tokens without checking them.
+    pub jwt: Option<Arc<CompiledJwt>>,
 
     pub ip_intel: Option<CompiledIpIntel>,
     pub firewall: Option<CompiledFirewall>,
@@ -245,6 +249,23 @@ pub fn compile_config(raw: &GatewayConfig) -> Result<CompiledConfig, String> {
         .filter(|c| c.enabled)
         .map(|c| compile_auto_ssl(c));
 
+    let jwt = match &raw.jwt {
+        Some(c) => compile_jwt(c)?.map(Arc::new),
+        None => None,
+    };
+    if jwt.is_none() {
+        let uses_jwt_fields = serde_json::to_string(&raw.plugins)
+            .map(|s| s.contains(".jwt.") || s.contains(".jwt_valid") || s.contains(".jwt_error"))
+            .unwrap_or(false);
+        if uses_jwt_fields {
+            tracing::warn!(
+                "rules read JWT claims but no `jwt` keys are configured: tokens are decoded \
+                 WITHOUT checking their signature, so clients can forge any claim. Add a \
+                 `jwt` section with keys to verify them."
+            );
+        }
+    }
+
     Ok(CompiledConfig {
         gateway_id: Arc::from(raw.gateway_id.as_str()),
         gateway_name: Arc::from(raw.gateway_name.as_str()),
@@ -254,6 +275,7 @@ pub fn compile_config(raw: &GatewayConfig) -> Result<CompiledConfig, String> {
         listen_https: raw.listen.https.clone(),
         client_ip,
         server: compile_server(&raw.server)?,
+        jwt,
         ip_intel,
         firewall,
         rate_limiting,

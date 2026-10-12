@@ -125,6 +125,7 @@ GatewayConfig
 - `key` is any condition path (§6). Array form = composite key, parts joined with `":"`.
 - JWT keys: `"authorization.jwt.user_id"` → decode Bearer token from the `authorization`
   header, extract claim `user_id` (nested claims: `"authorization.jwt.data.role"`).
+  Without a top-level `jwt` section with keys, claims are NOT verified and can be forged.
 - Legacy template form also accepted: `"{req.client_ip}+{http.header.x-api-key}"`.
 - Blocked response: `429` + `Retry-After: <window_seconds>` +
   `{"error":"rate_limited","status":429,"rule_id":"...","limit":N,"window_seconds":N}`.
@@ -249,7 +250,9 @@ in, not_in, greater_than, greater_than_or_equal, less_than, less_than_or_equal, 
 | `ip.network_type` | string | e.g. `"datacenter"` |
 | `ip.risk_score` | number | 0–100 |
 | `req.header.<name>` (`http.header.<name>`, or bare `header.<name>`) | string | case-insensitive header name |
-| `req.header.<name>.jwt.<claim_path>` | any | decode JWT payload (Bearer prefix stripped), navigate dotted claim path, e.g. `req.header.authorization.jwt.data.role` |
+| `req.header.<name>.jwt.<claim_path>` | any | JWT claim (Bearer prefix stripped), dotted path, e.g. `req.header.authorization.jwt.data.role`. With top-level `jwt` keys: only for verified tokens. Without: decoded UNCHECKED (forgeable) |
+| `req.header.<name>.jwt_valid` | bool | true only for a verified token; always false without `jwt` keys |
+| `req.header.<name>.jwt_error` | string | `missing`, `malformed`, `alg_not_allowed`, `unknown_kid`, `keys_unavailable`, `bad_signature`, `expired`, `not_yet_valid`, `wrong_issuer`, `wrong_audience`, `missing_claim`, `unverified` |
 | `req.query.<name>` (`http.query.<name>`) | string | |
 | `req.cookie.<name>` (`http.cookie.<name>`) | string | |
 

@@ -23,7 +23,101 @@ pub struct GatewayConfig {
     #[serde(default)]
     pub server: ServerConfig,
 
+    /// JWT keys. Optional: without it, `header.<name>.jwt.*` fields decode
+    /// tokens without checking them. With it, those fields only resolve for
+    /// tokens that pass the signature and claim checks.
+    #[serde(default)]
+    pub jwt: Option<JwtConfig>,
+
     pub plugins: PluginsConfig,
+}
+
+// ── JWT Config ───────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct JwtConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Clock skew allowed when checking `exp` and `nbf`.
+    #[serde(default = "default_jwt_leeway_secs")]
+    pub leeway_secs: u64,
+    /// Claims a token must carry (any of exp, nbf, iss, aud, sub).
+    #[serde(default = "default_jwt_required_claims")]
+    pub required_claims: Vec<String>,
+    /// A token is valid if it verifies against any one of these keys.
+    pub keys: Vec<JwtKeyConfig>,
+}
+
+/// One verification key. Set exactly one of the key sources.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct JwtKeyConfig {
+    pub id: String,
+    /// Algorithms this key accepts, e.g. ["RS256"]. The token's own `alg`
+    /// header can only pick from this list.
+    pub algorithms: Vec<String>,
+    /// Only use this key for tokens whose header `kid` matches.
+    #[serde(default)]
+    pub kid: Option<String>,
+
+    // HS* shared secret
+    #[serde(default)]
+    pub secret: Option<String>,
+    #[serde(default)]
+    pub secret_env: Option<String>,
+    #[serde(default)]
+    pub secret_file: Option<String>,
+
+    // RS* / PS* / ES* / EdDSA public key: PEM, base64 body, or a list of lines
+    #[serde(default)]
+    pub public_key: Option<StringOrList>,
+    #[serde(default)]
+    pub public_key_env: Option<String>,
+    #[serde(default)]
+    pub public_key_file: Option<String>,
+
+    /// Inline JWKS document: `{ "keys": [ ... ] }`.
+    #[serde(default)]
+    pub jwks: Option<serde_json::Value>,
+    /// JWKS URL, fetched in the background and refreshed.
+    #[serde(default)]
+    pub jwks_url: Option<String>,
+    /// Refresh interval for `jwks_url` (default 600; a `Cache-Control:
+    /// max-age` on the response wins).
+    #[serde(default)]
+    pub jwks_refresh_secs: Option<u64>,
+
+    /// Accepted `iss` value(s). Omitted → not checked.
+    #[serde(default)]
+    pub issuer: Option<StringOrList>,
+    /// Accepted `aud` value(s). Omitted → not checked.
+    #[serde(default)]
+    pub audience: Option<StringOrList>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum StringOrList {
+    One(String),
+    Many(Vec<String>),
+}
+
+impl StringOrList {
+    pub fn to_vec(&self) -> Vec<String> {
+        match self {
+            StringOrList::One(s) => vec![s.clone()],
+            StringOrList::Many(v) => v.clone(),
+        }
+    }
+}
+
+fn default_jwt_leeway_secs() -> u64 {
+    30
+}
+
+fn default_jwt_required_claims() -> Vec<String> {
+    vec!["exp".to_string()]
 }
 
 // ── Server Config ────────────────────────────────────────────────────────────

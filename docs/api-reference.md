@@ -73,7 +73,9 @@ These paths can be used in the `left` field of any condition (firewall, rate lim
 |-------------|------|-------------|
 | `req.header.<name>` | string | Request header value |
 | `http.header.<name>` | string | Request header value |
-| `req.header.<name>.jwt.<claim.path>` | any | Decode JWT from header (strips `Bearer `), navigate dotted claim path |
+| `req.header.<name>.jwt.<claim.path>` | any | Claim from the JWT in the header (strips `Bearer `). With `jwt` keys: only for verified tokens; without: decoded unchecked |
+| `req.header.<name>.jwt_valid` | bool | `true` only for a token that passed every check (always `false` without `jwt` keys) |
+| `req.header.<name>.jwt_error` | string | Why the token failed: `missing`, `malformed`, `bad_signature`, `expired`, ... (`unverified` without keys) |
 | `req.query.<name>` | string | Query parameter value |
 | `http.query.<name>` | string | Query parameter value |
 | `req.cookie.<name>` | string | Cookie value |

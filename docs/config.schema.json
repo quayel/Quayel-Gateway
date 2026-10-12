@@ -14,10 +14,223 @@
     "listen": { "$ref": "#/definitions/listen" },
     "client_ip": { "$ref": "#/definitions/client_ip" },
     "server": { "$ref": "#/definitions/server" },
+    "jwt": { "$ref": "#/definitions/jwt" },
     "plugins": { "$ref": "#/definitions/plugins" }
   },
 
   "definitions": {
+    "jwt": {
+      "type": "object",
+      "description": "Keys for verifying JWTs read by header.<name>.jwt.* condition fields. Without this section tokens are decoded WITHOUT checking (claims can be forged). With it, claims only resolve for tokens that verify against one of the keys and pass exp/nbf/iss/aud.",
+      "additionalProperties": false,
+      "required": [
+        "keys"
+      ],
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": true
+        },
+        "leeway_secs": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 30,
+          "description": "Clock skew allowed for exp and nbf"
+        },
+        "required_claims": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "exp",
+              "nbf",
+              "iss",
+              "aud",
+              "sub"
+            ]
+          },
+          "default": [
+            "exp"
+          ]
+        },
+        "keys": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/definitions/jwt_key"
+          }
+        }
+      }
+    },
+    "jwt_key": {
+      "type": "object",
+      "description": "One verification key. Set exactly one key source: secret / secret_env / secret_file (HS*), public_key / public_key_env / public_key_file (RS*/PS*/ES*/EdDSA), jwks or jwks_url (any).",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "algorithms"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "algorithms": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "enum": [
+              "HS256",
+              "HS384",
+              "HS512",
+              "RS256",
+              "RS384",
+              "RS512",
+              "PS256",
+              "PS384",
+              "PS512",
+              "ES256",
+              "ES384",
+              "EdDSA"
+            ]
+          },
+          "description": "The token's alg can only pick from this list"
+        },
+        "kid": {
+          "type": "string",
+          "description": "Only use this key for tokens with this kid"
+        },
+        "secret": {
+          "type": "string",
+          "description": "HS* secret, inline (logs a warning; prefer secret_env / secret_file)"
+        },
+        "secret_env": {
+          "type": "string",
+          "description": "Environment variable holding the HS* secret"
+        },
+        "secret_file": {
+          "type": "string",
+          "description": "File holding the HS* secret"
+        },
+        "public_key": {
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "minItems": 1
+            }
+          ],
+          "description": "Public key: PEM (\\n line breaks), base64 body only, list of lines, RSA PUBLIC KEY or CERTIFICATE. Private keys are refused"
+        },
+        "public_key_env": {
+          "type": "string",
+          "description": "Environment variable holding the public key PEM"
+        },
+        "public_key_file": {
+          "type": "string",
+          "description": "Path to a .pem public key or certificate"
+        },
+        "jwks": {
+          "type": "object",
+          "required": [
+            "keys"
+          ],
+          "properties": {
+            "keys": {
+              "type": "array"
+            }
+          },
+          "description": "Inline JWKS document"
+        },
+        "jwks_url": {
+          "type": "string",
+          "pattern": "^(https://|http://(localhost|127\\.0\\.0\\.1|\\[::1\\])([:/]|$))",
+          "description": "JWKS URL, fetched and refreshed in the background. HTTPS except localhost"
+        },
+        "jwks_refresh_secs": {
+          "type": "integer",
+          "minimum": 60,
+          "default": 600,
+          "description": "Only with jwks_url. Cache-Control max-age on the response wins"
+        },
+        "issuer": {
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "minItems": 1
+            }
+          ],
+          "description": "Accepted iss value(s); omitted → not checked"
+        },
+        "audience": {
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "minItems": 1
+            }
+          ],
+          "description": "Accepted aud value(s); omitted → not checked"
+        }
+      },
+      "oneOf": [
+        {
+          "required": [
+            "secret"
+          ]
+        },
+        {
+          "required": [
+            "secret_env"
+          ]
+        },
+        {
+          "required": [
+            "secret_file"
+          ]
+        },
+        {
+          "required": [
+            "public_key"
+          ]
+        },
+        {
+          "required": [
+            "public_key_env"
+          ]
+        },
+        {
+          "required": [
+            "public_key_file"
+          ]
+        },
+        {
+          "required": [
+            "jwks"
+          ]
+        },
+        {
+          "required": [
+            "jwks_url"
+          ]
+        }
+      ]
+    },
     "server": {
       "type": "object",
       "description": "Workers, timeouts, size limits and DoS protection. Every field is optional with a built-in default; 0 switches a timeout or limit off.",

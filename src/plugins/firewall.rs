@@ -323,58 +323,58 @@ fn navigate_json_path(value: &Value, path: &str) -> Option<Value> {
     Some(current.clone())
 }
 
-/// Decode JWT payload with caching in RequestContext.jwt_cache.
-fn decode_jwt_payload_cached(ctx: &mut RequestContext, token: &str) -> Option<Value> {
-    // Check cache first
+/// Verify (or, with no `jwt` keys configured, just decode) the token in
+/// `header_name`, once per request per token.
+fn jwt_outcome(ctx: &mut RequestContext, header_name: &str) -> crate::jwt::JwtOutcome {
+    let raw = ctx
+        .headers
+        .get(header_name)
+        .and_then(|v| v.to_str().ok())
+        .ok_or("missing")?;
+    let token = match raw.get(..7) {
+        Some(p) if p.eq_ignore_ascii_case("bearer ") => raw[7..].trim(),
+        _ => raw.trim(),
+    };
+    if token.is_empty() {
+        return Err("missing");
+    }
     if let Some(cached) = ctx.jwt_cache.get(token) {
-        return Some(cached.clone());
+        return cached.clone();
     }
-
-    // Decode: JWT is base64url(header).base64url(payload).base64url(signature)
-    let parts: Vec<&str> = token.splitn(3, '.').collect();
-    if parts.len() < 2 {
-        return None;
-    }
-
-    let payload_b64 = parts[1];
-
-    // Base64url decode (URL-safe, no padding)
-    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-    use base64::Engine;
-    let payload_bytes = URL_SAFE_NO_PAD.decode(payload_b64).ok()?;
-
-    let payload: Value = serde_json::from_slice(&payload_bytes).ok()?;
-
-    // Cache it
-    ctx.jwt_cache.insert(token.to_string(), payload.clone());
-
-    Some(payload)
+    let token = token.to_string();
+    let outcome = match &ctx.jwt {
+        Some(keys) => keys.verify(&token),
+        None => crate::jwt::decode_unverified(&token),
+    };
+    ctx.jwt_cache.insert(token, outcome.clone());
+    outcome
 }
 
 /// Resolve a deep header path.
 ///
-/// Format: `<header_name>` for simple header access, or
-/// `<header_name>.jwt.<claim_path...>` for JWT extraction.
+/// Format: `<header_name>` for simple header access, or one of the JWT forms:
+///   "authorization.jwt.user_id"   → claim `user_id` (nested: `jwt.data.role`)
+///   "authorization.jwt_valid"     → true only for a token that passed every check
+///   "authorization.jwt_error"     → why it failed: missing, malformed, expired, ...
 ///
-/// Examples:
-///   "x-api-key" → returns header value directly
-///   "authorization.jwt.user_id" → decode Bearer token, extract user_id claim
-///   "authorization.jwt.data.role" → nested claim access
+/// With `jwt` keys configured, claims resolve only for verified tokens. Without
+/// them, tokens are decoded unchecked and `jwt_valid` is always false
+/// (`jwt_error` = "unverified").
 fn resolve_header_deep(ctx: &mut RequestContext, rest: &str) -> Option<Value> {
-    // Split on ".jwt." to see if this is a JWT extraction path
     if let Some(jwt_pos) = rest.find(".jwt.") {
         let header_name = &rest[..jwt_pos];
         let claim_path = &rest[jwt_pos + 5..]; // skip ".jwt."
-
-        // Get the header value — HeaderMap get is case-insensitive
-        let token = ctx.headers.get(header_name).and_then(|v| v.to_str().ok())?;
-
-        // Strip "Bearer " prefix if present
-        let token = token.strip_prefix("Bearer ").unwrap_or(token).to_string();
-
-        // Decode JWT payload and extract claim
-        let payload = decode_jwt_payload_cached(ctx, &token)?;
+        let payload = jwt_outcome(ctx, header_name).ok()?;
         navigate_json_path(&payload, claim_path)
+    } else if let Some(header_name) = rest.strip_suffix(".jwt_valid") {
+        let valid = ctx.jwt.is_some() && jwt_outcome(ctx, header_name).is_ok();
+        Some(Value::Bool(valid))
+    } else if let Some(header_name) = rest.strip_suffix(".jwt_error") {
+        match jwt_outcome(ctx, header_name) {
+            Err(code) => Some(Value::String(code.to_string())),
+            Ok(_) if ctx.jwt.is_none() => Some(Value::String("unverified".to_string())),
+            Ok(_) => None,
+        }
     } else {
         // Simple header access (no JWT) — case-insensitive via HeaderMap
         ctx.headers

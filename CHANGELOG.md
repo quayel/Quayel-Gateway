@@ -12,6 +12,22 @@ write entries for people running the gateway, not for people reading the diff.
 
 ## [Unreleased]
 
+### Added
+
+- **JWT verification.** A new top-level `jwt` section defines keys once:
+  a shared secret (inline, env var or file), a pasted public key (PEM, `\n`
+  line breaks, base64 body only, list of lines, or a certificate; also from an
+  env var or file), an inline JWKS, or a JWKS URL that's fetched and refreshed
+  in the background. With keys configured, the existing
+  `header.<name>.jwt.<claim>` fields only return claims from tokens that pass
+  the signature check and `exp` / `nbf` / `iss` / `aud`, so firewall, rate
+  limiting, transform and cache rules all use verified claims. New
+  `header.<name>.jwt_valid` and `header.<name>.jwt_error` fields let a firewall
+  rule block missing or bad tokens. Without a `jwt` section nothing changes:
+  tokens are decoded without checking, and the gateway now logs a startup
+  warning when rules read JWT claims in that mode.
+- `scripts/test/jwt-verify.py` end-to-end test, also run by `run-all.sh`.
+
 ## [0.3.0] - 2026-10-11
 
 ### ⚠️ Breaking changes

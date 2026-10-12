@@ -303,6 +303,7 @@ impl ProxyHttp for QuayelGateway {
         ctx.gateway_name = Arc::clone(&config.gateway_name);
         ctx.server_name = Arc::clone(&config.server_name);
         ctx.config_version = Arc::clone(&config.config_version);
+        ctx.jwt = config.jwt.clone();
         ctx.request_id = {
             use std::sync::atomic::Ordering;
             REQUEST_COUNTER.fetch_add(1, Ordering::Relaxed).to_string()

@@ -13,6 +13,7 @@ Complete reference for `config.json`.
 | `listen` | object | — | Listen addresses (default ports 80/443) |
 | `client_ip` | object | — | Client IP resolution strategy |
 | `server` | object | — | Workers, timeouts, size limits and DoS protection. Every field has a default |
+| `jwt` | object | — | Keys for verifying JWTs read by `header.<name>.jwt.*` fields. Without it, tokens are decoded unchecked |
 | `plugins` | object | ✅ | Plugin configurations |
 
 ## `listen`
@@ -193,6 +194,68 @@ request (connection limits, slow or oversized headers) are only logged at
 HTTP/2 connections use the per-IP connection limits and bans, plus HTTP/2's
 own stream limits; the header deadline applies to HTTP/1.x.
 
+## `jwt`
+
+Optional. Keys used to verify the JWTs that rules read through
+`header.<name>.jwt.*` fields ([conditions](conditions.md#jwt-fields)). Without
+this section, tokens are decoded without any check. With it, claims only
+resolve for tokens that verify against one of the keys.
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `enabled` | `true` | `false` → behave as if the section weren't there |
+| `leeway_secs` | `30` | Clock skew allowed for `exp` and `nbf` |
+| `required_claims` | `["exp"]` | Claims a token must have: any of `exp`, `nbf`, `iss`, `aud`, `sub` |
+| `keys` | — | One or more keys. A token is valid if it verifies against any of them |
+
+Each key:
+
+| Field | Description |
+|-------|-------------|
+| `id` | Unique name, used in error messages |
+| `algorithms` | Required. Algorithms the key accepts: `HS256/384/512`, `RS256/384/512`, `PS256/384/512`, `ES256/384`, `EdDSA`. The token's own `alg` can only choose from this list, so an RSA key can never be used as an HMAC secret |
+| `kid` | Optional. Only use this key for tokens with this `kid` header |
+| `issuer` | Optional. Accepted `iss`, a string or a list |
+| `audience` | Optional. Accepted `aud`, a string or a list |
+| *one key source* | Exactly one of the fields below |
+
+| Key source | For | Notes |
+|------------|-----|-------|
+| `secret` | HS* | Inline. Works, but logs a warning: prefer the next two |
+| `secret_env` | HS* | Name of an environment variable holding the secret |
+| `secret_file` | HS* | Path to a file holding the secret (trailing newline ignored) |
+| `public_key` | RS*/PS*/ES*/EdDSA | Pasted public key: a PEM with `\n` line breaks, just the base64 body, a list of lines, `BEGIN RSA PUBLIC KEY`, or a `BEGIN CERTIFICATE` |
+| `public_key_env` | RS*/PS*/ES*/EdDSA | Environment variable holding the PEM |
+| `public_key_file` | RS*/PS*/ES*/EdDSA | Path to a normal multi-line `.pem` file |
+| `jwks` | any | Inline JWKS: `{ "keys": [ ... ] }`. Matched by `kid`; keys with `use` other than `sig` are skipped |
+| `jwks_url` | any | Fetched in the background and refreshed every `jwks_refresh_secs` (default 600, minimum 60; a `Cache-Control: max-age` on the response wins). HTTPS only, except `localhost` |
+
+Checked when the config loads, so a bad key stops the gateway (or a hot
+reload) with a clear error instead of failing requests:
+
+- exactly one key source per key, and every algorithm in `algorithms` must fit it
+  (a secret only with HS*, an RSA key only with RS*/PS*, and so on)
+- a pasted **private** key is refused: the gateway only verifies tokens
+- unknown fields are refused
+
+A JWKS URL that fails to load keeps the last good keys and retries every 30 s.
+A token with an unknown `kid` triggers an early refetch, at most once every
+30 s. Until the first fetch succeeds, tokens for that key fail with
+`keys_unavailable`.
+
+```json
+"jwt": {
+  "keys": [
+    { "id": "auth0", "algorithms": ["RS256"],
+      "jwks_url": "https://example.auth0.com/.well-known/jwks.json",
+      "issuer": "https://example.auth0.com/", "audience": "api" },
+    { "id": "inhouse", "algorithms": ["RS256"],
+      "public_key": "-----BEGIN PUBLIC KEY-----\nMIIBIjANBg...\n-----END PUBLIC KEY-----" },
+    { "id": "legacy", "algorithms": ["HS256"], "secret_env": "QG_LEGACY_JWT_SECRET" }
+  ]
+}
+```
+
 ## `plugins`
 
 ```json
@@ -311,7 +374,7 @@ Sliding-window rate limiting.
 |------|---------|---------|
 | Single path | `"key": "req.client_ip"` | Count per resolved client IP |
 | Composite array | `"key": ["req.client_ip", "req.header.X-API-Key"]` | Count per combination (parts joined with `:`) |
-| JWT claim | `"key": "req.header.authorization.jwt.user_id"` | Decode Bearer token, count per claim |
+| JWT claim | `"key": "req.header.authorization.jwt.user_id"` | Count per claim. With [`jwt`](#jwt) keys, only verified tokens have the claim |
 | Legacy template | `"key": "{req.client_ip}+{http.header.x-api-key}"` | Placeholders resolved and concatenated |
 
 Any [condition path](conditions.md) can be used as a key part.
