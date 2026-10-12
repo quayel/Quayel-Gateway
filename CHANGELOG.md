@@ -48,6 +48,12 @@ write entries for people running the gateway, not for people reading the diff.
 - `request_id` in the access log is now a random 128-bit ID (32 hex
   characters) instead of a counter that restarted at 0 on every restart and
   repeated across instances.
+- The access log is written by a dedicated thread (`qg-access-log`) through a
+  1 MiB write buffer, instead of a task on the background runtime with an
+  8 KiB buffer. A slow disk no longer holds up JWKS refreshes, Auto-SSL or
+  other background work, and a batch takes a few `write()` calls instead of
+  hundreds. `SIGHUP` reopens the file within 100 ms.
+- The sample `config.json` flushes the access log every second (was 60 s).
 
 ### Fixed
 

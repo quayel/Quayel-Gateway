@@ -4,35 +4,53 @@ use std::fs::{File, OpenOptions};
 use std::io::{BufWriter, Write};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::mpsc::{self, RecvTimeoutError, SyncSender, TrySendError};
 use std::sync::Arc;
-use tokio::sync::mpsc;
+use std::time::{Duration, Instant};
+use tokio::sync::oneshot;
 use tracing::{error, info, warn};
 
 // ── Async Log Queue ──────────────────────────────────────────────────────────
-// Non-blocking enqueue via a bounded mpsc channel. A background tokio task
-// drains the channel and writes events in batches to a JSONL file.
+// Non-blocking enqueue via a bounded channel. A dedicated OS thread drains the
+// channel and writes events in batches to a JSONL file, so serialization and
+// disk writes never occupy a tokio worker (a slow disk can't stall JWKS
+// refreshes, Auto-SSL or the other background tasks).
 //
 // - Bounded: when the writer can't keep up (slow or full disk), new events are
 //   dropped and counted instead of growing memory without limit. Logging never
 //   slows requests down. The writer reports the count every flush interval.
 // - Rotation: the file is reopened when its path no longer points at the open
 //   file (logrotate's default move-and-create, `mv`, `rm`), checked every
-//   flush interval, or straight away on SIGHUP. `copytruncate` isn't needed.
-// - Serialization happens in the background task, straight into the
-//   BufWriter with serde_json::to_writer().
+//   flush interval, or on SIGHUP (within HUP_POLL). `copytruncate` isn't needed.
+// - Serialization goes straight into a large BufWriter (WRITE_BUFFER bytes),
+//   so a batch of thousands of lines costs a handful of write() calls.
+
+/// Size of the file write buffer. Lines are ~300-400 bytes, so 1 MiB holds
+/// ~3,000 lines per write() instead of ~20 with the 8 KiB default.
+const WRITE_BUFFER: usize = 1 << 20;
+
+/// Longest the writer thread sleeps before checking for a SIGHUP request.
+const HUP_POLL: Duration = Duration::from_millis(100);
 
 #[derive(Debug)]
 pub struct LogQueue {
-    tx: mpsc::Sender<LogEvent>,
+    tx: SyncSender<LogEvent>,
     dropped: Arc<AtomicU64>,
+    /// Dropped with the queue: stops the SIGHUP listener task.
+    _stop: oneshot::Sender<()>,
     /// The settings this queue was built from; hot reload compares them.
     pub settings: CompiledLogging,
 }
 
 impl LogQueue {
-    /// Create the queue and spawn its writer task on `handle`.
+    /// Create the queue, start its writer thread, and listen for SIGHUP on
+    /// `handle`.
     pub fn new(settings: CompiledLogging, handle: &tokio::runtime::Handle) -> Self {
+        Self::build(settings, handle, true)
+    }
+
+    fn build(settings: CompiledLogging, handle: &tokio::runtime::Handle, start: bool) -> Self {
         let path = PathBuf::from(&settings.file_path);
         if let Some(parent) = path.parent() {
             if let Err(e) = std::fs::create_dir_all(parent) {
@@ -40,18 +58,32 @@ impl LogQueue {
             }
         }
 
-        let (tx, rx) = mpsc::channel::<LogEvent>(settings.queue_size);
+        let (tx, rx) = mpsc::sync_channel::<LogEvent>(settings.queue_size);
         let dropped = Arc::new(AtomicU64::new(0));
+        let reopen = Arc::new(AtomicBool::new(false));
+        let (stop_tx, stop_rx) = oneshot::channel::<()>();
 
-        let writer = Writer {
-            rx,
-            path,
-            buffer_size: settings.buffer_size,
-            flush_interval_ms: settings.flush_interval_ms,
-            dropped: Arc::clone(&dropped),
-            open_failed: false,
-        };
-        handle.spawn(writer.run());
+        if start {
+            let writer = Writer {
+                rx,
+                path,
+                buffer_size: settings.buffer_size,
+                flush_interval: Duration::from_millis(settings.flush_interval_ms),
+                dropped: Arc::clone(&dropped),
+                reopen: Arc::clone(&reopen),
+                open_failed: false,
+            };
+            if let Err(e) = std::thread::Builder::new()
+                .name("qg-access-log".into())
+                .spawn(move || writer.run())
+            {
+                error!("Failed to start access log writer thread: {}", e);
+            }
+            handle.spawn(listen_for_hangup(reopen, stop_rx));
+        } else {
+            // Tests: keep the receiver alive but never drain it.
+            std::mem::forget(rx);
+        }
 
         info!(
             "Access log started: file={}, queue_size={}, buffer_size={}, flush_interval_ms={}",
@@ -64,6 +96,7 @@ impl LogQueue {
         Self {
             tx,
             dropped,
+            _stop: stop_tx,
             settings,
         }
     }
@@ -71,21 +104,40 @@ impl LogQueue {
     /// Enqueue a log event. Never blocks: when the queue is full the event is
     /// dropped and counted.
     pub fn enqueue(&self, event: LogEvent) {
-        if let Err(mpsc::error::TrySendError::Full(_)) = self.tx.try_send(event) {
+        if let Err(TrySendError::Full(_)) = self.tx.try_send(event) {
             self.dropped.fetch_add(1, Ordering::Relaxed);
         }
     }
 }
 
-// ── Background writer task ───────────────────────────────────────────────────
+/// Sets `reopen` on every SIGHUP until the owning queue is dropped.
+async fn listen_for_hangup(reopen: Arc<AtomicBool>, mut stop: oneshot::Receiver<()>) {
+    let Ok(mut hangup) = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())
+    else {
+        return;
+    };
+    loop {
+        tokio::select! {
+            _ = &mut stop => return,
+            r = hangup.recv() => match r {
+                Some(()) => reopen.store(true, Ordering::Relaxed),
+                None => return,
+            },
+        }
+    }
+}
+
+// ── Writer thread ────────────────────────────────────────────────────────────
 
 struct Writer {
     rx: mpsc::Receiver<LogEvent>,
     path: PathBuf,
     buffer_size: usize,
-    flush_interval_ms: u64,
+    flush_interval: Duration,
     /// Events the queue refused because it was full.
     dropped: Arc<AtomicU64>,
+    /// Set by the SIGHUP listener.
+    reopen: Arc<AtomicBool>,
     /// The last open attempt failed (log the error once, not every retry).
     open_failed: bool,
 }
@@ -104,7 +156,7 @@ impl OpenLog {
         Ok(Self {
             dev: meta.dev(),
             ino: meta.ino(),
-            writer: BufWriter::new(file),
+            writer: BufWriter::with_capacity(WRITE_BUFFER, file),
         })
     }
 
@@ -118,50 +170,55 @@ impl OpenLog {
 }
 
 impl Writer {
-    async fn run(mut self) {
+    fn run(mut self) {
         let mut log = self.open();
         let mut buffer: Vec<LogEvent> = Vec::with_capacity(self.buffer_size.min(65_536));
         // Lines lost because the file couldn't be opened or written.
         let mut failed: u64 = 0;
-
-        let mut tick =
-            tokio::time::interval(std::time::Duration::from_millis(self.flush_interval_ms));
-        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        tick.tick().await; // the first tick fires immediately
-
-        let mut hangup =
-            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup()).ok();
+        let mut next_tick = Instant::now() + self.flush_interval;
 
         loop {
-            tokio::select! {
-                msg = self.rx.recv() => match msg {
-                    Some(event) => {
-                        buffer.push(event);
-                        if buffer.len() >= self.buffer_size {
-                            failed += self.flush(&mut log, &mut buffer);
+            let wait = next_tick
+                .saturating_duration_since(Instant::now())
+                .min(HUP_POLL);
+            match self.rx.recv_timeout(wait) {
+                Ok(event) => {
+                    buffer.push(event);
+                    // Take whatever else is already queued without waiting.
+                    while buffer.len() < self.buffer_size {
+                        match self.rx.try_recv() {
+                            Ok(e) => buffer.push(e),
+                            Err(_) => break,
                         }
                     }
-                    None => {
-                        // Every sender is gone: shutdown, or a config reload
-                        // replaced this queue. Write what's left and stop.
+                    if buffer.len() >= self.buffer_size {
                         failed += self.flush(&mut log, &mut buffer);
-                        self.report(&mut failed);
-                        info!("Access log writer stopped: file={}", self.path.display());
-                        return;
                     }
-                },
-                _ = tick.tick() => {
-                    failed += self.flush(&mut log, &mut buffer);
-                    if log.as_ref().map_or(true, |l| l.is_stale(&self.path)) {
-                        log = self.reopen(log);
-                    }
-                    self.report(&mut failed);
                 }
-                Some(()) = recv_signal(&mut hangup) => {
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => {
+                    // Every sender is gone: shutdown, or a config reload
+                    // replaced this queue. Write what's left and stop.
                     failed += self.flush(&mut log, &mut buffer);
-                    info!("SIGHUP: reopening access log {}", self.path.display());
+                    self.report(&mut failed);
+                    info!("Access log writer stopped: file={}", self.path.display());
+                    return;
+                }
+            }
+
+            if self.reopen.swap(false, Ordering::Relaxed) {
+                failed += self.flush(&mut log, &mut buffer);
+                info!("SIGHUP: reopening access log {}", self.path.display());
+                log = self.reopen(log);
+            }
+
+            if Instant::now() >= next_tick {
+                failed += self.flush(&mut log, &mut buffer);
+                if log.as_ref().map_or(true, |l| l.is_stale(&self.path)) {
                     log = self.reopen(log);
                 }
+                self.report(&mut failed);
+                next_tick = Instant::now() + self.flush_interval;
             }
         }
     }
@@ -244,14 +301,6 @@ impl Writer {
     }
 }
 
-/// Waits for the next SIGHUP, or forever when no handler could be installed.
-async fn recv_signal(sig: &mut Option<tokio::signal::unix::Signal>) -> Option<()> {
-    match sig {
-        Some(s) => s.recv().await,
-        None => std::future::pending().await,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -291,22 +340,39 @@ mod tests {
         lines(path)
     }
 
-    #[test]
-    fn full_queue_drops_and_counts_instead_of_growing() {
+    #[tokio::test]
+    async fn full_queue_drops_and_counts_instead_of_growing() {
         let dir = tempdir();
         let path = dir.join("access.jsonl");
-        // A current-thread runtime that never runs the writer: nothing drains.
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        let q = LogQueue::new(settings(&path, 4), rt.handle());
+        // No writer thread: nothing drains the queue.
+        let q = LogQueue::build(
+            settings(&path, 4),
+            &tokio::runtime::Handle::current(),
+            false,
+        );
         for i in 0..10 {
             q.enqueue(event(&i.to_string()));
         }
         assert_eq!(q.dropped.load(Ordering::Relaxed), 6);
+    }
+
+    #[tokio::test]
+    async fn writes_every_event_in_order_with_large_batches() {
+        let dir = tempdir();
+        let path = dir.join("access.jsonl");
+        let mut s = settings(&path, 10_000);
+        s.buffer_size = 4096;
+        s.flush_interval_ms = 1000;
+        let q = LogQueue::new(s, &tokio::runtime::Handle::current());
+        for i in 0..5000 {
+            q.enqueue(event(&format!("e{i}")));
+        }
+        // Dropping the queue disconnects the writer, which flushes the rest.
         drop(q);
-        drop(rt);
+        let l = wait_for(&path, 5000).await;
+        assert_eq!(l.len(), 5000);
+        assert!(l[0].contains("\"e0\""));
+        assert!(l[4999].contains("\"e4999\""));
     }
 
     #[tokio::test]

@@ -464,9 +464,14 @@ jq 'select(.error != null) | {timestamp, path, response_status, error}' access.j
 
 ## How events are written
 
-- Each request's event goes onto an in-memory queue; a background task writes
-  events in batches (`file.buffer_size` events, or every
-  `file.flush_interval_ms`). Requests never wait for the disk.
+- Each request's event goes onto an in-memory queue; a dedicated writer
+  thread (`qg-access-log`) writes events in batches (`file.buffer_size`
+  events, or every `file.flush_interval_ms`). Requests never wait for the
+  disk, and a slow disk can't hold up the gateway's other background work.
+- Lines go through a 1 MiB write buffer, so a batch of thousands of events
+  takes a few `write()` calls. Each batch is flushed to the OS but not
+  `fsync`ed: a gateway crash loses nothing already flushed, a machine crash
+  can lose the last moments.
 - The queue holds at most `queue_size` events. If the disk can't keep up, new
   events are dropped rather than using more memory, and the gateway logs a
   warning with the number dropped, at most once per flush interval.
@@ -479,7 +484,7 @@ jq 'select(.error != null) | {timestamp, path, response_status, error}' access.j
 
 The gateway notices when its log file has been moved or deleted (it checks
 every `flush_interval_ms`) and opens a new one at the configured path. Sending
-`SIGHUP` reopens it straight away. So logrotate's default
+`SIGHUP` reopens it within 100 ms. So logrotate's default
 move-and-create works without `copytruncate`, which can lose lines:
 
 ```
