@@ -124,26 +124,32 @@ impl CertificateManager {
         cert_map
     }
 
-    /// Check if a certificate is expired or will expire within `days_before` days.
+    /// Check if a certificate is expired or due for renewal. The renewal window is
+    /// `days_before`, capped at a third of the cert's lifetime so short-lived certs
+    /// (e.g. 6 days) aren't re-issued on every check.
     pub fn check_expiry(cert_pem: &str, days_before: u32) -> CertExpiryStatus {
         match x509_parser::pem::Pem::iter_from_buffer(cert_pem.as_bytes()).next() {
             Some(Ok(pem)) => match pem.parse_x509() {
                 Ok(cert) => {
+                    let not_before = cert.validity().not_before.to_datetime();
                     let not_after = cert.validity().not_after.to_datetime();
                     let now = time::OffsetDateTime::now_utc();
-                    let days_until_expiry = (not_after - now).whole_days();
+                    let renew_at = renewal_time(not_before, not_after, days_before);
+                    let days_left = (not_after - now).whole_days().max(0) as u32;
 
-                    if days_until_expiry <= 0 {
+                    if now >= not_after {
                         CertExpiryStatus::Expired
-                    } else if days_until_expiry <= days_before as i64 {
+                    } else if now >= renew_at {
                         CertExpiryStatus::ExpiringSoon {
-                            days_left: days_until_expiry as u32,
+                            days_left,
                             expires_at: not_after,
+                            renew_at,
                         }
                     } else {
                         CertExpiryStatus::Valid {
-                            days_left: days_until_expiry as u32,
+                            days_left,
                             expires_at: not_after,
+                            renew_at,
                         }
                     }
                 }
@@ -181,6 +187,17 @@ pub fn parse_pem_to_certified_key(cert_pem: &str, key_pem: &str) -> Result<Certi
     Ok(CertifiedKey::new(certs, signing_key))
 }
 
+/// When to renew: `days_before` before expiry, but never earlier than two
+/// thirds into the cert's lifetime (90-day cert → 30 days, 6-day cert → 2 days).
+pub fn renewal_time(
+    not_before: time::OffsetDateTime,
+    not_after: time::OffsetDateTime,
+    days_before: u32,
+) -> time::OffsetDateTime {
+    let window = time::Duration::days(days_before as i64).min((not_after - not_before) / 3);
+    not_after - window
+}
+
 /// Sanitize domain name for use as a directory name
 fn sanitize_domain(domain: &str) -> String {
     domain.replace('*', "_wildcard")
@@ -192,11 +209,33 @@ pub enum CertExpiryStatus {
     Valid {
         days_left: u32,
         expires_at: time::OffsetDateTime,
+        renew_at: time::OffsetDateTime,
     },
     ExpiringSoon {
         days_left: u32,
         expires_at: time::OffsetDateTime,
+        renew_at: time::OffsetDateTime,
     },
     Expired,
     ParseError,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use time::{Duration, OffsetDateTime};
+
+    #[test]
+    fn renewal_window_is_capped_at_a_third_of_the_lifetime() {
+        let start = OffsetDateTime::UNIX_EPOCH;
+        // 90-day cert, 30-day setting: renew 30 days before expiry.
+        let end = start + Duration::days(90);
+        assert_eq!(renewal_time(start, end, 30), end - Duration::days(30));
+        // 6-day cert, 30-day setting: renew 2 days before expiry, not immediately.
+        let end = start + Duration::days(6);
+        assert_eq!(renewal_time(start, end, 30), end - Duration::days(2));
+        // A smaller setting wins.
+        let end = start + Duration::days(90);
+        assert_eq!(renewal_time(start, end, 7), end - Duration::days(7));
+    }
 }

@@ -15,8 +15,11 @@ use tracing::{error, info};
 /// Certificate provisioning state
 #[derive(Debug, Clone)]
 pub enum CertState {
-    /// Certificate is valid and loaded
-    Valid { expires_at: time::OffsetDateTime },
+    /// Certificate is valid and loaded; renewed once `renew_at` has passed
+    Valid {
+        expires_at: time::OffsetDateTime,
+        renew_at: time::OffsetDateTime,
+    },
     /// ACME provisioning in progress
     Pending,
     /// Provisioning failed
@@ -93,10 +96,27 @@ impl AutoSslManager {
                 // Check expiry of loaded cert
                 if let Some((cert_pem, _)) = cert_manager.load_cert_from_disk(domain) {
                     match CertificateManager::check_expiry(&cert_pem, renewal_days_before) {
-                        CertExpiryStatus::Valid { expires_at, .. } => {
-                            cert_state.insert(domain.clone(), CertState::Valid { expires_at });
+                        // A cert that's still valid keeps being served, even if it's due
+                        // for renewal: the renewal check replaces it in the background.
+                        CertExpiryStatus::Valid {
+                            expires_at,
+                            renew_at,
+                            ..
                         }
-                        CertExpiryStatus::ExpiringSoon { .. } | CertExpiryStatus::Expired => {
+                        | CertExpiryStatus::ExpiringSoon {
+                            expires_at,
+                            renew_at,
+                            ..
+                        } => {
+                            cert_state.insert(
+                                domain.clone(),
+                                CertState::Valid {
+                                    expires_at,
+                                    renew_at,
+                                },
+                            );
+                        }
+                        CertExpiryStatus::Expired => {
                             cert_state.insert(domain.clone(), CertState::Expired);
                             // Remove from cert_map so it gets re-provisioned
                             cert_map.remove(domain);
@@ -240,13 +260,25 @@ impl AutoSslManager {
                     match certificate::parse_pem_to_certified_key(&result.cert_pem, &result.key_pem) {
                         Ok(certified_key) => {
                             // Store in memory
-                            let expires_at = match CertificateManager::check_expiry(&result.cert_pem, 0) {
-                                CertExpiryStatus::Valid { expires_at, .. } => expires_at,
-                                _ => time::OffsetDateTime::now_utc() + time::Duration::days(90),
+                            let (expires_at, renew_at) = match CertificateManager::check_expiry(
+                                &result.cert_pem,
+                                manager.renewal_days_before,
+                            ) {
+                                CertExpiryStatus::Valid { expires_at, renew_at, .. }
+                                | CertExpiryStatus::ExpiringSoon { expires_at, renew_at, .. } => {
+                                    (expires_at, renew_at)
+                                }
+                                _ => {
+                                    let now = time::OffsetDateTime::now_utc();
+                                    (now + time::Duration::days(90), now + time::Duration::days(60))
+                                }
                             };
 
                             manager.cert_map.insert(domain_clone.clone(), Arc::new(certified_key));
-                            manager.cert_state.insert(domain_clone.clone(), CertState::Valid { expires_at });
+                            manager.cert_state.insert(
+                                domain_clone.clone(),
+                                CertState::Valid { expires_at, renew_at },
+                            );
 
                             // Write-through to disk (fire-and-forget)
                             let storage_domain = domain_clone.clone();
@@ -315,13 +347,19 @@ impl AutoSslManager {
         let mut retried_failed = false;
 
         for domain in domains {
-            // Check if cert needs renewal
-            if let Some(state) = self.cert_state.get(&domain) {
-                match state.value() {
-                    CertState::Valid { expires_at } => {
+            // Check if cert needs renewal. Clone the state out first: provisioning
+            // writes `cert_state` for this domain, and writing while holding a
+            // DashMap read guard on the same shard deadlocks.
+            let state = self.cert_state.get(&domain).map(|s| s.value().clone());
+            if let Some(state) = state {
+                match state {
+                    CertState::Valid {
+                        expires_at,
+                        renew_at,
+                    } => {
                         let now = time::OffsetDateTime::now_utc();
-                        let days_until_expiry = (*expires_at - now).whole_days();
-                        if days_until_expiry <= self.renewal_days_before as i64 {
+                        let days_until_expiry = (expires_at - now).whole_days();
+                        if now >= renew_at {
                             info!(domain = %domain, days_left = days_until_expiry, "Cert expiring soon, triggering renewal");
                             self.provision_if_needed(domain.clone(), bg_handle).await;
                         }
@@ -408,5 +446,51 @@ mod tests {
             // And the Debug impl must be safe in runtime context too.
             let _ = format!("{:?}", manager);
         });
+    }
+
+    /// Regression test: the daily check used to call `provision_if_needed` while
+    /// holding a DashMap read guard on the domain's `cert_state` entry, and
+    /// provisioning writes that entry, so the first renewal deadlocked forever.
+    #[test]
+    fn renewal_check_does_not_deadlock() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("build runtime");
+            let manager = Arc::new(AutoSslManager::new(&CompiledAutoSsl {
+                enabled: true,
+                email: String::new(),
+                domains: vec!["renew.example".to_string()],
+                cert_storage_path: "/tmp/quayel-gateway-test-renew".to_string(),
+                // Unreachable on purpose: the worker fails fast, no network needed.
+                directory_url: "http://127.0.0.1:9/directory".to_string(),
+                ca_root: None,
+                renewal_days_before: 30,
+            }));
+            let past = time::OffsetDateTime::now_utc() - time::Duration::hours(1);
+            manager.cert_state.insert(
+                "renew.example".to_string(),
+                CertState::Valid {
+                    expires_at: past + time::Duration::days(10),
+                    renew_at: past,
+                },
+            );
+            rt.block_on(manager.daily_renewal_check(&rt.handle().clone()));
+            let state = manager.cert_state.get("renew.example").map(|s| s.clone());
+            tx.send(state).ok();
+        });
+        let state = rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("daily_renewal_check deadlocked");
+        assert!(
+            matches!(
+                state,
+                Some(CertState::Pending) | Some(CertState::Failed { .. })
+            ),
+            "renewal should have started: {:?}",
+            state
+        );
     }
 }
