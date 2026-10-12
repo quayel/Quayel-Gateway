@@ -1,0 +1,26 @@
+route,target,rep,rps,p99,non2xx,errors,log_lines
+/cache-test,base-off,1,75683.17,47.70ms,0,0,0
+/cache-test,new-off,1,80454.96,40.81ms,0,0,0
+/cache-test,new-off,2,81310.72,41.16ms,0,0,0
+/cache-test,base-off,2,77363.29,46.28ms,0,0,0
+/cache-test,base-off,3,65020.57,113.79ms,0,0,0
+/cache-test,new-off,3,80847.03,42.62ms,0,0,0
+/cache-test,new-off,4,83038.66,38.67ms,0,0,0
+/cache-test,base-off,4,75148.29,61.18ms,0,0,0
+/cache-test,base-off,5,79270.88,49.96ms,0,0,0
+/cache-test,new-off,5,70890.64,63.30ms,0,0,0
+/cache-test,new-off,6,71503.37,64.85ms,0,0,0
+/cache-test,base-off,6,74382.09,50.27ms,0,0,0
+/cache-test,base-off,7,74184.07,60.22ms,0,0,0
+/cache-test,new-off,7,75666.46,50.82ms,0,0,0
+/cache-test,new-off,8,78639.05,48.96ms,0,0,0
+/cache-test,base-off,8,77027.82,43.94ms,0,0,0
+/cache-test,base-off,9,79724.63,48.64ms,0,0,0
+/cache-test,new-off,9,76948.49,49.66ms,0,0,0
+/cache-test,new-off,10,69244.90,74.65ms,0,0,0
+/cache-test,base-off,10,64491.13,101.35ms,0,0,0
+/cache-test,base-off,11,66043.14,86.13ms,0,0,0
+/cache-test,new-off,11,59698.23,98.43ms,0,0,0
+/cache-test,new-off,12,68295.69,83.18ms,0,0,0
+/cache-test,base-off,12,58926.18,164.98ms,0,0,0
+=== END ===

@@ -138,7 +138,14 @@ const PROTECTED_HEADERS: &[&str] = &[
 
 /// Forwarding headers describe the real client and are always built by the
 /// gateway from the original request, so request rules can't touch them.
-const FORWARDING_HEADERS: &[&str] = &["x-forwarded-for", "x-forwarded-proto", "x-forwarded-host"];
+/// The request ID is the one in the access log, so it can't be rewritten
+/// on the way upstream either.
+const FORWARDING_HEADERS: &[&str] = &[
+    "x-forwarded-for",
+    "x-forwarded-proto",
+    "x-forwarded-host",
+    crate::gateway::request_id::HEADER,
+];
 
 pub fn compile_transform(
     c: &TransformConfig,
@@ -837,6 +844,10 @@ mod tests {
             (
                 req,
                 json!({"type": "header", "operation": "set", "name": "X-Forwarded-Host", "value": "x"}),
+            ),
+            (
+                req,
+                json!({"type": "header", "operation": "set", "name": "X-QG-Request-Id", "value": "x"}),
             ),
             (
                 res,

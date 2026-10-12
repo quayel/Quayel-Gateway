@@ -45,8 +45,8 @@ maxminddb = "0.24"
 dashmap = "6"
 parking_lot = "0.12"
 
-# UUIDs — removed (replaced by AtomicU64 counter)
-# uuid = { version = "1", features = ["v4"] }
+# Random request IDs (X-QG-Request-Id)
+rand = "0.8"
 
 # Bytes
 bytes = "1"

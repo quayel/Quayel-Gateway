@@ -126,30 +126,33 @@ where
         return first_result;
     }
 
-    let mut or_result = false;
+    // `and` binds tighter than `or`. A condition whose result can't change the
+    // outcome isn't resolved at all: after a false condition the rest of its
+    // `and` chain is skipped, and once an `or` branch is true the rule matches.
+    // So "path starts_with /api AND jwt_valid ..." only verifies tokens on /api.
     let mut and_chain = first_result;
     let mut prev_next = conditions[0].next.as_ref().unwrap_or(&LogicalOp::And);
 
-    for i in 1..conditions.len() {
-        let cond = &conditions[i];
-        let left_value = resolve(ctx, &cond.left);
-        let cond_result = evaluate_single_condition(left_value, cond);
-        let next_op = cond.next.as_ref().unwrap_or(&LogicalOp::And);
-
+    for cond in &conditions[1..] {
         match prev_next {
             LogicalOp::And => {
-                and_chain = and_chain && cond_result;
+                if and_chain {
+                    let left_value = resolve(ctx, &cond.left);
+                    and_chain = evaluate_single_condition(left_value, cond);
+                }
             }
             LogicalOp::Or => {
-                or_result = or_result || and_chain;
-                and_chain = cond_result;
+                if and_chain {
+                    return true;
+                }
+                let left_value = resolve(ctx, &cond.left);
+                and_chain = evaluate_single_condition(left_value, cond);
             }
         }
-
-        prev_next = next_op;
+        prev_next = cond.next.as_ref().unwrap_or(&LogicalOp::And);
     }
 
-    or_result || and_chain
+    and_chain
 }
 
 pub fn evaluate_single_condition(left_value: Option<Value>, condition: &CompiledCondition) -> bool {
@@ -466,5 +469,70 @@ pub fn resolve_condition_value(ctx: &mut RequestContext, path: &str) -> Option<V
         }
 
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::compiler::compile_conditions;
+
+    /// Conditions on fields `a`, `b`, ... resolved from `values`; records
+    /// which fields were resolved.
+    fn eval(spec: serde_json::Value, values: &[(&str, bool)]) -> (bool, Vec<String>) {
+        let conds: Vec<crate::config::schema::Condition> = serde_json::from_value(spec).unwrap();
+        let compiled = compile_conditions(&conds);
+        let mut ctx = crate::logging::event::tests::ctx("/", &[]);
+        let mut seen = Vec::new();
+        let r = evaluate_conditions_with(&mut ctx, &compiled, |_, left| {
+            seen.push(left.to_string());
+            let v = values.iter().find(|(k, _)| *k == left).unwrap().1;
+            Some(Value::Bool(v))
+        });
+        (r, seen)
+    }
+
+    fn c(left: &str, next: &str) -> serde_json::Value {
+        serde_json::json!({"left": left, "operator": "equals", "value": true, "next": next})
+    }
+
+    #[test]
+    fn and_binds_tighter_than_or() {
+        // a AND b OR c
+        let spec = serde_json::json!([c("a", "and"), c("b", "or"), c("c", "and")]);
+        for (a, b, cc) in [
+            (true, true, false),
+            (true, false, true),
+            (false, true, false),
+            (false, false, false),
+        ] {
+            let (r, _) = eval(spec.clone(), &[("a", a), ("b", b), ("c", cc)]);
+            assert_eq!(r, (a && b) || cc, "{a} {b} {cc}");
+        }
+    }
+
+    #[test]
+    fn skips_conditions_that_cant_change_the_result() {
+        // a AND b: a false → b never resolved (e.g. a JWT never verified).
+        let (r, seen) = eval(
+            serde_json::json!([c("a", "and"), c("b", "and")]),
+            &[("a", false), ("b", true)],
+        );
+        assert!(!r);
+        assert_eq!(seen, ["a"]);
+
+        // a OR b: a true → b never resolved.
+        let (r, seen) = eval(
+            serde_json::json!([c("a", "or"), c("b", "and")]),
+            &[("a", true), ("b", false)],
+        );
+        assert!(r);
+        assert_eq!(seen, ["a"]);
+
+        // a AND b OR c: a false skips b, c still decides.
+        let spec = serde_json::json!([c("a", "and"), c("b", "or"), c("c", "and")]);
+        let (r, seen) = eval(spec, &[("a", false), ("b", true), ("c", true)]);
+        assert!(r);
+        assert_eq!(seen, ["a", "c"]);
     }
 }

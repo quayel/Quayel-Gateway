@@ -102,12 +102,15 @@ def main():
     gw = subprocess.Popen([BINARY, "--workers", "2", cfg], stdout=log, stderr=subprocess.STDOUT,
                           env={**os.environ, "RUST_LOG": "info"})
     try:
-        for _ in range(100):
-            try:
-                socket.create_connection(("127.0.0.1", GW_PORT), timeout=0.2).close()
-                break
-            except OSError:
-                time.sleep(0.1)
+        # Wait for the origin too: if the gateway is up first, the first
+        # checks get 502s from a refused upstream connection.
+        for port in (ORIGIN_PORT, GW_PORT):
+            for _ in range(100):
+                try:
+                    socket.create_connection(("127.0.0.1", port), timeout=0.2).close()
+                    break
+                except OSError:
+                    time.sleep(0.1)
         run_tests()
     finally:
         gw.terminate()

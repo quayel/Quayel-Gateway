@@ -8,7 +8,8 @@
 #   4. transform-cache.py          transforms + cache revalidation end to end
 #   5. dos-protection.py           server timeouts, limits and protection
 #   6. jwt-verify.py               JWT keys, verification and claim fields
-#   7. auto-ssl.py                 ACME issuance against Pebble (needs Docker)
+#   7. logging.py                  access log, X-QG-Request-Id, rotation, reload
+#   8. auto-ssl.py                 ACME issuance against Pebble (needs Docker)
 #
 # Each suite prints its own PASS/FAIL list; a summary per suite is at the end.
 # Usage:  bash scripts/test/run-all.sh        (builds the release binary first)
@@ -35,6 +36,7 @@ run "all-rules"          bash scripts/test/all-rules.sh
 run "transform-cache"    env BIN="$BIN" python3 scripts/test/transform-cache.py
 run "dos-protection"     python3 scripts/test/dos-protection.py "$BIN"
 run "jwt-verify"         env BIN="$BIN" python3 scripts/test/jwt-verify.py
+run "logging"            env BIN="$BIN" python3 scripts/test/logging.py
 if command -v docker >/dev/null && docker info >/dev/null 2>&1; then
     run "auto-ssl"       env BIN="$BIN" python3 scripts/test/auto-ssl.py
 else

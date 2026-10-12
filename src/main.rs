@@ -211,37 +211,14 @@ fn main() {
         .clone()
         .unwrap_or_else(|| DEFAULT_HTTP_LISTEN.to_string());
 
-    // Initialize log queue ONLY when logging is enabled
-    // When logging.enabled = false, log_queue = None → no file opened, no LogEvent built per request
-    let log_queue = if let Some(ref logging_config) = compiled.logging {
-        if logging_config.enabled {
-            let log_path = logging_config
-                .file_path
-                .clone()
-                .unwrap_or_else(|| "/var/log/quayel/access.jsonl".to_string());
-            let buffer_size = logging_config.buffer_size;
-            let flush_interval_ms = logging_config.flush_interval_ms;
-
-            tracing::info!(
-                "Logging enabled: file={}, buffer={}, flush_ms={}",
-                log_path,
-                buffer_size,
-                flush_interval_ms
-            );
-
-            Some(LogQueue::new(
-                log_path,
-                buffer_size,
-                flush_interval_ms,
-                bg_handle.clone(),
-            ))
-        } else {
-            tracing::info!("Logging disabled — skipping log queue creation");
+    // Log queue only when logging is enabled: otherwise no file is opened
+    // and no LogEvent is built per request. Config reloads can turn it on/off.
+    let log_queue = match compiled.logging.clone() {
+        Some(settings) => Some(LogQueue::new(settings, &bg_handle)),
+        None => {
+            tracing::info!("Access log off (plugins.logging missing or disabled)");
             None
         }
-    } else {
-        tracing::info!("Logging not configured — skipping log queue creation");
-        None
     };
 
     // Create gateway state — IP intel data is embedded in the binary

@@ -31,9 +31,47 @@ write entries for people running the gateway, not for people reading the diff.
   client reusing its token pays for the signature check once rather than on
   every request.
 - `scripts/test/jwt-verify.py` end-to-end test, also run by `run-all.sh`.
+- **`X-QG-Request-Id`.** Every request gets an ID that is logged as
+  `request_id`, sent to the origin and returned to the client. A well-formed
+  incoming `X-QG-Request-Id` is reused, so one ID follows the request through
+  every proxy; set `server.request_id.accept_incoming: false` to always
+  generate a new one.
+- New access-log fields: `http_version`, `user_agent`, `referer`,
+  `upstream_status` (before `response_transform`), `error` (why the request
+  failed), `protection` (which DoS check refused it) and `jwt` (`valid`,
+  `error`, `sub`; only when a rule read the token).
+- `plugins.logging.queue_size` (default 65,536): the most access-log events
+  held in memory while waiting for the disk.
+
+### Changed
+
+- `request_id` in the access log is now a random 128-bit ID (32 hex
+  characters) instead of a counter that restarted at 0 on every restart and
+  repeated across instances.
 
 ### Fixed
 
+- The access log queue had no size limit: with a slow or full disk, events
+  piled up in memory until the process ran out of it. It's now bounded; when
+  full, new events are dropped and the count is logged as a warning.
+- The access log file is reopened when it's moved or deleted (checked every
+  `flush_interval_ms`) and on `SIGHUP`. Before, logrotate's default
+  move-and-create left the gateway writing to the rotated file, and only
+  `copytruncate` worked.
+- If the access log couldn't be opened at startup, logging stopped for good.
+  The gateway now retries every flush interval.
+- Changes to `plugins.logging` (path, on/off, sizes) now apply on hot reload.
+  They used to need a restart, without any warning.
+- `plugins.logging.mode` values other than `"file"` are rejected when the
+  config loads instead of being silently ignored.
+- Rule conditions now stop at the first result that settles the rule: in
+  `A and B`, `B` isn't looked at when `A` is false, and in `A or B`, `B` isn't
+  looked at when `A` is true. Before, every condition was resolved, so a rule
+  like "path starts with `/api` and `jwt_valid` is not true" verified the
+  token on every request, whatever the path. Results are unchanged; only
+  wasted work (signature checks, regexes) is skipped.
+- Origin connection errors (502s) now carry `X-QG-Request-Id` like every
+  other response.
 - The config watcher no longer reloads an unchanged config 5 seconds after
   startup. That extra reload rebuilt every compiled rule and restarted JWKS
   fetches for nothing.

@@ -173,11 +173,20 @@ banned, its new connections are dropped and its requests get `429`.
 | `duration_secs` | `600` | Ban length |
 
 Requests refused by `server.protection` or `server.limits` are logged with
-`termination_phase: "Protection"`, and the response carries an
+`termination_phase: "Protection"` and the reason in `protection`, and the response carries an
 `X-Quayel-Block-Reason` header (`request_rate`, `banned` or `body_too_large`).
 Bans are logged to `gateway.out` as warnings. Connections dropped before any
 request (connection limits, slow or oversized headers) are only logged at
 `debug` level, so a flood doesn't flood the logs too.
+
+### `server.request_id`
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `accept_incoming` | `true` | Reuse a well-formed `X-QG-Request-Id` from the client or a proxy in front. `false` → always generate a new one |
+
+Every request gets an `X-QG-Request-Id`, sent to the origin, returned to the
+client and logged as `request_id`. See [Logging](logging.md#request-id).
 
 #### What this does and doesn't cover
 
@@ -617,6 +626,7 @@ Access logging.
   "logging": {
     "enabled": true,
     "mode": "file",
+    "queue_size": 65536,
     "file": {
       "path": "/var/log/quayel/access.jsonl",
       "buffer_size": 8192,
@@ -629,10 +639,13 @@ Access logging.
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `enabled` | bool | `true` | Enable/disable logging |
-| `mode` | string | `"file"` | Log mode (`"file"`) |
-| `file.path` | string | — | Path to JSONL log file |
-| `file.buffer_size` | int | `8192` | Write buffer size in bytes |
-| `file.flush_interval_ms` | int | `1000` | Flush interval in milliseconds |
+| `mode` | string | `"file"` | Log mode. Only `"file"`; anything else is rejected |
+| `queue_size` | int | `65536` | Events waiting to be written. When full, new events are dropped and counted |
+| `file.path` | string | `/var/log/quayel/access.jsonl` | Path to JSONL log file |
+| `file.buffer_size` | int | `8192` | Events written per batch |
+| `file.flush_interval_ms` | int | `1000` | Write at least this often (ms); also how often a rotated file is noticed |
+
+All logging settings apply on live reload.
 
 See [Logging](logging.md) for log format details.
 

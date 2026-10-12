@@ -5,6 +5,7 @@ use crate::gateway::conn_guard::header_guard;
 use crate::gateway::plugin_runner::PluginRunner;
 use crate::gateway::protection::{IpTracker, Violation};
 use crate::gateway::request_context::*;
+use crate::gateway::request_id;
 use crate::logging::event::LogEvent;
 use crate::logging::queue::LogQueue;
 use crate::plugins::cache::{
@@ -16,7 +17,7 @@ use crate::plugins::transform::{
     apply_response_transform, replay_request_header_edits, CompiledTransform,
 };
 use crate::plugins::{GatewayResponse, PluginFlow};
-use arc_swap::ArcSwap;
+use arc_swap::{ArcSwap, ArcSwapOption};
 use bytes::Bytes;
 use pingora_core::upstreams::peer::HttpPeer;
 use pingora_http::ResponseHeader;
@@ -28,7 +29,9 @@ use std::time::Duration;
 pub struct GatewayState {
     pub config: ArcSwap<CompiledConfig>,
     pub plugin_runner: PluginRunner,
-    pub log_queue: Option<LogQueue>,
+    /// None when logging is off. Swapped on config reload when the logging
+    /// settings change; the old writer finishes its queue and stops.
+    pub log_queue: ArcSwapOption<LogQueue>,
     pub auto_ssl: Option<Arc<AutoSslManager>>,
     pub metrics: Arc<crate::utils::metrics::PluginMetrics>,
     /// Per-IP connection/request counters and bans (server.protection).
@@ -67,11 +70,31 @@ impl GatewayState {
         Self {
             config: ArcSwap::from_pointee(config),
             plugin_runner,
-            log_queue,
+            log_queue: ArcSwapOption::from(log_queue.map(Arc::new)),
             auto_ssl,
             metrics: Arc::new(crate::utils::metrics::PluginMetrics::new()),
             ip_tracker,
         }
+    }
+}
+
+impl GatewayState {
+    /// Apply new logging settings after a config reload. Unchanged settings
+    /// keep the running writer.
+    pub fn reload_logging(
+        &self,
+        settings: Option<&crate::config::compiler::CompiledLogging>,
+        handle: &tokio::runtime::Handle,
+    ) {
+        let current = self.log_queue.load();
+        if current.as_deref().map(|q| &q.settings) == settings {
+            return;
+        }
+        let next = settings.map(|s| Arc::new(LogQueue::new(s.clone(), handle)));
+        if next.is_none() {
+            tracing::info!("Access log disabled by config reload");
+        }
+        self.log_queue.store(next);
     }
 }
 
@@ -298,10 +321,7 @@ impl ProxyHttp for QuayelGateway {
         ctx.server_name = Arc::clone(&config.server_name);
         ctx.config_version = Arc::clone(&config.config_version);
         ctx.jwt = config.jwt.clone();
-        ctx.request_id = {
-            use std::sync::atomic::Ordering;
-            REQUEST_COUNTER.fetch_add(1, Ordering::Relaxed).to_string()
-        };
+        ctx.request_id = request_id::resolve(raw_headers, config.server.accept_incoming_request_id);
         ctx.started_at = std::time::Instant::now();
         ctx.peer_ip = peer_addr;
         ctx.client_ip = client_ip;
@@ -371,6 +391,7 @@ impl ProxyHttp for QuayelGateway {
         ctx.upstream_ttfb_us = None;
         ctx.total_latency_us = None;
         ctx.termination_phase = None;
+        ctx.protection = None;
 
         // server.protection: bans and the per-IP request flood limit
         if let Some(protection) = &config.server.protection {
@@ -378,6 +399,7 @@ impl ProxyHttp for QuayelGateway {
                 self.state.ip_tracker.check_request(protection, client_ip)
             {
                 ctx.termination_phase = Some(TerminationPhase::Protection);
+                ctx.protection = Some(violation.as_str());
                 session.set_keepalive(None);
                 let resp = protection_response(429, violation, Some(retry_after));
                 send_gateway_response(session, &resp, ctx, None).await?;
@@ -402,6 +424,7 @@ impl ProxyHttp for QuayelGateway {
                         .strike(protection, client_ip, Violation::BodyTooLarge);
                 }
                 ctx.termination_phase = Some(TerminationPhase::Protection);
+                ctx.protection = Some(Violation::BodyTooLarge.as_str());
                 session.set_keepalive(None);
                 let resp = protection_response(413, Violation::BodyTooLarge, None);
                 send_gateway_response(session, &resp, ctx, None).await?;
@@ -453,6 +476,7 @@ impl ProxyHttp for QuayelGateway {
                     );
                 }
                 ctx.termination_phase = Some(TerminationPhase::Protection);
+                ctx.protection = Some(Violation::BodyTooLarge.as_str());
                 return Err(pingora_error::Error::explain(
                     pingora_error::ErrorType::HTTPStatus(413),
                     "request body larger than server.limits.max_body_bytes",
@@ -587,6 +611,12 @@ impl ProxyHttp for QuayelGateway {
         {
             fh.apply(upstream_request, ctx.ip_intel.as_deref(), ctx.client_ip);
         }
+
+        // Last, so neither a transform rule nor the X-QG-* stripping above
+        // can change or drop it.
+        insert_request_id(
+            upstream_request.insert_header(request_id::HEADER, ctx.request_id.as_str()),
+        );
         Ok(())
     }
 
@@ -675,6 +705,9 @@ impl ProxyHttp for QuayelGateway {
         upstream_response
             .insert_header("Quayel-Cache-Status", ctx.cache.status.as_str())
             .unwrap_or(());
+        insert_request_id(
+            upstream_response.insert_header(request_id::HEADER, ctx.request_id.as_str()),
+        );
         let config = self.state.config.load();
         if let Some(rt) = &config.response_transform {
             apply_response_transform(ctx, rt, upstream_response);
@@ -827,7 +860,7 @@ impl ProxyHttp for QuayelGateway {
         };
         if code > 0 {
             ctx.status_code = Some(code);
-            let _ = session.respond_error(code).await;
+            let _ = respond_error_with_id(session, code, &ctx.request_id).await;
         }
         FailToProxy {
             error_code: code,
@@ -850,7 +883,7 @@ impl ProxyHttp for QuayelGateway {
     async fn logging(
         &self,
         session: &mut Session,
-        _upstream_response: Option<&pingora_core::Error>,
+        error: Option<&pingora_core::Error>,
         ctx: &mut Self::CTX,
     ) {
         // The next bytes on this connection start a new request header. If
@@ -889,15 +922,21 @@ impl ProxyHttp for QuayelGateway {
                 .release_connection(host, port);
         }
 
-        let queue = match self.state.log_queue {
-            Some(ref q) => q,
-            None => return,
+        let queue = self.state.log_queue.load();
+        let Some(queue) = queue.as_deref() else {
+            return;
         };
 
         ctx.finalize_latency();
 
-        let event = LogEvent::from_context(ctx);
-        let _ = queue.enqueue(event);
+        let mut event = LogEvent::from_context(ctx);
+        event.add_request_details(session.req_header(), ctx);
+        // Answered from a stored copy: the internal error that stopped
+        // proxying isn't a failure.
+        if ctx.termination_phase != Some(TerminationPhase::Cache) {
+            event.error = error.map(|e| e.to_string());
+        }
+        queue.enqueue(event);
     }
 }
 
@@ -932,6 +971,7 @@ async fn send_gateway_response(
         http::header::HeaderName::from_static("quayel-cache-status"),
         http::HeaderValue::from_str(cache_status).unwrap_or(http::HeaderValue::from_static("")),
     )?;
+    insert_request_id(header.insert_header(request_id::HEADER, ctx.request_id.as_str()));
 
     if let Some(rt) = transform {
         apply_response_transform(ctx, rt, &mut header);
@@ -953,6 +993,23 @@ async fn send_gateway_response(
     session.write_response_body(Some(body), true).await?;
 
     Ok(())
+}
+
+/// The request ID is always a valid header value (generated hex or a checked
+/// incoming one); this only exists to make the `Result` explicit.
+fn insert_request_id(r: pingora_core::Result<()>) {
+    debug_assert!(r.is_ok(), "request id is a valid header value");
+}
+
+/// Pingora's `respond_error`, plus `X-QG-Request-Id`.
+async fn respond_error_with_id(
+    session: &mut Session,
+    code: u16,
+    request_id: &str,
+) -> pingora_core::Result<()> {
+    let mut header = pingora_core::protocols::http::ServerSession::generate_error(code);
+    header.insert_header(request_id::HEADER, request_id)?;
+    session.write_error_response(header, Bytes::new()).await
 }
 
 /// Short plain-text response for server.protection / server.limits refusals.

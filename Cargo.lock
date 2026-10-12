@@ -2038,6 +2038,7 @@ dependencies = [
  "pingora-http",
  "pingora-proxy",
  "pingora-rustls",
+ "rand 0.8.8",
  "rcgen 0.13.2",
  "regex",
  "reqwest",

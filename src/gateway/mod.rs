@@ -4,4 +4,5 @@ pub mod gateway;
 pub mod plugin_runner;
 pub mod protection;
 pub mod request_context;
+pub mod request_id;
 pub mod response_context;

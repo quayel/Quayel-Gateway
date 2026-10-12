@@ -155,14 +155,18 @@ pub struct CompiledTarget {
 
 // ── Logging compiled ─────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone)]
+/// Only built when logging is enabled. Compared on hot reload: any change
+/// starts a new writer.
+#[derive(Debug, Clone, PartialEq)]
 pub struct CompiledLogging {
-    pub enabled: bool,
     pub mode: String,
-    pub file_path: Option<String>,
+    pub file_path: String,
+    pub queue_size: usize,
     pub buffer_size: usize,
     pub flush_interval_ms: u64,
 }
+
+pub const DEFAULT_LOG_PATH: &str = "/var/log/quayel/access.jsonl";
 
 // ── Auto-SSL compiled ───────────────────────────────────────────────────────
 
@@ -238,12 +242,10 @@ pub fn compile_config(raw: &GatewayConfig) -> Result<CompiledConfig, String> {
         .filter(|c| c.enabled)
         .map(|c| compile_load_balancer(c));
 
-    let logging = raw
-        .plugins
-        .logging
-        .as_ref()
-        .filter(|c| c.enabled)
-        .map(|c| compile_logging(c));
+    let logging = match raw.plugins.logging.as_ref().filter(|c| c.enabled) {
+        Some(c) => Some(compile_logging(c)?),
+        None => None,
+    };
 
     let auto_ssl = raw
         .plugins
@@ -413,14 +415,38 @@ fn compile_auto_ssl(c: &AutoSslConfig) -> CompiledAutoSsl {
     }
 }
 
-fn compile_logging(c: &LoggingConfig) -> CompiledLogging {
-    CompiledLogging {
-        enabled: c.enabled,
-        mode: c.mode.clone(),
-        file_path: c.file.as_ref().map(|f| f.path.clone()),
-        buffer_size: c.file.as_ref().map(|f| f.buffer_size).unwrap_or(8192),
-        flush_interval_ms: c.file.as_ref().map(|f| f.flush_interval_ms).unwrap_or(1000),
+fn compile_logging(c: &LoggingConfig) -> Result<CompiledLogging, String> {
+    if c.mode != "file" {
+        return Err(format!(
+            "plugins.logging.mode '{}' is not supported (use \"file\")",
+            c.mode
+        ));
     }
+    if c.queue_size == 0 {
+        return Err("plugins.logging.queue_size must be at least 1".to_string());
+    }
+    let file_path = c
+        .file
+        .as_ref()
+        .map_or(DEFAULT_LOG_PATH, |f| f.path.as_str())
+        .to_string();
+    if file_path.trim().is_empty() {
+        return Err("plugins.logging.file.path must not be empty".to_string());
+    }
+    let buffer_size = c.file.as_ref().map_or(8192, |f| f.buffer_size);
+    let flush_interval_ms = c.file.as_ref().map_or(1000, |f| f.flush_interval_ms);
+    if buffer_size == 0 || flush_interval_ms == 0 {
+        return Err(
+            "plugins.logging.file.buffer_size and flush_interval_ms must be at least 1".to_string(),
+        );
+    }
+    Ok(CompiledLogging {
+        mode: c.mode.clone(),
+        file_path,
+        queue_size: c.queue_size,
+        buffer_size,
+        flush_interval_ms,
+    })
 }
 
 pub fn compile_conditions(conditions: &[Condition]) -> Vec<CompiledCondition> {

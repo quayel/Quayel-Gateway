@@ -118,7 +118,7 @@ One `RequestContext` is created per request. All plugins read and write to the s
 struct RequestContext {
     // Identity
     gateway_id, gateway_name, server_name, config_version,
-    request_id: UUID v4,
+    request_id,       // X-QG-Request-Id: incoming one, or random 128-bit hex
     
     // Client
     peer_ip,          // Direct connection IP

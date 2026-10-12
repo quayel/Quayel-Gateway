@@ -283,8 +283,13 @@ Host: api.example.com
 X-Forwarded-For: 203.0.113.50
 X-Forwarded-Proto: https
 X-Forwarded-Host: api.example.com
+X-QG-Request-Id: c30dc8f27e2d474b979f23ec1eb2e244
 User-Agent: Mozilla/5.0 ...
 ```
+
+The same `X-QG-Request-Id` is returned to the client and written to the
+access log, so one ID ties together the client, the gateway log and your
+backend's logs.
 
 The access log records:
 
@@ -292,7 +297,7 @@ The access log records:
 {
   "timestamp": "2026-10-05T17:48:56.973054084+00:00",
   "gateway_id": "gw-prod-01",
-  "request_id": "c30dc8f2-7e2d-474b-979f-23ec1eb2e244",
+  "request_id": "c30dc8f27e2d474b979f23ec1eb2e244",
   "client_ip": "203.0.113.50",
   "peer_ip": "203.0.113.50",
   "client_ip_source": "X-Forwarded-For",

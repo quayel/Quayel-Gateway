@@ -296,6 +296,14 @@
               }
             }
           }
+        },
+        "request_id": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "X-QG-Request-Id: logged, sent upstream and returned to the client",
+          "properties": {
+            "accept_incoming": { "type": "boolean", "default": true, "description": "Reuse a well-formed incoming X-QG-Request-Id; false → always generate" }
+          }
         }
       }
     },
@@ -748,13 +756,14 @@
       "additionalProperties": false,
       "properties": {
         "enabled": { "type": "boolean", "default": true },
-        "mode": { "type": "string", "default": "file" },
+        "mode": { "enum": ["file"], "default": "file" },
+        "queue_size": { "type": "integer", "minimum": 1, "default": 65536, "description": "Events waiting to be written; when full, new events are dropped and counted" },
         "file": {
           "type": "object",
           "additionalProperties": false,
           "required": ["path"],
           "properties": {
-            "path": { "type": "string" },
+            "path": { "type": "string", "minLength": 1, "default": "/var/log/quayel/access.jsonl" },
             "buffer_size": { "type": "integer", "minimum": 1, "default": 8192 },
             "flush_interval_ms": { "type": "integer", "minimum": 1, "default": 1000 }
           }

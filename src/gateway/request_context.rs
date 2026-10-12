@@ -5,13 +5,9 @@ use crate::plugins::transform::{RequestTransformState, ResponseTransformState};
 use http::HeaderMap;
 use std::collections::HashMap;
 use std::net::IpAddr;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::OwnedMutexGuard;
-
-// Global request counter — replaces per-request UUID generation
-pub(crate) static REQUEST_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Revalidation lock guard — held for the duration of a stale cache refresh request.
 /// When the request completes and ctx is dropped, the guard drops → lock releases.
@@ -122,6 +118,8 @@ pub struct RequestContext {
 
     // Final action
     pub termination_phase: Option<TerminationPhase>,
+    /// server.protection / server.limits refusal (Violation::as_str).
+    pub protection: Option<&'static str>,
 }
 
 // Type aliases for Arc-wrapped shared cache data
@@ -149,7 +147,7 @@ impl RequestContext {
             gateway_name,
             server_name,
             config_version,
-            request_id: REQUEST_COUNTER.fetch_add(1, Ordering::Relaxed).to_string(),
+            request_id: String::new(),
             started_at: Instant::now(),
             peer_ip,
             client_ip,
@@ -195,6 +193,7 @@ impl RequestContext {
             upstream_ttfb_us: None,
             total_latency_us: None,
             termination_phase: None,
+            protection: None,
         }
     }
 

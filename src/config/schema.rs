@@ -158,6 +158,19 @@ pub struct ServerConfig {
     pub limits: LimitsConfig,
     #[serde(default)]
     pub protection: ProtectionConfig,
+    #[serde(default)]
+    pub request_id: RequestIdConfig,
+}
+
+/// `X-QG-Request-Id`: one ID per request, logged, sent upstream and returned
+/// to the client.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RequestIdConfig {
+    /// Reuse a well-formed `X-QG-Request-Id` sent by the client or a proxy in
+    /// front. false → always generate a new one.
+    #[serde(default = "default_true")]
+    pub accept_incoming: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -268,6 +281,11 @@ impl Default for TimeoutsConfig {
 impl Default for LimitsConfig {
     fn default() -> Self {
         serde_json::from_str("{}").expect("LimitsConfig defaults")
+    }
+}
+impl Default for RequestIdConfig {
+    fn default() -> Self {
+        serde_json::from_str("{}").expect("RequestIdConfig defaults")
     }
 }
 impl Default for ProtectionConfig {
@@ -904,10 +922,19 @@ pub enum HealthCheckMode {
 pub struct LoggingConfig {
     #[serde(default = "default_true")]
     pub enabled: bool,
+    /// Where events go. Only "file" today.
     #[serde(default = "default_log_mode")]
     pub mode: String,
+    /// Events waiting to be written. When full (disk slower than traffic),
+    /// new events are dropped and counted instead of using more memory.
+    #[serde(default = "default_log_queue_size")]
+    pub queue_size: usize,
     #[serde(default)]
     pub file: Option<LogFileConfig>,
+}
+
+fn default_log_queue_size() -> usize {
+    65_536
 }
 
 fn default_log_mode() -> String {

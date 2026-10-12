@@ -34,15 +34,32 @@ pub struct LogEvent {
     pub scheme: Arc<str>,
     pub host: Arc<str>,
     pub path: Arc<str>,
+    /// "HTTP/1.1", "HTTP/2", ...
+    pub http_version: &'static str,
+    pub user_agent: Option<Arc<str>>,
+    pub referer: Option<String>,
 
     // Response
     pub response_status: u16,
+    /// Status the origin sent, before response_transform. None when the
+    /// request never reached the origin (cache hit, block, error).
+    pub upstream_status: Option<u16>,
+    /// Why the request failed (connect refused, timeout, ...). None on success.
+    pub error: Option<String>,
 
     // Bandwidth
     pub bandwidth: BandwidthEvent,
 
     // IP intelligence
     pub ip_intel: IpIntelEvent,
+
+    // server.protection / server.limits refusal: banned, request_rate,
+    // body_too_large. None when the request wasn't refused.
+    pub protection: Option<&'static str>,
+
+    // JWT from the Authorization header. Only present when a rule read it,
+    // so logging never verifies a token on its own.
+    pub jwt: Option<JwtEvent>,
 
     // Firewall
     pub firewall: FirewallEvent,
@@ -92,6 +109,17 @@ pub struct IpIntelEvent {
     pub is_mobile: Option<bool>,
     pub is_tor: Option<bool>,
     pub risk_score: Option<u8>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct JwtEvent {
+    /// Passed every check against the configured `jwt` keys.
+    pub valid: bool,
+    /// missing, malformed, expired, bad_signature, ... or "unverified" when
+    /// no `jwt` keys are configured.
+    pub error: Option<&'static str>,
+    /// `sub` claim of a valid token.
+    pub sub: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -188,7 +216,13 @@ impl LogEvent {
                     .unwrap_or(&ctx.path),
             ),
 
+            http_version: "",
+            user_agent: ctx.user_agent.as_ref().map(Arc::clone),
+            referer: None,
+
             response_status: ctx.status_code.unwrap_or(0),
+            upstream_status: ctx.upstream_status,
+            error: None,
 
             bandwidth: BandwidthEvent {
                 client_bytes_in: ctx.client_bytes_in,
@@ -212,6 +246,9 @@ impl LogEvent {
                 is_tor: ctx.ip_intel.as_ref().and_then(|i| i.is_tor),
                 risk_score: ctx.ip_intel.as_ref().and_then(|i| i.risk_score),
             },
+
+            protection: ctx.protection,
+            jwt: None,
 
             firewall: FirewallEvent {
                 matched: ctx.firewall.matched,
@@ -270,5 +307,160 @@ impl LogEvent {
                 total_us: ctx.total_latency_us,
             },
         }
+    }
+}
+
+impl LogEvent {
+    /// Fields read from the client's original request header (before any
+    /// request_transform), plus the JWT result a rule already computed.
+    pub fn add_request_details(&mut self, req: &pingora_http::RequestHeader, ctx: &RequestContext) {
+        self.http_version = match req.version {
+            http::Version::HTTP_09 => "HTTP/0.9",
+            http::Version::HTTP_10 => "HTTP/1.0",
+            http::Version::HTTP_11 => "HTTP/1.1",
+            http::Version::HTTP_2 => "HTTP/2",
+            http::Version::HTTP_3 => "HTTP/3",
+            _ => "",
+        };
+        self.referer = req
+            .headers
+            .get(http::header::REFERER)
+            .and_then(|v| v.to_str().ok())
+            .map(String::from);
+        self.jwt = jwt_event(req.headers.get(http::header::AUTHORIZATION), ctx);
+    }
+}
+
+/// The Authorization token's result from the per-request JWT cache. None when
+/// no rule looked at the token.
+fn jwt_event(header: Option<&http::HeaderValue>, ctx: &RequestContext) -> Option<JwtEvent> {
+    let raw = header?.to_str().ok()?;
+    let token = match raw.get(..7) {
+        Some(p) if p.eq_ignore_ascii_case("bearer ") => raw[7..].trim(),
+        _ => raw.trim(),
+    };
+    let outcome = ctx.jwt_cache.get(token)?;
+    Some(match (outcome, ctx.jwt.is_some()) {
+        (Ok(claims), true) => JwtEvent {
+            valid: true,
+            error: None,
+            sub: claims.get("sub").and_then(|v| match v {
+                serde_json::Value::String(s) => Some(s.clone()),
+                serde_json::Value::Number(n) => Some(n.to_string()),
+                _ => None,
+            }),
+        },
+        (Ok(_), false) => JwtEvent {
+            valid: false,
+            error: Some("unverified"),
+            sub: None,
+        },
+        (Err(e), _) => JwtEvent {
+            valid: false,
+            error: Some(e),
+            sub: None,
+        },
+    })
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use super::*;
+    use http::{HeaderMap, HeaderName, HeaderValue};
+
+    pub(crate) fn ctx(path: &str, headers: &[(&str, &str)]) -> RequestContext {
+        let ip = std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST);
+        let mut map = HeaderMap::new();
+        for (k, v) in headers {
+            map.append(
+                HeaderName::from_bytes(k.as_bytes()).unwrap(),
+                HeaderValue::from_str(v).unwrap(),
+            );
+        }
+        RequestContext::new(
+            Arc::from("gw"),
+            Arc::from("gw"),
+            Arc::from("gw"),
+            Arc::from("1"),
+            ip,
+            ip,
+            Arc::from("peer_ip"),
+            None,
+            Arc::from(path),
+            Arc::from("GET"),
+            Arc::from("http"),
+            None,
+            map,
+        )
+    }
+
+    fn req(headers: &[(&str, &str)]) -> pingora_http::RequestHeader {
+        let mut r = pingora_http::RequestHeader::build("GET", b"/p", None).unwrap();
+        for (k, v) in headers {
+            r.insert_header(k.to_string(), *v).unwrap();
+        }
+        r
+    }
+
+    #[test]
+    fn request_details_come_from_the_original_request() {
+        let mut c = ctx("/p", &[]);
+        c.user_agent = Some(Arc::from("curl/8"));
+        c.upstream_status = Some(503);
+        c.protection = Some("request_rate");
+        let mut ev = LogEvent::from_context(&c);
+        ev.add_request_details(&req(&[("referer", "https://a.example/")]), &c);
+        let v = serde_json::to_value(&ev).unwrap();
+        assert_eq!(v["http_version"], "HTTP/1.1");
+        assert_eq!(v["user_agent"], "curl/8");
+        assert_eq!(v["referer"], "https://a.example/");
+        assert_eq!(v["upstream_status"], 503);
+        assert_eq!(v["protection"], "request_rate");
+        assert!(v["jwt"].is_null());
+        assert!(v["error"].is_null());
+    }
+
+    #[test]
+    fn jwt_result_is_logged_only_when_a_rule_read_it() {
+        let auth = [("authorization", "Bearer tok")];
+        let mut c = ctx("/p", &[]);
+
+        // No rule looked at the token: nothing logged, nothing verified.
+        let mut ev = LogEvent::from_context(&c);
+        ev.add_request_details(&req(&auth), &c);
+        assert!(ev.jwt.is_none());
+
+        // Decode-only mode (no keys).
+        let claims = Arc::new(serde_json::json!({"sub": "u1"}));
+        c.jwt_cache.insert("tok".into(), Ok(Arc::clone(&claims)));
+        ev.add_request_details(&req(&auth), &c);
+        let j = ev.jwt.as_ref().unwrap();
+        assert!(!j.valid);
+        assert_eq!(j.error, Some("unverified"));
+        assert_eq!(j.sub, None);
+
+        // Failed verification.
+        c.jwt_cache.insert("tok".into(), Err("expired"));
+        ev.add_request_details(&req(&auth), &c);
+        let j = ev.jwt.as_ref().unwrap();
+        assert!(!j.valid);
+        assert_eq!(j.error, Some("expired"));
+    }
+
+    #[test]
+    fn verified_jwt_logs_sub() {
+        let cfg: crate::config::schema::JwtConfig = serde_json::from_value(serde_json::json!({
+            "keys": [{"id": "k", "algorithms": ["HS256"], "secret": "s"}]
+        }))
+        .unwrap();
+        let mut c = ctx("/p", &[]);
+        c.jwt = crate::jwt::compile_jwt(&cfg).unwrap().map(Arc::new);
+        c.jwt_cache
+            .insert("tok".into(), Ok(Arc::new(serde_json::json!({"sub": 42}))));
+        let mut ev = LogEvent::from_context(&c);
+        ev.add_request_details(&req(&[("authorization", "tok")]), &c);
+        let j = ev.jwt.unwrap();
+        assert!(j.valid);
+        assert_eq!(j.sub.as_deref(), Some("42"));
     }
 }

@@ -10,6 +10,7 @@ The gateway produces structured JSONL (JSON Lines) access logs — one JSON obje
     "logging": {
       "enabled": true,
       "mode": "file",
+      "queue_size": 65536,
       "file": {
         "path": "/var/log/quayel/access.jsonl",
         "buffer_size": 8192,
@@ -23,10 +24,35 @@ The gateway produces structured JSONL (JSON Lines) access logs — one JSON obje
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `enabled` | bool | `true` | Enable/disable logging |
-| `mode` | string | `"file"` | Log mode |
-| `file.path` | string | — | Path to JSONL log file |
-| `file.buffer_size` | int | `8192` | Write buffer size |
-| `file.flush_interval_ms` | int | `1000` | Flush interval |
+| `mode` | string | `"file"` | Where events go. Only `"file"` today; anything else is rejected when the config loads |
+| `queue_size` | int | `65536` | Events waiting to be written. When the queue is full, new events are dropped and counted (see [How events are written](#how-events-are-written)) |
+| `file.path` | string | `/var/log/quayel/access.jsonl` | Path to the JSONL log file |
+| `file.buffer_size` | int | `8192` | Events written per batch |
+| `file.flush_interval_ms` | int | `1000` | Write at least this often, in ms. Also how often the gateway checks whether the file was rotated |
+
+All of these settings apply on [hot reload](configuration.md): changing the
+path, turning logging on or off, or changing a size starts a new writer. The
+old writer finishes the events it already had, writing them to the old file.
+
+## Request ID
+
+Every request gets an ID, sent to the origin and returned to the client in the
+`X-QG-Request-Id` header, and logged as `request_id`:
+
+- If the request already has a well-formed `X-QG-Request-Id` (1–128
+  characters from `A-Z a-z 0-9 - _ . : / + =`), that ID is reused, so one ID
+  follows the request through every proxy in the chain.
+- Otherwise the gateway generates a random 128-bit ID (32 hex characters).
+  IDs don't repeat across restarts or between gateway instances.
+
+```json
+"server": { "request_id": { "accept_incoming": true } }
+```
+
+Set `accept_incoming` to `false` when clients talk to the gateway directly and
+you don't want them choosing their own IDs. `request_transform` rules can't
+change `X-QG-Request-Id`; `response_transform` rules can rename or remove it
+on the way back to the client.
 
 ## Log Format
 
@@ -39,7 +65,7 @@ Each line is a complete JSON object:
   "gateway_name": "production",
   "server_name": "api.example.com",
   "config_version": "2026-01-15-001",
-  "request_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+  "request_id": "4f0c1a9e2b7d4c38a5e6f1d2c3b4a596",
   "client_ip": "203.0.113.50",
   "peer_ip": "203.0.113.50",
   "client_ip_source": "X-Forwarded-For",
@@ -47,9 +73,16 @@ Each line is a complete JSON object:
   "scheme": "https",
   "host": "api.example.com",
   "path": "/api/v1/users",
+  "http_version": "HTTP/1.1",
+  "user_agent": "curl/8.5.0",
+  "referer": null,
   "response_status": 200,
+  "upstream_status": 200,
+  "error": null,
   "bandwidth": { ... },
   "ip_intel": { ... },
+  "protection": null,
+  "jwt": { ... },
   "firewall": { ... },
   "rate_limit": { ... },
   "request_transform": { ... },
@@ -72,7 +105,7 @@ Each line is a complete JSON object:
 | `gateway_name` | string | Gateway name |
 | `server_name` | string | Server name |
 | `config_version` | string | Config version string |
-| `request_id` | string | UUID v4 unique request ID |
+| `request_id` | string | The `X-QG-Request-Id` for this request (see [Request ID](#request-id)) |
 
 ### Client
 
@@ -90,12 +123,42 @@ Each line is a complete JSON object:
 | `scheme` | string | Request scheme (http/https) |
 | `host` | string | Host the client sent (a `request_transform` rewrite is in `request_transform.host`) |
 | `path` | string | Path and query the client sent (a `request_transform` rewrite is in `request_transform.path`) |
+| `http_version` | string | `HTTP/1.0`, `HTTP/1.1` or `HTTP/2` |
+| `user_agent` | string \| null | `User-Agent` the client sent |
+| `referer` | string \| null | `Referer` the client sent |
 
 ### Response
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `response_status` | number | HTTP response status code |
+| `response_status` | number | Status sent to the client |
+| `upstream_status` | number \| null | Status the origin sent, before `response_transform`. `null` when the request never got an answer from the origin (cache hit, block, connection error) |
+| `error` | string \| null | Why the request failed, e.g. the origin refused the connection or timed out. `null` on success and when a stored copy was served instead |
+
+### Protection
+
+`protection` names the `server.protection` / `server.limits` check that refused
+the request: `banned`, `request_rate` or `body_too_large`. `null` when the
+request wasn't refused. Connections refused before a request is read
+(connection limits, slow or oversized headers) never produce a log line.
+
+### JWT
+
+```json
+{
+  "jwt": { "valid": true, "error": null, "sub": "user-123" }
+}
+```
+
+The result for the token in the `Authorization` header. It's only present when
+a rule read the token, so logging never verifies a token by itself; otherwise
+`jwt` is `null`.
+
+| Field | Description |
+|-------|-------------|
+| `valid` | The token passed every check against the configured `jwt` keys |
+| `error` | Why it failed (`missing`, `malformed`, `expired`, `bad_signature`, ...), or `unverified` when no `jwt` keys are configured |
+| `sub` | The `sub` claim, only for a valid token |
 
 ### Bandwidth
 
@@ -281,6 +344,7 @@ See [IP Intelligence](plugins/ip-intel.md) for field details.
 | `RateLimit` | Terminated by Rate Limiting (429) |
 | `Cache` | Terminated by Cache (HIT served) |
 | `LoadBalancer` | Terminated by Load Balancer (no upstream) |
+| `Protection` | Refused by `server.protection` / `server.limits` (see `protection`) |
 
 ### Timings
 
@@ -386,25 +450,56 @@ cat access.jsonl | jq 'select(.cache.status == "STALE")' | wc -l
 cat access.jsonl | jq 'select(.timings_us.total_us > 100000)'
 ```
 
+### Follow one request across services
+
+```bash
+jq 'select(.request_id == "4f0c1a9e2b7d4c38a5e6f1d2c3b4a596")' access.jsonl
+```
+
+### Origin errors
+
+```bash
+jq 'select(.error != null) | {timestamp, path, response_status, error}' access.jsonl
+```
+
+## How events are written
+
+- Each request's event goes onto an in-memory queue; a background task writes
+  events in batches (`file.buffer_size` events, or every
+  `file.flush_interval_ms`). Requests never wait for the disk.
+- The queue holds at most `queue_size` events. If the disk can't keep up, new
+  events are dropped rather than using more memory, and the gateway logs a
+  warning with the number dropped, at most once per flush interval.
+- If the file can't be opened (missing directory, permissions), the gateway
+  logs the error once, drops events, and retries every flush interval.
+- The log file and its parent directories are created automatically. Events
+  are appended.
+
 ## Log Rotation
 
-Use `logrotate` or similar:
+The gateway notices when its log file has been moved or deleted (it checks
+every `flush_interval_ms`) and opens a new one at the configured path. Sending
+`SIGHUP` reopens it straight away. So logrotate's default
+move-and-create works without `copytruncate`, which can lose lines:
 
 ```
 /var/log/quayel/access.jsonl {
     daily
     rotate 30
     compress
+    delaycompress
     missingok
     notifempty
-    copytruncate
+    postrotate
+        pkill -HUP -x quayel-gateway || true
+    endscript
 }
 ```
 
+`delaycompress` keeps yesterday's file uncompressed for one more cycle, so
+the last few events written before the reopen land in a plain file. Without
+the `postrotate` signal, the switch happens within one flush interval.
+
 ## Notes
 
-- Logs are written synchronously (one `write()` per line)
-- The log file is created automatically if it doesn't exist
-- Parent directories are created automatically
-- Logs are appended (no rotation built-in — use external tools)
 - Each gateway instance writes to its own log file

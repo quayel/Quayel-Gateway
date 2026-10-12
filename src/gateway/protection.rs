@@ -37,6 +37,8 @@ pub struct CompiledServer {
     pub upstream_keepalive_pool_size: usize,
     /// None when `server.protection.enabled` is false.
     pub protection: Option<Arc<CompiledProtection>>,
+    /// server.request_id.accept_incoming
+    pub accept_incoming_request_id: bool,
 }
 
 #[derive(Debug)]
@@ -122,6 +124,7 @@ pub fn compile_server(raw: &ServerConfig) -> Result<CompiledServer, String> {
             .then_some(l.max_requests_per_connection),
         upstream_keepalive_pool_size: l.upstream_keepalive_pool_size,
         protection,
+        accept_incoming_request_id: raw.request_id.accept_incoming,
     })
 }
 

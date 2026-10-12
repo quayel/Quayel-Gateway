@@ -106,6 +106,7 @@ impl ConfigWatcher {
                     }
                 }
 
+                state.reload_logging(compiled.logging.as_ref(), &handle_clone);
                 state.config.store(Arc::new(compiled));
                 last_hash = Some(hash);
 
