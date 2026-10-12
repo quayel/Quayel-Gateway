@@ -2,6 +2,7 @@ pub mod acme;
 pub mod certificate;
 pub mod challenge;
 
+use crate::config::compiler::CompiledAutoSsl;
 use acme::AcmeClient;
 use certificate::{CertExpiryStatus, CertMap, CertificateManager};
 use challenge::ChallengeStore;
@@ -45,10 +46,8 @@ pub struct AutoSslManager {
     pub challenge_store: Arc<ChallengeStore>,
     /// Certificate manager for PEM I/O
     pub cert_manager: CertificateManager,
-    /// ACME email
-    pub email: String,
-    /// Use staging environment
-    pub staging: bool,
+    /// ACME client (one account, reused for every domain and renewal)
+    acme: Arc<AcmeClient>,
     /// Renewal days before expiry
     pub renewal_days_before: u32,
     /// Background runtime handle for spawning ACME workers from sync contexts
@@ -59,8 +58,7 @@ pub struct AutoSslManager {
 impl std::fmt::Debug for AutoSslManager {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AutoSslManager")
-            .field("email", &self.email)
-            .field("staging", &self.staging)
+            .field("acme_directory", &self.acme.directory_url())
             .field("renewal_days_before", &self.renewal_days_before)
             .field("cert_count", &self.cert_map.len())
             .field(
@@ -73,14 +71,16 @@ impl std::fmt::Debug for AutoSslManager {
 
 impl AutoSslManager {
     /// Create a new AutoSslManager from config
-    pub fn new(
-        email: &str,
-        domains: &[String],
-        cert_storage_path: &str,
-        staging: bool,
-        renewal_days_before: u32,
-    ) -> Self {
-        let cert_manager = CertificateManager::new(cert_storage_path);
+    pub fn new(config: &CompiledAutoSsl) -> Self {
+        let domains = &config.domains;
+        let renewal_days_before = config.renewal_days_before;
+        let cert_manager = CertificateManager::new(&config.cert_storage_path);
+        let acme = Arc::new(AcmeClient::new(
+            &config.directory_url,
+            &config.email,
+            config.ca_root.as_deref(),
+            &cert_manager.storage_path,
+        ));
 
         // Load cached certs from disk on startup
         let cert_map = cert_manager.load_all_cached_certs(domains);
@@ -115,6 +115,7 @@ impl AutoSslManager {
         info!(
             loaded_certs = loaded_count,
             total_domains = domains.len(),
+            acme_directory = %config.directory_url,
             "Auto-SSL manager initialized"
         );
 
@@ -125,8 +126,7 @@ impl AutoSslManager {
             provisioning_set: DashSet::new(),
             challenge_store: Arc::new(ChallengeStore::new()),
             cert_manager,
-            email: email.to_string(),
-            staging,
+            acme,
             renewal_days_before,
             bg_handle: RwLock::new(None),
         }
@@ -234,9 +234,7 @@ impl AutoSslManager {
         bg_handle.spawn(async move {
             info!(domain = %domain_clone, "Starting on-demand cert provisioning");
 
-            let mut acme_client = AcmeClient::new(&manager.email, manager.staging);
-
-            match acme_client.provision_certificate(&domain_clone, &manager.challenge_store).await {
+            match manager.acme.provision_certificate(&domain_clone, &manager.challenge_store).await {
                 Ok(result) => {
                     // Parse and load the cert
                     match certificate::parse_pem_to_certified_key(&result.cert_pem, &result.key_pem) {
@@ -392,13 +390,15 @@ mod tests {
             .build()
             .expect("build runtime");
 
-        let manager = AutoSslManager::new(
-            "test@example.com",
-            &["example.com".to_string()],
-            "/tmp/quayel-gateway-test-certs",
-            true,
-            30,
-        );
+        let manager = AutoSslManager::new(&CompiledAutoSsl {
+            enabled: true,
+            email: "test@example.com".to_string(),
+            domains: vec!["example.com".to_string()],
+            cert_storage_path: "/tmp/quayel-gateway-test-certs".to_string(),
+            directory_url: acme::LETS_ENCRYPT_STAGING.to_string(),
+            ca_root: None,
+            renewal_days_before: 30,
+        });
 
         rt.block_on(async {
             // Before the fix: tokio::sync::RwLock::blocking_read() panicked here.

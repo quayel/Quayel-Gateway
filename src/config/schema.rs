@@ -835,6 +835,13 @@ pub struct AutoSslConfig {
     /// Use Let's Encrypt staging environment (for testing)
     #[serde(default)]
     pub staging: bool,
+    /// Custom ACME directory URL (step-ca, Pebble, ...). Overrides `staging`.
+    /// CAs that need External Account Binding aren't supported.
+    #[serde(default)]
+    pub directory_url: Option<String>,
+    /// PEM file with the root CA of a private ACME server's HTTPS endpoint.
+    #[serde(default)]
+    pub ca_root: Option<String>,
     /// Renew certificates this many days before expiry
     #[serde(default = "default_renewal_days_before")]
     pub renewal_days_before: u32,

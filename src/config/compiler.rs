@@ -168,7 +168,10 @@ pub struct CompiledAutoSsl {
     pub email: String,
     pub domains: Vec<String>,
     pub cert_storage_path: String,
-    pub staging: bool,
+    /// Resolved ACME directory: `directory_url`, else Let's Encrypt staging/production.
+    pub directory_url: String,
+    /// Root CA PEM for a private ACME server (None = system roots).
+    pub ca_root: Option<String>,
     pub renewal_days_before: u32,
 }
 
@@ -375,7 +378,15 @@ fn compile_auto_ssl(c: &AutoSslConfig) -> CompiledAutoSsl {
         email: c.email.clone(),
         domains: c.domains.clone(),
         cert_storage_path: c.cert_storage_path.clone(),
-        staging: c.staging,
+        directory_url: c.directory_url.clone().unwrap_or_else(|| {
+            if c.staging {
+                crate::auto_ssl::acme::LETS_ENCRYPT_STAGING
+            } else {
+                crate::auto_ssl::acme::LETS_ENCRYPT_PROD
+            }
+            .to_string()
+        }),
+        ca_root: c.ca_root.clone(),
         renewal_days_before: c.renewal_days_before,
     }
 }

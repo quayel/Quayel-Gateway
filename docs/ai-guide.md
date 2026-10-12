@@ -104,7 +104,7 @@ GatewayConfig
     ├── cache          { enabled = true, max_object_size_bytes = 10485760, rules: CacheRule[] = [] }
     ├── load_balancer  { enabled = true, load_balancers: LoadBalancer[] = [] }
     ├── logging        { enabled = true, mode = "file", file?: { path, buffer_size = 8192, flush_interval_ms = 1000 } }
-    └── auto_ssl       { enabled = true, email*, domains*, cert_storage_path = "/var/lib/quayel/certs", staging = false, renewal_days_before = 30 }
+    └── auto_ssl       { enabled = true, email*, domains*, cert_storage_path = "/var/lib/quayel/certs", staging = false, directory_url?, ca_root?, renewal_days_before = 30 }
 ```
 
 ### FirewallRule
