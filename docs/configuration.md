@@ -206,6 +206,8 @@ resolve for tokens that verify against one of the keys.
 | `enabled` | `true` | `false` → behave as if the section weren't there |
 | `leeway_secs` | `30` | Clock skew allowed for `exp` and `nbf` |
 | `required_claims` | `["exp"]` | Claims a token must have: any of `exp`, `nbf`, `iss`, `aud`, `sub` |
+| `verified_cache_size` | `10000` | Verified tokens to remember, so a client reusing its token skips the signature check. `0` turns the cache off |
+| `verified_cache_ttl_secs` | `60` | Longest a verified token is remembered. An entry also ends at the token's `exp` (plus `leeway_secs`), so an expired token is never served from the cache. This is how long a key removed from a JWKS still works for tokens it already signed |
 | `keys` | — | One or more keys. A token is valid if it verifies against any of them |
 
 Each key:

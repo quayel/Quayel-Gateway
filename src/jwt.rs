@@ -38,6 +38,63 @@ const DEFAULT_JWKS_REFRESH_SECS: u64 = 600;
 #[derive(Clone)]
 pub struct CompiledJwt {
     keys: Vec<CompiledJwtKey>,
+    leeway_secs: u64,
+    /// Tokens that already verified. Rebuilt on every config reload.
+    cache: Option<Arc<VerifiedCache>>,
+}
+
+/// Tokens that passed verification, keyed by the exact token string, so a
+/// hit means these same bytes were already checked. Each entry ends at the
+/// token's `exp` (plus leeway) or after the TTL, whichever comes first.
+/// Failures aren't cached: an attacker can mint unlimited bad tokens anyway.
+struct VerifiedCache {
+    map: dashmap::DashMap<Box<str>, (u64, Arc<Value>)>,
+    capacity: usize,
+    ttl_secs: u64,
+    last_sweep: AtomicU64,
+}
+
+impl VerifiedCache {
+    fn get(&self, token: &str, now: u64) -> Option<Arc<Value>> {
+        let entry = self.map.get(token)?;
+        if now < entry.0 {
+            return Some(Arc::clone(&entry.1));
+        }
+        drop(entry);
+        self.map.remove(token);
+        None
+    }
+
+    fn insert(&self, token: &str, claims: &Arc<Value>, now: u64, leeway_secs: u64) {
+        let mut deadline = now.saturating_add(self.ttl_secs);
+        if let Some(exp) = claims
+            .get("exp")
+            .and_then(|v| v.as_u64().or_else(|| v.as_f64().map(|f| f.max(0.0) as u64)))
+        {
+            deadline = deadline.min(exp.saturating_add(leeway_secs));
+        }
+        if deadline <= now {
+            return;
+        }
+        if self.map.len() >= self.capacity {
+            // Full: drop expired entries, at most once a second. If it's
+            // still full, skip caching rather than evicting live entries.
+            let last = self.last_sweep.load(Ordering::Relaxed);
+            if last != now
+                && self
+                    .last_sweep
+                    .compare_exchange(last, now, Ordering::Relaxed, Ordering::Relaxed)
+                    .is_ok()
+            {
+                self.map.retain(|_, v| now < v.0);
+            }
+            if self.map.len() >= self.capacity {
+                return;
+            }
+        }
+        self.map
+            .insert(token.into(), (deadline, Arc::clone(claims)));
+    }
 }
 
 impl std::fmt::Debug for CompiledJwt {
@@ -94,12 +151,28 @@ fn family(alg: Algorithm) -> Family {
 // ── Verification ─────────────────────────────────────────────────────────────
 
 impl CompiledJwt {
+    /// Verify a token, using the verified-token cache when it's on.
+    pub fn verify(&self, token: &str) -> JwtOutcome {
+        let Some(cache) = &self.cache else {
+            return self.verify_uncached(token);
+        };
+        let now = now_secs();
+        if let Some(claims) = cache.get(token, now) {
+            return Ok(claims);
+        }
+        let outcome = self.verify_uncached(token);
+        if let Ok(claims) = &outcome {
+            cache.insert(token, claims, now, self.leeway_secs);
+        }
+        outcome
+    }
+
     /// Verify a token against every configured key.
     ///
     /// The token's `alg` header only selects among the algorithms a key was
     /// configured with; it can never switch a key to another family (the
     /// HS256-with-an-RSA-public-key attack).
-    pub fn verify(&self, token: &str) -> JwtOutcome {
+    fn verify_uncached(&self, token: &str) -> JwtOutcome {
         let header = jsonwebtoken::decode_header(token).map_err(|_| "malformed")?;
         let token_kid = header.kid.as_deref();
 
@@ -245,7 +318,19 @@ pub fn compile_jwt(c: &JwtConfig) -> Result<Option<CompiledJwt>, String> {
         }
         keys.push(compile_key(k, c).map_err(|e| format!("jwt key `{}`: {}", k.id, e))?);
     }
-    Ok(Some(CompiledJwt { keys }))
+    let cache = (c.verified_cache_size > 0 && c.verified_cache_ttl_secs > 0).then(|| {
+        Arc::new(VerifiedCache {
+            map: dashmap::DashMap::new(),
+            capacity: c.verified_cache_size,
+            ttl_secs: c.verified_cache_ttl_secs,
+            last_sweep: AtomicU64::new(0),
+        })
+    });
+    Ok(Some(CompiledJwt {
+        keys,
+        leeway_secs: c.leeway_secs,
+        cache,
+    }))
 }
 
 fn compile_key(k: &JwtKeyConfig, c: &JwtConfig) -> Result<CompiledJwtKey, String> {
@@ -1202,6 +1287,63 @@ mod tests {
             resolve_condition_value(&mut map_ctx, "header.x-token.jwt.sub"),
             Some(json!("u1"))
         );
+    }
+
+    // ── Verified-token cache ─────────────────────────────────────────────
+
+    fn hs_cfg(extra: Value) -> Value {
+        let mut cfg = json!({ "keys": [{ "id": "k", "algorithms": ["HS256"], "secret": "s" }] });
+        for (k, v) in extra.as_object().unwrap() {
+            cfg[k] = v.clone();
+        }
+        cfg
+    }
+
+    #[test]
+    fn verified_cache_serves_repeat_tokens_only() {
+        let jwt = compile(hs_cfg(json!({}))).unwrap();
+        let good = hs_token("s", good_claims());
+        assert_eq!(jwt.verify(&good).unwrap()["sub"], "u1");
+        assert_eq!(jwt.cache.as_ref().unwrap().map.len(), 1);
+        assert_eq!(jwt.verify(&good).unwrap()["sub"], "u1");
+
+        // Same header and payload, different signature: not a cache hit.
+        let (signed, _) = good.rsplit_once('.').unwrap();
+        assert_eq!(jwt.verify(&format!("{signed}.AAAA")), Err("bad_signature"));
+        // Failures aren't cached.
+        assert_eq!(
+            jwt.verify(&hs_token("other", good_claims())),
+            Err("bad_signature")
+        );
+        assert_eq!(jwt.cache.as_ref().unwrap().map.len(), 1);
+    }
+
+    #[test]
+    fn verified_cache_entry_ends_at_exp() {
+        let jwt = compile(hs_cfg(json!({ "leeway_secs": 0 }))).unwrap();
+        let token = hs_token("s", json!({ "sub": "u1", "exp": now() + 2 }));
+        assert!(jwt.verify(&token).is_ok());
+        std::thread::sleep(Duration::from_millis(3100));
+        assert_eq!(jwt.verify(&token), Err("expired"));
+    }
+
+    #[test]
+    fn verified_cache_is_bounded_and_can_be_disabled() {
+        let jwt = compile(hs_cfg(json!({ "verified_cache_size": 2 }))).unwrap();
+        for i in 0..5 {
+            let t = hs_token("s", json!({ "sub": format!("u{i}"), "exp": now() + 600 }));
+            assert!(jwt.verify(&t).is_ok());
+        }
+        assert_eq!(jwt.cache.as_ref().unwrap().map.len(), 2);
+
+        assert!(compile(hs_cfg(json!({ "verified_cache_size": 0 })))
+            .unwrap()
+            .cache
+            .is_none());
+        assert!(compile(hs_cfg(json!({ "verified_cache_ttl_secs": 0 })))
+            .unwrap()
+            .cache
+            .is_none());
     }
 
     #[test]

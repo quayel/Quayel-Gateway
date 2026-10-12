@@ -26,7 +26,17 @@ write entries for people running the gateway, not for people reading the diff.
   rule block missing or bad tokens. Without a `jwt` section nothing changes:
   tokens are decoded without checking, and the gateway now logs a startup
   warning when rules read JWT claims in that mode.
+  Verified tokens are remembered (`verified_cache_size`, default 10,000;
+  `verified_cache_ttl_secs`, default 60, never past the token's `exp`), so a
+  client reusing its token pays for the signature check once rather than on
+  every request.
 - `scripts/test/jwt-verify.py` end-to-end test, also run by `run-all.sh`.
+
+### Fixed
+
+- The config watcher no longer reloads an unchanged config 5 seconds after
+  startup. That extra reload rebuilt every compiled rule and restarted JWKS
+  fetches for nothing.
 
 ## [0.3.1] - 2026-10-12
 

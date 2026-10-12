@@ -47,6 +47,15 @@ pub struct JwtConfig {
     pub required_claims: Vec<String>,
     /// A token is valid if it verifies against any one of these keys.
     pub keys: Vec<JwtKeyConfig>,
+    /// How many verified tokens to remember, so a client that reuses its
+    /// token skips the signature check. 0 turns the cache off.
+    #[serde(default = "default_jwt_verified_cache_size")]
+    pub verified_cache_size: usize,
+    /// Longest a verified token is remembered. Entries also end at the
+    /// token's own `exp`. Bounds how long a key removed from a JWKS keeps
+    /// working for tokens it already signed.
+    #[serde(default = "default_jwt_verified_cache_ttl_secs")]
+    pub verified_cache_ttl_secs: u64,
 }
 
 /// One verification key. Set exactly one of the key sources.
@@ -118,6 +127,14 @@ fn default_jwt_leeway_secs() -> u64 {
 
 fn default_jwt_required_claims() -> Vec<String> {
     vec!["exp".to_string()]
+}
+
+fn default_jwt_verified_cache_size() -> usize {
+    10_000
+}
+
+fn default_jwt_verified_cache_ttl_secs() -> u64 {
+    60
 }
 
 // ── Server Config ────────────────────────────────────────────────────────────

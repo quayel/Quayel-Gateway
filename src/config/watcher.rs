@@ -25,7 +25,11 @@ impl ConfigWatcher {
     pub fn start(self, state: Arc<GatewayState>, handle: tokio::runtime::Handle) {
         let handle_clone = handle.clone();
         handle.spawn(async move {
-            let mut last_hash: Option<Vec<u8>> = None;
+            // Seed with the file the gateway just started from, so the first
+            // check doesn't recompile (and refetch JWKS for) an unchanged config.
+            let mut last_hash: Option<Vec<u8>> = std::fs::read_to_string(&self.config_path)
+                .ok()
+                .map(|c| Sha256::digest(c.as_bytes()).to_vec());
 
             tracing::info!(
                 path = %self.config_path,
