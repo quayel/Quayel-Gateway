@@ -280,6 +280,10 @@ jq 'select(.request_id == "0192d4e8-7c1a-7b3e-9f2c-4e1a7b3d5c6f")' access.jsonl
   thread (`qg-access-log`) writes events in batches (`file.buffer_size`
   events, or every `file.flush_interval_ms`). Requests never wait for the
   disk, and a slow disk can't hold up the gateway's other background work.
+- The queue is lock-free: adding an event is one atomic operation with no
+  system call, and requests don't wake the writer. The writer wakes on its
+  own every 5 ms and takes everything queued (or earlier, when the queue is
+  half full).
 - Lines are formatted on the writer thread by a hand-written JSON writer
   (fixed key bytes, integers without allocation, strings copied as they are
   unless they need escaping). The request thread only collects raw values.

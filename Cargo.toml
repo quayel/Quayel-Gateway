@@ -51,6 +51,9 @@ rand = "0.8"
 # Integer formatting for the access log writer
 itoa = "1"
 
+# Lock-free access log queue (no syscall per enqueue)
+crossbeam-queue = "0.3"
+
 # Bytes
 bytes = "1"
 

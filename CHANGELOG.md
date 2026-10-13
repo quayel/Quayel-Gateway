@@ -84,7 +84,13 @@ write entries for people running the gateway, not for people reading the diff.
   1 MiB write buffer, instead of a task on the background runtime with an
   8 KiB buffer. A slow disk no longer holds up JWKS refreshes, Auto-SSL or
   other background work, and a batch takes a few `write()` calls instead of
-  hundreds. `SIGHUP` reopens the file within 100 ms.
+  hundreds. `SIGHUP` reopens the file within a few milliseconds.
+- The access-log queue is lock-free and requests no longer wake the writer
+  thread: the writer drains the queue every 5 ms (earlier when it's half
+  full). Before, nearly every request cost a `futex` system call to wake it
+  (about 1.8 per request under load, now about 0.04). With logging on, cache
+  hits are 17–27% faster than before (paired `wrk` runs), and turning
+  logging on now costs about 3–11% instead of about 27%.
 - The sample `config.json` flushes the access log every second (was 60 s).
 
 ### Fixed

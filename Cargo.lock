@@ -2025,6 +2025,7 @@ dependencies = [
  "base64 0.22.1",
  "bytes",
  "chrono",
+ "crossbeam-queue",
  "dashmap 6.2.1",
  "http",
  "instant-acme",

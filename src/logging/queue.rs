@@ -1,29 +1,36 @@
 use crate::config::compiler::CompiledLogging;
 use crate::logging::event::LogEvent;
 use crate::logging::writer::LineWriter;
+use crossbeam_queue::ArrayQueue;
 use std::fs::{File, OpenOptions};
 use std::io::{BufWriter, Write};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::mpsc::{self, RecvTimeoutError, SyncSender, TrySendError};
 use std::sync::Arc;
+use std::thread::Thread;
 use std::time::{Duration, Instant};
 use tokio::sync::oneshot;
 use tracing::{error, info, warn};
 
 // ── Async Log Queue ──────────────────────────────────────────────────────────
-// Non-blocking enqueue via a bounded channel. A dedicated OS thread drains the
-// channel and writes events in batches to a JSONL file, so serialization and
+// Non-blocking enqueue into a bounded lock-free queue. A dedicated OS thread
+// drains it and writes events in batches to a JSONL file, so serialization and
 // disk writes never occupy a tokio worker (a slow disk can't stall JWKS
 // refreshes, Auto-SSL or the other background tasks).
 //
+// - No wake-up per event: enqueue is one atomic push, with no syscall. The
+//   writer wakes on its own every DRAIN_INTERVAL and takes everything queued.
+//   (A channel woke the writer through a futex on nearly every request, which
+//   cost more request-thread CPU than formatting the line.) Requests only wake
+//   the writer early when the queue is half full, so a burst can't overflow it
+//   between two drains.
 // - Bounded: when the writer can't keep up (slow or full disk), new events are
 //   dropped and counted instead of growing memory without limit. Logging never
 //   slows requests down. The writer reports the count every flush interval.
 // - Rotation: the file is reopened when its path no longer points at the open
 //   file (logrotate's default move-and-create, `mv`, `rm`), checked every
-//   flush interval, or on SIGHUP (within HUP_POLL). `copytruncate` isn't needed.
+//   flush interval, or on SIGHUP (within DRAIN_INTERVAL). `copytruncate` isn't needed.
 // - Lines are formatted by `LineWriter` (hand-written JSON, fixed schema) into
 //   one reused buffer per batch, then written through a large BufWriter
 //   (WRITE_BUFFER bytes), so a batch of thousands of lines costs a handful of
@@ -33,13 +40,31 @@ use tracing::{error, info, warn};
 /// ~1,700 lines per write() instead of ~13 with the 8 KiB default.
 const WRITE_BUFFER: usize = 1 << 20;
 
-/// Longest the writer thread sleeps before checking for a SIGHUP request.
-const HUP_POLL: Duration = Duration::from_millis(100);
+/// How often the writer thread wakes to drain the queue. At 60k events/s
+/// that's ~300 events per wake-up; lines sit in the batch for up to
+/// flush_interval_ms anyway, so this adds no visible delay.
+const DRAIN_INTERVAL: Duration = Duration::from_millis(5);
+
+/// State shared by the request threads and the writer thread.
+#[derive(Debug)]
+struct Shared {
+    queue: ArrayQueue<LogEvent>,
+    /// Events the queue refused because it was full.
+    dropped: AtomicU64,
+    /// Set when the LogQueue is dropped (shutdown or config reload): the
+    /// writer drains what's left and stops.
+    closed: AtomicBool,
+    /// Set by the SIGHUP listener.
+    reopen: AtomicBool,
+    /// Queue length at which enqueue wakes the writer early.
+    wake_at: usize,
+}
 
 #[derive(Debug)]
 pub struct LogQueue {
-    tx: SyncSender<LogEvent>,
-    dropped: Arc<AtomicU64>,
+    shared: Arc<Shared>,
+    /// The writer thread, for early wake-ups. None in tests without a writer.
+    writer: Option<Thread>,
     /// Dropped with the queue: stops the SIGHUP listener task.
     _stop: oneshot::Sender<()>,
     /// The settings this queue was built from; hot reload compares them.
@@ -61,33 +86,35 @@ impl LogQueue {
             }
         }
 
-        let (tx, rx) = mpsc::sync_channel::<LogEvent>(settings.queue_size);
-        let dropped = Arc::new(AtomicU64::new(0));
-        let reopen = Arc::new(AtomicBool::new(false));
+        let shared = Arc::new(Shared {
+            // queue_size >= 1 is enforced by the config compiler.
+            queue: ArrayQueue::new(settings.queue_size.max(1)),
+            dropped: AtomicU64::new(0),
+            closed: AtomicBool::new(false),
+            reopen: AtomicBool::new(false),
+            wake_at: (settings.queue_size / 2).max(1),
+        });
         let (stop_tx, stop_rx) = oneshot::channel::<()>();
 
+        let mut thread = None;
         if start {
             let writer = Writer {
-                rx,
+                shared: Arc::clone(&shared),
                 path,
                 buffer_size: settings.buffer_size,
                 flush_interval: Duration::from_millis(settings.flush_interval_ms),
-                dropped: Arc::clone(&dropped),
-                reopen: Arc::clone(&reopen),
                 open_failed: false,
                 lines: LineWriter::new(),
                 scratch: Vec::with_capacity(WRITE_BUFFER),
             };
-            if let Err(e) = std::thread::Builder::new()
+            match std::thread::Builder::new()
                 .name("qg-access-log".into())
                 .spawn(move || writer.run())
             {
-                error!("Failed to start access log writer thread: {}", e);
+                Ok(h) => thread = Some(h.thread().clone()),
+                Err(e) => error!("Failed to start access log writer thread: {}", e),
             }
-            handle.spawn(listen_for_hangup(reopen, stop_rx));
-        } else {
-            // Tests: keep the receiver alive but never drain it.
-            std::mem::forget(rx);
+            handle.spawn(listen_for_hangup(Arc::clone(&shared), stop_rx));
         }
 
         info!(
@@ -99,8 +126,8 @@ impl LogQueue {
         );
 
         Self {
-            tx,
-            dropped,
+            shared,
+            writer: thread,
             _stop: stop_tx,
             settings,
         }
@@ -109,14 +136,31 @@ impl LogQueue {
     /// Enqueue a log event. Never blocks: when the queue is full the event is
     /// dropped and counted.
     pub fn enqueue(&self, event: LogEvent) {
-        if let Err(TrySendError::Full(_)) = self.tx.try_send(event) {
-            self.dropped.fetch_add(1, Ordering::Relaxed);
+        if self.shared.queue.push(event).is_err() {
+            self.shared.dropped.fetch_add(1, Ordering::Relaxed);
+        } else if self.shared.queue.len() >= self.shared.wake_at {
+            self.wake_writer();
+        }
+    }
+
+    fn wake_writer(&self) {
+        if let Some(t) = &self.writer {
+            t.unpark();
         }
     }
 }
 
+impl Drop for LogQueue {
+    /// Shutdown or config reload: the writer drains what's queued, writes it
+    /// and stops. Every push happened before this, so nothing is left behind.
+    fn drop(&mut self) {
+        self.shared.closed.store(true, Ordering::Release);
+        self.wake_writer();
+    }
+}
+
 /// Sets `reopen` on every SIGHUP until the owning queue is dropped.
-async fn listen_for_hangup(reopen: Arc<AtomicBool>, mut stop: oneshot::Receiver<()>) {
+async fn listen_for_hangup(shared: Arc<Shared>, mut stop: oneshot::Receiver<()>) {
     let Ok(mut hangup) = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())
     else {
         return;
@@ -125,7 +169,7 @@ async fn listen_for_hangup(reopen: Arc<AtomicBool>, mut stop: oneshot::Receiver<
         tokio::select! {
             _ = &mut stop => return,
             r = hangup.recv() => match r {
-                Some(()) => reopen.store(true, Ordering::Relaxed),
+                Some(()) => shared.reopen.store(true, Ordering::Relaxed),
                 None => return,
             },
         }
@@ -135,14 +179,10 @@ async fn listen_for_hangup(reopen: Arc<AtomicBool>, mut stop: oneshot::Receiver<
 // ── Writer thread ────────────────────────────────────────────────────────────
 
 struct Writer {
-    rx: mpsc::Receiver<LogEvent>,
+    shared: Arc<Shared>,
     path: PathBuf,
     buffer_size: usize,
     flush_interval: Duration,
-    /// Events the queue refused because it was full.
-    dropped: Arc<AtomicU64>,
-    /// Set by the SIGHUP listener.
-    reopen: Arc<AtomicBool>,
     /// The last open attempt failed (log the error once, not every retry).
     open_failed: bool,
     lines: LineWriter,
@@ -186,35 +226,25 @@ impl Writer {
         let mut next_tick = Instant::now() + self.flush_interval;
 
         loop {
-            let wait = next_tick
-                .saturating_duration_since(Instant::now())
-                .min(HUP_POLL);
-            match self.rx.recv_timeout(wait) {
-                Ok(event) => {
-                    buffer.push(event);
-                    // Take whatever else is already queued without waiting.
-                    while buffer.len() < self.buffer_size {
-                        match self.rx.try_recv() {
-                            Ok(e) => buffer.push(e),
-                            Err(_) => break,
-                        }
-                    }
-                    if buffer.len() >= self.buffer_size {
-                        failed += self.flush(&mut log, &mut buffer);
-                    }
-                }
-                Err(RecvTimeoutError::Timeout) => {}
-                Err(RecvTimeoutError::Disconnected) => {
-                    // Every sender is gone: shutdown, or a config reload
-                    // replaced this queue. Write what's left and stop.
+            // Read before draining: once closed is seen, every event pushed
+            // before the LogQueue was dropped is in the queue.
+            let closed = self.shared.closed.load(Ordering::Acquire);
+            while let Some(event) = self.shared.queue.pop() {
+                buffer.push(event);
+                if buffer.len() >= self.buffer_size {
                     failed += self.flush(&mut log, &mut buffer);
-                    self.report(&mut failed);
-                    info!("Access log writer stopped: file={}", self.path.display());
-                    return;
                 }
             }
+            if closed {
+                // Shutdown, or a config reload replaced this queue. Write
+                // what's left and stop.
+                failed += self.flush(&mut log, &mut buffer);
+                self.report(&mut failed);
+                info!("Access log writer stopped: file={}", self.path.display());
+                return;
+            }
 
-            if self.reopen.swap(false, Ordering::Relaxed) {
+            if self.shared.reopen.swap(false, Ordering::Relaxed) {
                 failed += self.flush(&mut log, &mut buffer);
                 info!("SIGHUP: reopening access log {}", self.path.display());
                 log = self.reopen(log);
@@ -228,6 +258,10 @@ impl Writer {
                 self.report(&mut failed);
                 next_tick = Instant::now() + self.flush_interval;
             }
+
+            // Nothing wakes this thread per event: enqueue only unparks it
+            // when the queue is half full, and Drop unparks it to stop.
+            std::thread::park_timeout(DRAIN_INTERVAL);
         }
     }
 
@@ -296,7 +330,7 @@ impl Writer {
 
     /// One warning per interval instead of one per event.
     fn report(&self, failed: &mut u64) {
-        let dropped = self.dropped.swap(0, Ordering::Relaxed);
+        let dropped = self.shared.dropped.swap(0, Ordering::Relaxed);
         if dropped > 0 {
             warn!(
                 dropped,
@@ -369,7 +403,7 @@ mod tests {
         for i in 0..10 {
             q.enqueue(event(&i.to_string()));
         }
-        assert_eq!(q.dropped.load(Ordering::Relaxed), 6);
+        assert_eq!(q.shared.dropped.load(Ordering::Relaxed), 6);
     }
 
     #[tokio::test]
