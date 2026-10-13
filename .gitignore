@@ -64,6 +64,8 @@ Desktop.ini
 *.key
 *.crt
 *.p12
+# Test-only JWT keys used by unit tests (see tests/fixtures/jwt/README.md)
+!tests/fixtures/jwt/*.pem
 *.pfx
 secrets/
 credentials/
