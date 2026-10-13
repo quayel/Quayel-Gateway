@@ -237,18 +237,18 @@ See [Logging](logging.md) for the complete log format.
 | Field | Path | Description |
 |-------|------|-------------|
 | Client IP | `.client_ip` | Resolved real client IP |
-| Country | `.ip_intel.country` | GeoIP country code |
-| ASN | `.ip_intel.asn` | Autonomous System Number |
-| Provider | `.ip_intel.provider` | Hosting/cloud provider label |
-| VPN | `.ip_intel.is_vpn` | VPN detection |
-| Tor | `.ip_intel.is_tor` | Tor exit detection |
-| Datacenter | `.ip_intel.is_datacenter` | Datacenter detection |
-| Risk Score | `.ip_intel.risk_score` | 0-100 risk score |
-| Firewall Match | `.firewall.matched` | Any firewall rule matched |
-| Rate Limited | `.rate_limit.blocked` | Request was rate limited |
-| Cache Status | `.cache.status` | HIT/MISS/REVALIDATING/STALE/BYPASS/NONE |
-| LB Target | `.load_balancer.target` | Selected upstream |
-| Total Time | `.timings_us.total_us` | Total processing time (μs) |
+| Country | `.country` | GeoIP country code |
+| ASN | `.asn` | Autonomous System Number |
+| Provider | `.provider` | Hosting/cloud provider label |
+| VPN | `.vpn` | VPN detection |
+| Tor | `.tor` | Tor exit detection |
+| Datacenter | `.datacenter` | Datacenter detection |
+| Risk Score | `.risk` | 0-100 risk score |
+| Blocked | `.block.type` | `fw`, `rl`, `dos`, or `""` when not blocked |
+| Blocking rule | `.block.rule`, `.block.key` | Rule ID and what it matched on |
+| Cache Status | `.cache` | HIT/MISS/REVALIDATING/STALE/BYPASS/NONE |
+| LB Target | `.upstream`, `.upstream_addr` | Selected upstream |
+| Total Time | `.dur_us` | Total processing time (μs) |
 
 ## Plugin Pipeline Order
 
@@ -283,7 +283,7 @@ Host: api.example.com
 X-Forwarded-For: 203.0.113.50
 X-Forwarded-Proto: https
 X-Forwarded-Host: api.example.com
-X-QG-Request-Id: c30dc8f27e2d474b979f23ec1eb2e244
+X-QG-Request-Id: 0192d4e8-7c1a-7b3e-9f2c-4e1a7b3d5c6f
 User-Agent: Mozilla/5.0 ...
 ```
 
@@ -295,70 +295,39 @@ The access log records:
 
 ```json
 {
-  "timestamp": "2026-10-05T17:48:56.973054084+00:00",
+  "schema_version": 1,
   "gateway_id": "gw-prod-01",
-  "request_id": "c30dc8f27e2d474b979f23ec1eb2e244",
+  "ts": 1791892991482,
+  "request_id": "0192d4e8-7c1a-7b3e-9f2c-4e1a7b3d5c6f",
   "client_ip": "203.0.113.50",
-  "peer_ip": "203.0.113.50",
-  "client_ip_source": "X-Forwarded-For",
   "method": "GET",
   "scheme": "https",
   "host": "api.example.com",
   "path": "/api/v1/users",
-  "response_status": 200,
-  "ip_intel": {
-    "country": "US",
-    "region": "CA",
-    "asn": 16509,
-    "network_type": "datacenter",
-    "is_vpn": false,
-    "is_proxy": false,
-    "is_datacenter": true,
-    "is_mobile": null,
-    "is_tor": false,
-    "risk_score": 10
-  },
-  "firewall": {
-    "matched": false,
-    "rule_id": null,
-    "action": null
-  },
-  "rate_limit": {
-    "matched": false,
-    "rule_id": null,
-    "blocked": false,
-    "remaining": null
-  },
-  "request_transform": {
-    "rules": [],
-    "path": null,
-    "host": null
-  },
-  "cache": {
-    "rule_id": null,
-    "status": "NONE",
-    "key_hash": null
-  },
-  "response_transform": {
-    "rules": []
-  },
-  "load_balancer": {
-    "lb_id": "default",
-    "algorithm": "RoundRobin",
-    "target_id": "backend-1",
-    "target": "10.0.0.1"
-  },
-  "termination_phase": null,
-  "timings_us": {
-    "ip_intel_us": 42,
-    "firewall_us": 3,
-    "rate_limit_us": 0,
-    "cache_lookup_us": null,
-    "load_balancer_us": 7,
-    "upstream_connect_us": null,
-    "upstream_ttfb_us": null,
-    "total_us": 1091
-  }
+  "user_agent": "Mozilla/5.0 ...",
+  "status": 200,
+  "bytes": 512,
+  "req_bytes": 0,
+  "dur_us": 2104,
+  "country": "US",
+  "region": "CA",
+  "asn": 16509,
+  "provider": "Amazon AWS",
+  "datacenter": true,
+  "vpn": false,
+  "proxy": false,
+  "tor": false,
+  "risk": 10,
+  "block": { "type": "", "action": "", "rule": "", "key": "" },
+  "allow_rule": "",
+  "cache": "MISS",
+  "upstream": "backend-1",
+  "upstream_addr": "10.0.0.1:8080",
+  "upstream_status": 200,
+  "upstream_us": 1830,
+  "error": "",
+  "user": "",
+  "sample_rate": 1
 }
 ```
 

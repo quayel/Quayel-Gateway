@@ -138,18 +138,9 @@ For responses served from cache, these fields come from the stored origin respon
 
 ## Access log
 
-Each log event records which rules ran:
-
-```json
-{
-  "host": "api.example.com",
-  "path": "/api/users?page=2",
-  "request_transform": { "rules": ["rt-api-v1"], "path": "/v1/users?page=2", "host": null },
-  "response_transform": { "rules": ["rs-powered-by"] }
-}
-```
-
-The top-level `host` and `path` are what the client sent. `request_transform.path` and `request_transform.host` are what went to the origin, and are `null` when no rule changed them. `response_transform.rules` is empty for gateway blocks. See [Logging](../logging.md).
+Transform rules aren't recorded in the access log: `host` and `path` are
+what the client sent (without the query string), not what went to the origin.
+See [Logging](../logging.md).
 
 ## Not in this version
 

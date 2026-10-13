@@ -343,7 +343,7 @@ This sends all traffic for `api.example.com` to a backend on `127.0.0.1:3000`, w
 
 | Field | Meaning |
 |-------|---------|
-| `gateway_id`, `gateway_name`, `config_version` | Labels that appear in the logs. Bump `config_version` when you edit the file so you can tell versions apart |
+| `gateway_id`, `gateway_name`, `config_version` | Labels for this gateway and config. Only `gateway_id` is written to the access log. Bump `config_version` when you edit the file so you can tell versions apart |
 | `listen` | Where the gateway accepts traffic. Optional: without it, HTTP uses port 80 and HTTPS (with Auto-SSL) uses 443 |
 | `client_ip` | How to find the real visitor IP. `peer_ip` is right when clients connect directly. Behind Cloudflare or a cloud load balancer, read `X-Forwarded-For` with `{ "source": "header_index", "header": "X-Forwarded-For", "index": 0, "fallback": "peer_ip" }`. Never do that when the gateway faces the internet directly, because clients can fake the header |
 | `plugins.load_balancer` | Where requests go. `conditions: []` means "match every request" |

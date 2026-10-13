@@ -226,9 +226,10 @@ Startup error → fix map:
 - Cache decisions are visible in the `Quayel-Cache-Status` response header
   (`HIT`/`MISS`/`BYPASS`/`STALE`/`REVALIDATING`/`NONE`).
 - Rate-limit counters and cache are in-memory per process; a restart clears them.
-- Access log = one JSON object per line; check `.firewall.matched`,
-  `.rate_limit.blocked`, `.cache.status`, `.load_balancer.target`,
-  `.termination_phase`, `.timings_us.total_us` to see why a request was handled
-  the way it was.
+- Access log = one JSON object per line, same keys on every line; check
+  `.block.type` / `.block.rule` / `.block.key` (what stopped it, `""` if
+  nothing), `.allow_rule`, `.cache`, `.upstream`, `.upstream_status`, `.error`,
+  `.dur_us` to see why a request was handled the way it was. `path` never
+  includes the query string.
 - `ip.*` fields are only populated when `ip_intel` is enabled; booleans can be
   `null` (unknown).

@@ -103,7 +103,7 @@ GatewayConfig
     ├── rate_limiting  { enabled = true, rules: RateLimitRule[] = [] }
     ├── cache          { enabled = true, max_object_size_bytes = 10485760, rules: CacheRule[] = [] }
     ├── load_balancer  { enabled = true, load_balancers: LoadBalancer[] = [] }
-    ├── logging        { enabled = true, mode = "file", file?: { path, buffer_size = 8192, flush_interval_ms = 1000 } }
+    ├── logging        { enabled = true, mode = "file", queue_size = 65536, user_field?, file?: { path, buffer_size = 8192, flush_interval_ms = 1000 } }
     └── auto_ssl       { enabled = true, email*, domains*, cert_storage_path = "/var/lib/quayel/certs", staging = false, directory_url?, ca_root?, renewal_days_before = 30 }
 ```
 
@@ -458,13 +458,16 @@ Access log = one JSON object per line. Useful JSON paths for automation:
 
 | Question | Path |
 |---|---|
-| Who was it? | `.client_ip`, `.ip_intel.country`, `.ip_intel.asn`, `.ip_intel.provider` |
-| Blocked by firewall? | `.firewall.matched`, `.firewall.rule_id`, `.firewall.action` |
-| Rate limited? | `.rate_limit.blocked`, `.rate_limit.remaining` |
-| Cache outcome | `.cache.status` (`HIT`/`MISS`/`BYPASS`/`STALE`/`REVALIDATING`/`NONE`) |
-| Which backend? | `.load_balancer.lb_id`, `.load_balancer.target_id`, `.load_balancer.target` |
-| Where was it terminated? | `.termination_phase` (`null` = proxied through) |
-| Latency | `.timings_us.total_us`, `.timings_us.upstream_ttfb_us`, … |
+| Who was it? | `.client_ip`, `.country`, `.asn`, `.provider`, `.datacenter`, `.vpn`, `.tor`, `.risk` |
+| Blocked? | `.block.type` (`fw` / `rl` / `dos`, `""` = not blocked), `.block.rule`, `.block.key` |
+| Firewall allow rule? | `.allow_rule` |
+| Cache outcome | `.cache` (`HIT`/`MISS`/`BYPASS`/`STALE`/`REVALIDATING`/`NONE`) |
+| Which backend? | `.upstream`, `.upstream_addr`, `.upstream_status` |
+| Failed? | `.error` (`client closed` with status `499` when the client gave up) |
+| Latency | `.dur_us`, `.upstream_us` |
+
+Every line has every key (`""` / `0` / `false` when not applicable), and `path`
+never includes the query string.
 
 ---
 

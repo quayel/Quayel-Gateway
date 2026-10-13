@@ -173,7 +173,7 @@ banned, its new connections are dropped and its requests get `429`.
 | `duration_secs` | `600` | Ban length |
 
 Requests refused by `server.protection` or `server.limits` are logged with
-`termination_phase: "Protection"` and the reason in `protection`, and the response carries an
+`block.type: "dos"` and the reason in `block.rule`, and the response carries an
 `X-Quayel-Block-Reason` header (`request_rate`, `banned` or `body_too_large`).
 Bans are logged to `gateway.out` as warnings. Connections dropped before any
 request (connection limits, slow or oversized headers) are only logged at
