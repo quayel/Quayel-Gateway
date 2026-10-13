@@ -257,6 +257,7 @@
             "header_secs": { "type": "integer", "minimum": 0, "default": 10, "description": "Whole request header deadline (Slowloris)" },
             "keepalive_secs": { "type": "integer", "minimum": 0, "default": 60, "description": "Idle keep-alive wait; 0 turns keep-alive off" },
             "body_read_secs": { "type": "integer", "minimum": 0, "default": 30, "description": "Max gap between request body reads (slow POST)" },
+            "websocket_idle_secs": { "type": "integer", "minimum": 0, "default": 0, "description": "Idle limit for upgraded (WebSocket) connections; 0 = no limit" },
             "response_write_secs": { "type": "integer", "minimum": 0, "default": 60, "description": "Max time for one write to the client (slow read)" },
             "upstream_connect_secs": { "type": "integer", "minimum": 0, "default": 5 },
             "upstream_total_connect_secs": { "type": "integer", "minimum": 0, "default": 10, "description": "TCP connect + TLS handshake" },
@@ -271,7 +272,7 @@
           "additionalProperties": false,
           "properties": {
             "max_header_bytes": { "type": "integer", "minimum": 0, "default": 32768 },
-            "max_body_bytes": { "type": "integer", "minimum": 0, "default": 104857600, "description": "Larger bodies get 413" },
+            "max_body_bytes": { "type": "integer", "minimum": 0, "default": 0, "description": "Larger bodies get 413; 0 = no limit. Not applied to WebSocket traffic" },
             "max_requests_per_connection": { "type": "integer", "minimum": 0, "default": 10000, "description": "Startup only" },
             "upstream_keepalive_pool_size": { "type": "integer", "minimum": 0, "default": 1024, "description": "Startup only" }
           }

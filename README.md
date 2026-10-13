@@ -520,7 +520,7 @@ quayel-gateway [--workers N] [CONFIG_PATH]
 | HTTPS certificate isn't issued | Port 80 must be reachable from the internet, the domain must be in `auto_ssl.domains` and its DNS must point at this server |
 | Let's Encrypt rate-limit errors in Docker | Certificates aren't being kept. Mount a volume at `/var/lib/quayel/certs` |
 | Clients get `429` with an `X-Quayel-Block-Reason` header | The built-in flood protection refused them. If it's real traffic, raise `server.protection.max_requests_per_ip_per_sec` or add the IPs to `exempt_ips`. Behind a proxy, set `client_ip` so the limit applies per visitor |
-| Large uploads fail with `413` | Raise `server.limits.max_body_bytes` (default 100 MB) |
+| Large uploads fail with `413` | `server.limits.max_body_bytes` is set too low. Raise it, or remove it (the default is no limit) |
 | `localhost` / `127.0.0.1` has no country | Expected. Private and local IPs aren't in the GeoIP databases |
 
 For more detail, run with `RUST_LOG=debug`.

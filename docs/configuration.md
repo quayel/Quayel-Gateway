@@ -128,6 +128,7 @@ All values are in seconds.
 | `header_secs` | `10` | Time for the **whole** request header to arrive. Counted from the connection opening (first request) or from the first byte of each later keep-alive request. Stops Slowloris |
 | `keepalive_secs` | `60` | How long an idle keep-alive connection waits for the next request. `0` turns keep-alive off |
 | `body_read_secs` | `30` | Longest gap between two reads of a request body (slow POST / R.U.D.Y.) |
+| `websocket_idle_secs` | `0` (no limit) | How long an upgraded connection (WebSocket) may stay silent before it is closed. Replaces `body_read_secs` and `upstream_read_secs` once a request asks to upgrade |
 | `response_write_secs` | `60` | Longest a single write to the client may take (clients that read the response very slowly) |
 | `upstream_connect_secs` | `5` | TCP connect to the upstream |
 | `upstream_total_connect_secs` | `10` | TCP connect plus TLS handshake to the upstream |
@@ -136,12 +137,20 @@ All values are in seconds.
 | `upstream_idle_secs` | `30` | How long an unused upstream connection stays in the pool |
 | `graceful_shutdown_secs` | `5` | Time in-flight requests get to finish after `SIGTERM`. Startup only |
 
+**WebSockets** work with no extra config. The upgrade request goes through the
+firewall, rate limits and DoS checks like any other request. After the `101`,
+messages in both directions are passed through: they never count against
+`max_body_bytes`, and the socket stays open while idle unless you set
+`websocket_idle_secs`. The access log gets one line per socket when it closes,
+with `status: 101`, `bytes` / `req_bytes` for the whole session and `dur_us`
+for how long it was open.
+
 ### `server.limits`
 
 | Field | Default | Description |
 |-------|---------|-------------|
 | `max_header_bytes` | `32768` (32 KB) | Largest request header block. Larger → connection closed |
-| `max_body_bytes` | `104857600` (100 MB) | Largest request body. Larger → `413`, checked from `Content-Length` and while streaming chunked bodies |
+| `max_body_bytes` | `0` (no limit) | Largest request body. Larger → `413`, checked from `Content-Length` and while streaming chunked bodies. Never applies to WebSocket traffic |
 | `max_requests_per_connection` | `10000` | Requests served on one keep-alive connection before it is closed. Startup only |
 | `upstream_keepalive_pool_size` | `1024` | Idle upstream connections kept per worker. Startup only |
 

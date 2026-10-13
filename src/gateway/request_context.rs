@@ -86,6 +86,9 @@ pub struct RequestContext {
     pub upstream_status: Option<u16>,
 
     pub client_bytes_in: u64,
+    /// Upgrade request (WebSocket): no body limit, websocket_idle_secs instead
+    /// of the read timeouts.
+    pub upgrade: bool,
     pub client_bytes_out: u64,
     pub upstream_bytes_out: u64,
     pub upstream_bytes_in: u64,
@@ -188,6 +191,7 @@ impl RequestContext {
             status_code: None,
             upstream_status: None,
             client_bytes_in: 0,
+            upgrade: false,
             client_bytes_out: 0,
             upstream_bytes_out: 0,
             upstream_bytes_in: 0,

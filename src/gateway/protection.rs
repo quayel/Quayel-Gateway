@@ -22,6 +22,8 @@ pub struct CompiledServer {
     /// None → keep-alive off.
     pub keepalive_secs: Option<u64>,
     pub body_read_timeout: Option<Duration>,
+    /// server.timeouts.websocket_idle_secs; None → no limit.
+    pub websocket_idle_timeout: Option<Duration>,
     pub response_write_timeout: Option<Duration>,
     pub upstream_connect_timeout: Option<Duration>,
     pub upstream_total_connect_timeout: Option<Duration>,
@@ -111,6 +113,7 @@ pub fn compile_server(raw: &ServerConfig) -> Result<CompiledServer, String> {
         header_timeout: secs(t.header_secs),
         keepalive_secs: (t.keepalive_secs > 0).then_some(t.keepalive_secs),
         body_read_timeout: secs(t.body_read_secs),
+        websocket_idle_timeout: secs(t.websocket_idle_secs),
         response_write_timeout: secs(t.response_write_secs),
         upstream_connect_timeout: secs(t.upstream_connect_secs),
         upstream_total_connect_timeout: secs(t.upstream_total_connect_secs),
@@ -367,15 +370,21 @@ mod tests {
         assert_eq!(d.header_timeout, Some(Duration::from_secs(10)));
         assert_eq!(d.keepalive_secs, Some(60));
         assert_eq!(d.max_header_bytes, 32 * 1024);
+        assert_eq!(d.max_body_bytes, 0, "no body limit by default");
+        assert_eq!(
+            d.websocket_idle_timeout, None,
+            "no WebSocket idle limit by default"
+        );
         assert!(d.protection.is_some());
 
         let c = compile(
-            r#"{"timeouts":{"header_secs":3,"keepalive_secs":0},"limits":{"max_body_bytes":0}}"#,
+            r#"{"timeouts":{"header_secs":3,"keepalive_secs":0,"websocket_idle_secs":300},"limits":{"max_body_bytes":1000}}"#,
         )
         .unwrap();
         assert_eq!(c.header_timeout, Some(Duration::from_secs(3)));
         assert_eq!(c.keepalive_secs, None);
-        assert_eq!(c.max_body_bytes, 0);
+        assert_eq!(c.max_body_bytes, 1000);
+        assert_eq!(c.websocket_idle_timeout, Some(Duration::from_secs(300)));
         // Untouched fields keep their defaults.
         assert_eq!(c.body_read_timeout, Some(Duration::from_secs(30)));
     }

@@ -12,6 +12,24 @@ write entries for people running the gateway, not for people reading the diff.
 
 ## [Unreleased]
 
+### Changed
+
+- **No request body limit by default.** `server.limits.max_body_bytes` now
+  defaults to `0` (no limit) instead of 100 MB, so large uploads work without
+  config. Set it if you want a cap; anything over it still gets `413`.
+
+### Fixed
+
+- **WebSockets are no longer cut off.** Before, an idle socket was closed
+  after 30 s (`body_read_secs`) or 60 s (`upstream_read_secs`), and a socket
+  was killed with `413` once the client had sent `max_body_bytes` in total,
+  which also counted as a DoS strike and could get the client's IP banned.
+  Now traffic after the upgrade never counts against `max_body_bytes` or
+  adds strikes, and an idle socket stays open. The new
+  `server.timeouts.websocket_idle_secs` closes silent sockets if you want
+  that (default `0`, no limit). The upgrade request itself still goes through
+  the firewall, rate limits and DoS checks.
+
 ## [0.4.0] - 2026-10-13
 
 ### ⚠️ Breaking changes

@@ -256,7 +256,14 @@ impl ProxyHttp for QuayelGateway {
         }
         let server = &config.server;
         session.set_keepalive(server.keepalive_secs);
-        session.set_read_timeout(server.body_read_timeout);
+        // After a 101 the request "body" is the WebSocket client stream, read
+        // with the same timeout, so it gets the idle limit instead.
+        ctx.upgrade = session.is_upgrade_req();
+        session.set_read_timeout(if ctx.upgrade {
+            server.websocket_idle_timeout
+        } else {
+            server.body_read_timeout
+        });
         session.set_write_timeout(server.response_write_timeout);
         Ok(())
     }
@@ -429,7 +436,7 @@ impl ProxyHttp for QuayelGateway {
         // server.limits.max_body_bytes: reject a declared oversized body up front.
         // Chunked bodies are counted in request_body_filter.
         let max_body = config.server.max_body_bytes;
-        if max_body > 0 {
+        if max_body > 0 && !ctx.upgrade {
             let declared = session
                 .req_header()
                 .headers
@@ -474,7 +481,8 @@ impl ProxyHttp for QuayelGateway {
         }
     }
 
-    // request_body_filter: enforce server.limits.max_body_bytes on streamed bodies
+    // request_body_filter: enforce server.limits.max_body_bytes on streamed
+    // bodies (not WebSocket traffic after an upgrade)
 
     async fn request_body_filter(
         &self,
@@ -487,7 +495,7 @@ impl ProxyHttp for QuayelGateway {
             ctx.client_bytes_in += chunk.len() as u64;
             let config = self.state.config.load();
             let max_body = config.server.max_body_bytes;
-            if max_body > 0 && ctx.client_bytes_in > max_body {
+            if max_body > 0 && !ctx.upgrade && ctx.client_bytes_in > max_body {
                 if let Some(protection) = &config.server.protection {
                     self.state.ip_tracker.strike(
                         protection,
@@ -541,7 +549,11 @@ impl ProxyHttp for QuayelGateway {
         let server = &config.server;
         peer.options.connection_timeout = server.upstream_connect_timeout;
         peer.options.total_connection_timeout = server.upstream_total_connect_timeout;
-        peer.options.read_timeout = server.upstream_read_timeout;
+        peer.options.read_timeout = if ctx.upgrade {
+            server.websocket_idle_timeout
+        } else {
+            server.upstream_read_timeout
+        };
         peer.options.write_timeout = server.upstream_write_timeout;
         peer.options.idle_timeout = server.upstream_idle_timeout;
         // From here on the request belongs to this upstream: logged as

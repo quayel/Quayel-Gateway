@@ -221,6 +221,11 @@ pub struct TimeoutsConfig {
     /// Longest gap allowed between two reads of a request body (slow POST).
     #[serde(default = "default_body_read_secs")]
     pub body_read_secs: u64,
+    /// Idle limit for upgraded connections (WebSocket): how long both sides
+    /// may stay silent before the gateway closes it. 0 → no limit.
+    /// Replaces body_read_secs and upstream_read_secs once upgraded.
+    #[serde(default)]
+    pub websocket_idle_secs: u64,
     /// Longest a single write to the client may take (slow-read clients).
     #[serde(default = "default_response_write_secs")]
     pub response_write_secs: u64,
@@ -248,8 +253,9 @@ pub struct LimitsConfig {
     /// connection closed.
     #[serde(default = "default_max_header_bytes")]
     pub max_header_bytes: usize,
-    /// Largest request body. Larger → 413.
-    #[serde(default = "default_max_body_bytes")]
+    /// Largest request body. Larger → 413. 0 → no limit (default).
+    /// Never applies to upgraded connections (WebSocket).
+    #[serde(default)]
     pub max_body_bytes: u64,
     /// Requests served on one keep-alive connection before it is closed.
     /// Startup only.
@@ -365,9 +371,6 @@ fn default_graceful_shutdown_secs() -> u64 {
 }
 fn default_max_header_bytes() -> usize {
     32 * 1024
-}
-fn default_max_body_bytes() -> u64 {
-    100 * 1024 * 1024
 }
 fn default_max_requests_per_connection() -> u32 {
     10_000
