@@ -12,6 +12,8 @@ write entries for people running the gateway, not for people reading the diff.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-13
+
 ### ⚠️ Breaking changes
 
 - **New access-log line format (`schema_version: 1`).** Each line now has the
@@ -146,6 +148,19 @@ write entries for people running the gateway, not for people reading the diff.
 - The config watcher no longer reloads an unchanged config 5 seconds after
   startup. That extra reload rebuilt every compiled rule and restarted JWKS
   fetches for nothing.
+
+### Known issues
+
+- **Network sinks can drop lines under sustained overload.** When a sink's
+  in-memory buffer reaches `max_buffer_bytes`, new lines are dropped instead
+  of being moved to `spool_dir`, and only one batch per sink is in flight at a
+  time. In a 10M-request test against a distant HTTP endpoint (~300 ms round
+  trip, ~16k lines/s) about 17% of lines were dropped. Drops are counted in
+  `/metrics` (`qg_log_sink_lines_total{result="dropped"}`). A fix (spill before the
+  limit, concurrent pushes) is planned for the next release.
+- Firewall `set_request_header` and `set_response_header` actions have no
+  effect on the request sent to the origin or on the response (also present
+  in 0.3.x).
 
 ## [0.3.1] - 2026-10-12
 
@@ -341,7 +356,8 @@ Initial version (not published as a release): reverse proxy built on Pingora
 with IP intelligence, firewall rules, rate limiting, caching, load balancing,
 Auto-SSL and JSONL access logs.
 
-[Unreleased]: https://github.com/quayel/Quayel-Gateway/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/quayel/Quayel-Gateway/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/quayel/Quayel-Gateway/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/quayel/Quayel-Gateway/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/quayel/Quayel-Gateway/releases/tag/v0.3.0
 [0.2.0]: https://github.com/quayel/Quayel-Gateway/releases/tag/v0.2.0
