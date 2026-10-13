@@ -83,6 +83,12 @@ pub struct CompiledSink {
     pub spool_max_bytes: u64,
 }
 
+/// Lines per request unless `batch_size` is set. ClickHouse and plain HTTP
+/// take ~60 MB requests; Loki (4 MB/s ingest limit, 6 MB burst), the OTel
+/// Collector (20 MiB body limit) and usually Elasticsearch/Splunk don't, so
+/// they keep SMALL_BATCH.
+const DEFAULT_BATCH: usize = 100_000;
+const SMALL_BATCH: usize = 5000;
 /// Datadog's intake accepts at most 1000 entries per request.
 const DATADOG_MAX_BATCH: usize = 1000;
 const DEFAULT_SERVICE: &str = "quayel-gateway";
@@ -191,7 +197,7 @@ fn compile_sink(c: &LogSinkConfig, at: &str) -> Result<CompiledSink, String> {
             if let Some(t) = secret(c.token.as_deref(), c.token_env.as_deref(), "token", at)? {
                 headers.push(("Authorization".into(), Secret(format!("Bearer {t}"))));
             }
-            (SinkFormat::Http, url, 5000, 1000)
+            (SinkFormat::Http, url, DEFAULT_BATCH, 1000)
         }
         "clickhouse" => {
             check_fields(
@@ -225,7 +231,7 @@ fn compile_sink(c: &LogSinkConfig, at: &str) -> Result<CompiledSink, String> {
             )? {
                 headers.push(("X-ClickHouse-Key".into(), Secret(p)));
             }
-            (SinkFormat::ClickHouse, url, 50_000, 5000)
+            (SinkFormat::ClickHouse, url, DEFAULT_BATCH, 5000)
         }
         "datadog" => {
             check_fields(
@@ -291,7 +297,7 @@ fn compile_sink(c: &LogSinkConfig, at: &str) -> Result<CompiledSink, String> {
                     resource,
                 },
                 url,
-                5000,
+                SMALL_BATCH,
                 1000,
             )
         }
@@ -333,7 +339,7 @@ fn compile_sink(c: &LogSinkConfig, at: &str) -> Result<CompiledSink, String> {
                 }
             }
             labels.sort();
-            (SinkFormat::Loki { labels }, url, 5000, 1000)
+            (SinkFormat::Loki { labels }, url, SMALL_BATCH, 1000)
         }
         "elasticsearch" | "opensearch" => {
             check_fields(
@@ -365,7 +371,7 @@ fn compile_sink(c: &LogSinkConfig, at: &str) -> Result<CompiledSink, String> {
             (
                 SinkFormat::Elasticsearch { index },
                 format!("{base}/_bulk"),
-                5000,
+                SMALL_BATCH,
                 1000,
             )
         }
@@ -394,7 +400,7 @@ fn compile_sink(c: &LogSinkConfig, at: &str) -> Result<CompiledSink, String> {
                         .unwrap_or_else(|| "quayel:access".into()),
                 },
                 url,
-                5000,
+                SMALL_BATCH,
                 1000,
             )
         }
@@ -489,7 +495,7 @@ fn check_fields(c: &LogSinkConfig, at: &str, own: &[&str]) -> Result<(), String>
         ("flush_interval_ms", c.flush_interval_ms.is_some()),
         ("timeout_ms", c.timeout_ms != 10_000),
         ("compression", c.compression != "gzip"),
-        ("max_buffer_bytes", c.max_buffer_bytes != 64 << 20),
+        ("max_buffer_bytes", c.max_buffer_bytes != 256 << 20),
         ("spool_dir", c.spool_dir.is_some()),
         ("spool_max_bytes", c.spool_max_bytes != 1 << 30),
     ];
@@ -566,7 +572,7 @@ mod tests {
         assert!(s[0]
             .url
             .starts_with("http://ch:8123/?query=INSERT%20INTO%20%60qg%60.%60access_log%60"));
-        assert_eq!(s[0].batch_size, 50_000);
+        assert_eq!(s[0].batch_size, 100_000);
         assert!(s[0]
             .headers
             .iter()

@@ -54,7 +54,11 @@ write entries for people running the gateway, not for people reading the diff.
   and are sent after an outage or a restart. ClickHouse inserts carry a
   deduplication token so a retried batch isn't stored twice. Secrets can come
   from env vars. `scripts/clickhouse/access_log.sql` creates a matching
-  table. See [Logging → Sinks](docs/logging.md#sinks).
+  table. Batches default to 100,000 lines for `clickhouse` and `http` (fewer,
+  larger requests to far-away endpoints), 1,000 for Datadog (its limit) and
+  5,000 for the rest, whose default request limits refuse ~60 MB batches;
+  each sink buffers up to 256 MiB in memory. See
+  [Logging → Sinks](docs/logging.md#sinks).
 - **Prometheus metrics.** A top-level `metrics` section serves `/metrics` on
   its own listener: requests by host, method and status, latency histograms,
   blocks by type and rule, upstream responses and latency, requests by

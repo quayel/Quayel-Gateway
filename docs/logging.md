@@ -361,11 +361,11 @@ gateway's own log.
 | Field | Default | |
 |-------|---------|---|
 | `name` | the type | Unique per sink: shows in the gateway log, metrics and the spool directory. Needed for two sinks of the same type |
-| `batch_size` | ClickHouse 50000, Datadog 1000 (its maximum), others 5000 | Lines per request |
+| `batch_size` | ClickHouse and `http` 100000, Datadog 1000 (its maximum), others 5000 | Lines per request. Loki's default ingest limit (4 MB/s, 6 MB burst) and the OTel Collector's 20 MiB body limit refuse 100k-line (~60 MB) batches |
 | `flush_interval_ms` | ClickHouse 5000, others 1000 | Longest a line waits for its batch |
 | `timeout_ms` | 10000 | Per request |
 | `compression` | `gzip` | or `none` |
-| `max_buffer_bytes` | 64 MiB | Unsent lines kept in memory |
+| `max_buffer_bytes` | 256 MiB | Unsent lines kept in memory |
 | `spool_dir` | unset | Directory for batches that couldn't be sent yet (a subdirectory per sink) |
 | `spool_max_bytes` | 1 GiB | Spool size; the oldest batches are dropped past it |
 

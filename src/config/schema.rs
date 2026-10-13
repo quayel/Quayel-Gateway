@@ -1052,7 +1052,7 @@ pub struct LogSinkConfig {
     pub headers_env: HashMap<String, String>,
 
     // ── Delivery ──
-    /// Lines per request. Default by type: ClickHouse 50000, Datadog 1000
+    /// Lines per request. Default: ClickHouse and http 100000, Datadog 1000
     /// (its limit), others 5000.
     #[serde(default)]
     pub batch_size: Option<usize>,
@@ -1086,7 +1086,8 @@ fn default_sink_compression() -> String {
     "gzip".to_string()
 }
 fn default_sink_max_buffer_bytes() -> usize {
-    64 << 20
+    // Room for a few full 100k-line batches (~60 MB each).
+    256 << 20
 }
 fn default_sink_spool_max_bytes() -> u64 {
     1 << 30

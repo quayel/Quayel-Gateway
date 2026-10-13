@@ -806,7 +806,7 @@
         "flush_interval_ms": { "type": "integer", "minimum": 1 },
         "timeout_ms": { "type": "integer", "minimum": 1, "default": 10000 },
         "compression": { "enum": ["gzip", "none"], "default": "gzip" },
-        "max_buffer_bytes": { "type": "integer", "minimum": 1048576, "default": 67108864 },
+        "max_buffer_bytes": { "type": "integer", "minimum": 1048576, "default": 268435456 },
         "spool_dir": { "type": "string" },
         "spool_max_bytes": { "type": "integer", "minimum": 0, "default": 1073741824 }
       }
