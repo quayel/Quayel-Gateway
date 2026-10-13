@@ -10,6 +10,8 @@
 #   6. jwt-verify.py               JWT keys, verification and claim fields
 #   7. logging.py                  access log, X-QG-Request-Id, rotation, reload
 #   8. auto-ssl.py                 ACME issuance against Pebble (needs Docker)
+#   9. sinks.py                    log sinks + /metrics against ClickHouse, Loki,
+#                                  OTel Collector, Prometheus (needs Docker)
 #
 # Each suite prints its own PASS/FAIL list; a summary per suite is at the end.
 # Usage:  bash scripts/test/run-all.sh        (builds the release binary first)
@@ -39,8 +41,9 @@ run "jwt-verify"         env BIN="$BIN" python3 scripts/test/jwt-verify.py
 run "logging"            env BIN="$BIN" python3 scripts/test/logging.py
 if command -v docker >/dev/null && docker info >/dev/null 2>&1; then
     run "auto-ssl"       env BIN="$BIN" python3 scripts/test/auto-ssl.py
+    run "sinks"          env BIN="$BIN" python3 scripts/test/sinks.py
 else
-    echo ""; echo "auto-ssl: skipped (Docker not available)"
+    echo ""; echo "auto-ssl, sinks: skipped (Docker not available)"
 fi
 
 echo ""

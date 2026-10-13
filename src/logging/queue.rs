@@ -1,5 +1,7 @@
 use crate::config::compiler::CompiledLogging;
 use crate::logging::event::LogEvent;
+use crate::logging::metrics::registry;
+use crate::logging::shipper::SinkHandle;
 use crate::logging::writer::LineWriter;
 use crossbeam_queue::ArrayQueue;
 use std::fs::{File, OpenOptions};
@@ -58,6 +60,8 @@ struct Shared {
     reopen: AtomicBool,
     /// Queue length at which enqueue wakes the writer early.
     wake_at: usize,
+    /// Set by the writer thread when it has written everything and stopped.
+    finished: AtomicBool,
 }
 
 #[derive(Debug)]
@@ -65,6 +69,8 @@ pub struct LogQueue {
     shared: Arc<Shared>,
     /// The writer thread, for early wake-ups. None in tests without a writer.
     writer: Option<Thread>,
+    /// One flag per network sink, set when it has stopped.
+    sinks_done: Vec<Arc<AtomicBool>>,
     /// Dropped with the queue: stops the SIGHUP listener task.
     _stop: oneshot::Sender<()>,
     /// The settings this queue was built from; hot reload compares them.
@@ -79,11 +85,14 @@ impl LogQueue {
     }
 
     fn build(settings: CompiledLogging, handle: &tokio::runtime::Handle, start: bool) -> Self {
-        let path = PathBuf::from(&settings.file_path);
-        if let Some(parent) = path.parent() {
+        let path = settings.file_path.as_ref().map(PathBuf::from);
+        if let Some(parent) = path.as_deref().and_then(Path::parent) {
             if let Err(e) = std::fs::create_dir_all(parent) {
                 error!("Failed to create log directory {:?}: {}", parent, e);
             }
+        }
+        if let Some(m) = &settings.metrics {
+            registry().set_max_hosts(m.max_hosts);
         }
 
         let shared = Arc::new(Shared {
@@ -93,19 +102,32 @@ impl LogQueue {
             closed: AtomicBool::new(false),
             reopen: AtomicBool::new(false),
             wake_at: (settings.queue_size / 2).max(1),
+            finished: AtomicBool::new(false),
         });
         let (stop_tx, stop_rx) = oneshot::channel::<()>();
 
         let mut thread = None;
+        let mut sinks_done = Vec::new();
         if start {
+            let sinks: Vec<SinkHandle> = settings
+                .sinks
+                .iter()
+                .map(|s| SinkHandle::start(s.clone(), handle))
+                .collect();
+            sinks_done = sinks.iter().map(SinkHandle::done_flag).collect();
             let writer = Writer {
                 shared: Arc::clone(&shared),
                 path,
+                stdout: settings.stdout,
+                sinks,
+                metrics: settings.metrics.is_some(),
+                writes_lines: settings.writes_lines(),
                 buffer_size: settings.buffer_size,
                 flush_interval: Duration::from_millis(settings.flush_interval_ms),
                 open_failed: false,
                 lines: LineWriter::new(),
                 scratch: Vec::with_capacity(WRITE_BUFFER),
+                stdout_failed: 0,
             };
             match std::thread::Builder::new()
                 .name("qg-access-log".into())
@@ -118,8 +140,11 @@ impl LogQueue {
         }
 
         info!(
-            "Access log started: file={}, queue_size={}, buffer_size={}, flush_interval_ms={}",
-            settings.file_path,
+            "Access log started: file={}, stdout={}, sinks={}, metrics={}, queue_size={}, buffer_size={}, flush_interval_ms={}",
+            settings.file_path.as_deref().unwrap_or("off"),
+            settings.stdout,
+            settings.sinks.len(),
+            settings.metrics.is_some(),
             settings.queue_size,
             settings.buffer_size,
             settings.flush_interval_ms
@@ -128,8 +153,31 @@ impl LogQueue {
         Self {
             shared,
             writer: thread,
+            sinks_done,
             _stop: stop_tx,
             settings,
+        }
+    }
+
+    /// Process shutdown: write what's queued, let every sink send or spool
+    /// what it holds, and wait for that (at most `timeout`). Without this the
+    /// process exits with up to a flush interval of lines still in memory.
+    pub fn shutdown(&self, timeout: Duration) {
+        self.shared.closed.store(true, Ordering::Release);
+        self.wake_writer();
+        if self.writer.is_none() {
+            return;
+        }
+        let deadline = Instant::now() + timeout;
+        let done = || {
+            self.shared.finished.load(Ordering::Acquire)
+                && self.sinks_done.iter().all(|d| d.load(Ordering::Acquire))
+        };
+        while !done() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        if !done() {
+            warn!("Access log: shutdown timed out with lines still unsent");
         }
     }
 
@@ -180,7 +228,15 @@ async fn listen_for_hangup(shared: Arc<Shared>, mut stop: oneshot::Receiver<()>)
 
 struct Writer {
     shared: Arc<Shared>,
-    path: PathBuf,
+    /// None → no file (stdout, sinks or metrics only).
+    path: Option<PathBuf>,
+    stdout: bool,
+    /// Network sinks; dropped (and so stopped) when the writer exits.
+    sinks: Vec<SinkHandle>,
+    /// Count events for the Prometheus metrics.
+    metrics: bool,
+    /// False → metrics only: lines aren't formatted at all.
+    writes_lines: bool,
     buffer_size: usize,
     flush_interval: Duration,
     /// The last open attempt failed (log the error once, not every retry).
@@ -188,6 +244,8 @@ struct Writer {
     lines: LineWriter,
     /// Formatted lines of the current batch.
     scratch: Vec<u8>,
+    /// Lines stdout refused since the last report.
+    stdout_failed: u64,
 }
 
 /// The open log file plus the identity of the file it was opened as.
@@ -240,19 +298,30 @@ impl Writer {
                 // what's left and stop.
                 failed += self.flush(&mut log, &mut buffer);
                 self.report(&mut failed);
-                info!("Access log writer stopped: file={}", self.path.display());
+                info!("Access log writer stopped");
+                // Dropping the sink handles stops them; shutdown() waits for
+                // their done flags.
+                self.sinks.clear();
+                self.shared.finished.store(true, Ordering::Release);
                 return;
             }
 
             if self.shared.reopen.swap(false, Ordering::Relaxed) {
                 failed += self.flush(&mut log, &mut buffer);
-                info!("SIGHUP: reopening access log {}", self.path.display());
-                log = self.reopen(log);
+                if let Some(p) = &self.path {
+                    info!("SIGHUP: reopening access log {}", p.display());
+                    log = self.reopen(log);
+                }
             }
 
             if Instant::now() >= next_tick {
                 failed += self.flush(&mut log, &mut buffer);
-                if log.as_ref().map_or(true, |l| l.is_stale(&self.path)) {
+                let stale = match (&self.path, &log) {
+                    (None, _) => false,
+                    (Some(_), None) => true,
+                    (Some(p), Some(l)) => l.is_stale(p),
+                };
+                if stale {
                     log = self.reopen(log);
                 }
                 self.report(&mut failed);
@@ -266,10 +335,11 @@ impl Writer {
     }
 
     fn open(&mut self) -> Option<OpenLog> {
-        match OpenLog::open(&self.path) {
+        let path = self.path.clone()?;
+        match OpenLog::open(&path) {
             Ok(l) => {
                 if std::mem::take(&mut self.open_failed) {
-                    info!("Access log opened: {}", self.path.display());
+                    info!("Access log opened: {}", path.display());
                 }
                 Some(l)
             }
@@ -278,7 +348,7 @@ impl Writer {
                     error!(
                         "Failed to open access log {}: {} (retrying every flush interval; \
                          events are dropped until it opens)",
-                        self.path.display(),
+                        path.display(),
                         e
                     );
                 }
@@ -291,46 +361,85 @@ impl Writer {
         let had_file = old.is_some();
         drop(old);
         let new = self.open();
-        if new.is_some() && had_file {
-            info!("Access log reopened: {}", self.path.display());
+        if let (Some(_), true, Some(p)) = (&new, had_file, &self.path) {
+            info!("Access log reopened: {}", p.display());
         }
         new
     }
 
-    /// Write and flush the batch. Returns how many events were lost.
+    /// Count the batch for metrics, format it once and hand the same bytes
+    /// to the file, stdout and every sink. Returns how many lines the file
+    /// lost.
     fn flush(&mut self, log: &mut Option<OpenLog>, buffer: &mut Vec<LogEvent>) -> u64 {
         if buffer.is_empty() {
             return 0;
         }
-        let n = buffer.len() as u64;
-        let Some(l) = log.as_mut() else {
+        let n = buffer.len();
+        if self.metrics {
+            registry().record(buffer);
+        }
+        if !self.writes_lines {
             buffer.clear();
-            return n;
-        };
+            return 0;
+        }
         self.scratch.clear();
         for event in buffer.drain(..) {
             self.lines.write(&mut self.scratch, &event);
         }
-        let result = l
-            .writer
-            .write_all(&self.scratch)
-            .and_then(|_| l.writer.flush());
+
+        if self.stdout {
+            let mut out = std::io::stdout().lock();
+            if out
+                .write_all(&self.scratch)
+                .and_then(|_| out.flush())
+                .is_err()
+            {
+                // Reported once per interval by report(), not per batch.
+                self.stdout_failed += n as u64;
+            }
+        }
+        for sink in &self.sinks {
+            sink.push(&self.scratch, n);
+        }
+
+        let mut failed = 0;
+        if let Some(path) = &self.path {
+            failed = match log.as_mut() {
+                None => n as u64,
+                Some(l) => match l
+                    .writer
+                    .write_all(&self.scratch)
+                    .and_then(|_| l.writer.flush())
+                {
+                    Ok(()) => 0,
+                    Err(e) => {
+                        error!("Failed to write access log {}: {}", path.display(), e);
+                        n as u64
+                    }
+                },
+            };
+        }
         // Don't keep a huge buffer around after one unusually large batch.
         if self.scratch.capacity() > 4 * WRITE_BUFFER {
             self.scratch = Vec::with_capacity(WRITE_BUFFER);
         }
-        match result {
-            Ok(()) => 0,
-            Err(e) => {
-                error!("Failed to write access log {}: {}", self.path.display(), e);
-                n
-            }
-        }
+        failed
     }
 
     /// One warning per interval instead of one per event.
-    fn report(&self, failed: &mut u64) {
+    fn report(&mut self, failed: &mut u64) {
         let dropped = self.shared.dropped.swap(0, Ordering::Relaxed);
+        registry()
+            .queue_dropped
+            .fetch_add(dropped, Ordering::Relaxed);
+        registry().file_failed.fetch_add(*failed, Ordering::Relaxed);
+        if self.stdout_failed > 0 {
+            warn!(
+                "Access log: {} lines could not be written to stdout",
+                self.stdout_failed
+            );
+            self.stdout_failed = 0;
+        }
         if dropped > 0 {
             warn!(
                 dropped,
@@ -343,7 +452,10 @@ impl Writer {
                 failed = *failed,
                 "Access log: {} events could not be written to {}",
                 *failed,
-                self.path.display()
+                self.path
+                    .as_deref()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_default()
             );
             *failed = 0;
         }
@@ -357,11 +469,14 @@ mod tests {
     fn settings(path: &Path, queue_size: usize) -> CompiledLogging {
         CompiledLogging {
             mode: "file".into(),
-            file_path: path.to_string_lossy().into_owned(),
+            file_path: Some(path.to_string_lossy().into_owned()),
             queue_size,
             buffer_size: 1,
             flush_interval_ms: 50,
             user_field: None,
+            stdout: false,
+            sinks: Vec::new(),
+            metrics: None,
         }
     }
 

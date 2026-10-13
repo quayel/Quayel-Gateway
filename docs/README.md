@@ -30,7 +30,7 @@ A high-performance API gateway built on [Pingora](https://github.com/cloudflare/
 
 | Document | Description |
 |----------|-------------|
-| [Logging](logging.md) | JSONL access log format, fields, and analysis |
+| [Logging](logging.md) | JSONL access log format, fields, sinks (ClickHouse, Datadog, OTLP, Loki, Elasticsearch, Splunk) and Prometheus metrics |
 | [API Reference](api-reference.md) | Request/response headers, APISIX variables |
 
 ## Development

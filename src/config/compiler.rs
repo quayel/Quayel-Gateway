@@ -1,5 +1,6 @@
 use crate::condition::CompiledCondition;
 use crate::config::schema::*;
+use crate::config::sinks::{compile_metrics, compile_sinks, CompiledMetrics, CompiledSink};
 use crate::gateway::forward_headers::{compile_forward_headers, CompiledForwardHeaders};
 use crate::gateway::protection::{compile_server, CompiledServer};
 use crate::jwt::{compile_jwt, CompiledJwt};
@@ -32,8 +33,12 @@ pub struct CompiledConfig {
     pub cache: Option<CompiledCache>,
     pub response_transform: Option<CompiledTransform>,
     pub load_balancer: Option<CompiledLoadBalancerPlugin>,
+    /// Built when logging or metrics are on: both are fed by the same
+    /// event queue.
     pub logging: Option<CompiledLogging>,
     pub auto_ssl: Option<CompiledAutoSsl>,
+    /// The metrics listener (startup only).
+    pub metrics: Option<CompiledMetrics>,
 }
 
 #[derive(Debug, Clone)]
@@ -155,17 +160,29 @@ pub struct CompiledTarget {
 
 // ── Logging compiled ─────────────────────────────────────────────────────────
 
-/// Only built when logging is enabled. Compared on hot reload: any change
-/// starts a new writer.
+/// Only built when logging or metrics are enabled. Compared on hot reload:
+/// any change starts a new writer.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CompiledLogging {
     pub mode: String,
-    pub file_path: String,
+    /// None → no file (sinks or metrics only).
+    pub file_path: Option<String>,
     pub queue_size: usize,
     pub buffer_size: usize,
     pub flush_interval_ms: u64,
     /// plugins.logging.user_field
     pub user_field: Option<String>,
+    pub stdout: bool,
+    pub sinks: Vec<CompiledSink>,
+    /// Some → events also feed the Prometheus metrics.
+    pub metrics: Option<CompiledMetrics>,
+}
+
+impl CompiledLogging {
+    /// True when lines are written anywhere (not only metrics).
+    pub fn writes_lines(&self) -> bool {
+        self.file_path.is_some() || self.stdout || !self.sinks.is_empty()
+    }
 }
 
 pub const DEFAULT_LOG_PATH: &str = "/var/log/quayel/access.jsonl";
@@ -244,9 +261,24 @@ pub fn compile_config(raw: &GatewayConfig) -> Result<CompiledConfig, String> {
         .filter(|c| c.enabled)
         .map(|c| compile_load_balancer(c));
 
-    let logging = match raw.plugins.logging.as_ref().filter(|c| c.enabled) {
-        Some(c) => Some(compile_logging(c)?),
+    let metrics = match &raw.metrics {
+        Some(m) => compile_metrics(m)?,
         None => None,
+    };
+    let logging = match raw.plugins.logging.as_ref().filter(|c| c.enabled) {
+        Some(c) => Some(compile_logging(c, metrics.clone())?),
+        // Metrics only: the queue runs without writing any lines.
+        None => metrics.clone().map(|m| CompiledLogging {
+            mode: "file".to_string(),
+            file_path: None,
+            queue_size: 65_536,
+            buffer_size: 8192,
+            flush_interval_ms: 1000,
+            user_field: None,
+            stdout: false,
+            sinks: Vec::new(),
+            metrics: Some(m),
+        }),
     };
 
     let auto_ssl = raw
@@ -292,6 +324,7 @@ pub fn compile_config(raw: &GatewayConfig) -> Result<CompiledConfig, String> {
         load_balancer,
         logging,
         auto_ssl,
+        metrics,
     })
 }
 
@@ -417,7 +450,10 @@ fn compile_auto_ssl(c: &AutoSslConfig) -> CompiledAutoSsl {
     }
 }
 
-fn compile_logging(c: &LoggingConfig) -> Result<CompiledLogging, String> {
+fn compile_logging(
+    c: &LoggingConfig,
+    metrics: Option<CompiledMetrics>,
+) -> Result<CompiledLogging, String> {
     if c.mode != "file" {
         return Err(format!(
             "plugins.logging.mode '{}' is not supported (use \"file\")",
@@ -427,12 +463,14 @@ fn compile_logging(c: &LoggingConfig) -> Result<CompiledLogging, String> {
     if c.queue_size == 0 {
         return Err("plugins.logging.queue_size must be at least 1".to_string());
     }
-    let file_path = c
-        .file
-        .as_ref()
-        .map_or(DEFAULT_LOG_PATH, |f| f.path.as_str())
-        .to_string();
-    if file_path.trim().is_empty() {
+    let (stdout, sinks) = compile_sinks(&c.sinks)?;
+    // No `file` section: the default file, unless sinks are set.
+    let file_path = match &c.file {
+        Some(f) => Some(f.path.clone()),
+        None if c.sinks.is_empty() => Some(DEFAULT_LOG_PATH.to_string()),
+        None => None,
+    };
+    if file_path.as_deref().is_some_and(|p| p.trim().is_empty()) {
         return Err("plugins.logging.file.path must not be empty".to_string());
     }
     let buffer_size = c.file.as_ref().map_or(8192, |f| f.buffer_size);
@@ -454,6 +492,9 @@ fn compile_logging(c: &LoggingConfig) -> Result<CompiledLogging, String> {
             .map(str::trim)
             .filter(|f| !f.is_empty())
             .map(String::from),
+        stdout,
+        sinks,
+        metrics,
     })
 }
 

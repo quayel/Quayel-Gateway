@@ -97,13 +97,14 @@ GatewayConfig
 │   ├── header: string                       (required when source is header|header_index)
 │   ├── index: integer ≥ 0                   (required when source is header_index)
 │   └── fallback: peer_ip                    (only valid value)
+├── metrics                                  (optional; startup only) { enabled = true, listen = "127.0.0.1:9464", path = "/metrics", max_hosts = 1000 }
 └── plugins                                  (required object; every sub-plugin optional)
     ├── ip_intel       { enabled: bool = true }
     ├── firewall       { enabled = true, rules: FirewallRule[] = [] }
     ├── rate_limiting  { enabled = true, rules: RateLimitRule[] = [] }
     ├── cache          { enabled = true, max_object_size_bytes = 10485760, rules: CacheRule[] = [] }
     ├── load_balancer  { enabled = true, load_balancers: LoadBalancer[] = [] }
-    ├── logging        { enabled = true, mode = "file", queue_size = 65536, user_field?, file?: { path, buffer_size = 8192, flush_interval_ms = 1000 } }
+    ├── logging        { enabled = true, mode = "file", queue_size = 65536, user_field?, file?: { path, buffer_size = 8192, flush_interval_ms = 1000 }, sinks?: [{ type: stdout|http|clickhouse|datadog|otlp|loki|elasticsearch|opensearch|splunk, url?, … }] }  (see docs/logging.md#sinks)
     └── auto_ssl       { enabled = true, email*, domains*, cert_storage_path = "/var/lib/quayel/certs", staging = false, directory_url?, ca_root?, renewal_days_before = 30 }
 ```
 

@@ -29,7 +29,41 @@ pub struct GatewayConfig {
     #[serde(default)]
     pub jwt: Option<JwtConfig>,
 
+    /// Prometheus `/metrics` endpoint on its own listener. Optional; omitted
+    /// → no metrics. `listen` and `path` are read at startup only.
+    #[serde(default)]
+    pub metrics: Option<MetricsConfig>,
+
     pub plugins: PluginsConfig,
+}
+
+// ── Metrics Config ───────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MetricsConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Address of the metrics listener. Keep it private: it isn't behind the
+    /// firewall plugin.
+    #[serde(default = "default_metrics_listen")]
+    pub listen: String,
+    #[serde(default = "default_metrics_path")]
+    pub path: String,
+    /// Distinct `host` label values kept. Hosts after this many are counted
+    /// as `host="_other"`, so random Host headers can't grow memory.
+    #[serde(default = "default_metrics_max_hosts")]
+    pub max_hosts: usize,
+}
+
+fn default_metrics_listen() -> String {
+    "127.0.0.1:9464".to_string()
+}
+fn default_metrics_path() -> String {
+    "/metrics".to_string()
+}
+fn default_metrics_max_hosts() -> usize {
+    1000
 }
 
 // ── JWT Config ───────────────────────────────────────────────────────────────
@@ -935,6 +969,127 @@ pub struct LoggingConfig {
     /// "header.authorization.jwt.sub". Unset → `user` is "".
     #[serde(default)]
     pub user_field: Option<String>,
+    /// Where else lines go: stdout, ClickHouse, Datadog, OpenTelemetry,
+    /// Loki, Elasticsearch/OpenSearch, Splunk, or any HTTP endpoint. With
+    /// sinks set and no `file` section, no file is written.
+    #[serde(default)]
+    pub sinks: Vec<LogSinkConfig>,
+}
+
+/// One log destination. `type` picks the format; fields that don't apply to
+/// the type are refused by the config compiler.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LogSinkConfig {
+    /// stdout | http | clickhouse | datadog | otlp | loki | elasticsearch | splunk
+    #[serde(rename = "type")]
+    pub kind: String,
+    /// Name in the gateway's own logs, in metrics and for the spool
+    /// directory. Default: the type.
+    #[serde(default)]
+    pub name: Option<String>,
+    /// Base URL. Required except for stdout and datadog (which uses `site`).
+    #[serde(default)]
+    pub url: Option<String>,
+
+    // ── Format-specific ──
+    /// clickhouse: database (default "default")
+    #[serde(default)]
+    pub database: Option<String>,
+    /// clickhouse: table (default "access_log")
+    #[serde(default)]
+    pub table: Option<String>,
+    /// elasticsearch: index (default "quayel-access"); splunk: index
+    #[serde(default)]
+    pub index: Option<String>,
+    /// datadog: site, e.g. "datadoghq.com" (default), "datadoghq.eu"
+    #[serde(default)]
+    pub site: Option<String>,
+    /// datadog / otlp: service name (default "quayel-gateway")
+    #[serde(default)]
+    pub service: Option<String>,
+    /// datadog: ddsource; splunk: source (default "quayel-gateway")
+    #[serde(default)]
+    pub source: Option<String>,
+    /// datadog: ddtags, e.g. "env:prod,team:edge"
+    #[serde(default)]
+    pub tags: Option<String>,
+    /// splunk: sourcetype (default "quayel:access")
+    #[serde(default)]
+    pub sourcetype: Option<String>,
+    /// loki: stream labels (default {"job": "quayel-gateway"}); gateway_id
+    /// is always added.
+    #[serde(default)]
+    pub labels: HashMap<String, String>,
+    /// otlp: resource attributes added next to service.name.
+    #[serde(default)]
+    pub resource_attributes: HashMap<String, String>,
+    /// loki: X-Scope-OrgID
+    #[serde(default)]
+    pub tenant_id: Option<String>,
+
+    // ── Credentials (each secret can come from an env var instead) ──
+    #[serde(default)]
+    pub user: Option<String>,
+    #[serde(default)]
+    pub password: Option<String>,
+    #[serde(default)]
+    pub password_env: Option<String>,
+    #[serde(default)]
+    pub api_key: Option<String>,
+    #[serde(default)]
+    pub api_key_env: Option<String>,
+    #[serde(default)]
+    pub token: Option<String>,
+    #[serde(default)]
+    pub token_env: Option<String>,
+    /// Extra request headers.
+    #[serde(default)]
+    pub headers: HashMap<String, String>,
+    /// Extra request headers whose values come from env vars:
+    /// {"Authorization": "MY_AUTH_HEADER"}.
+    #[serde(default)]
+    pub headers_env: HashMap<String, String>,
+
+    // ── Delivery ──
+    /// Lines per request. Default by type: ClickHouse 50000, Datadog 1000
+    /// (its limit), others 5000.
+    #[serde(default)]
+    pub batch_size: Option<usize>,
+    /// Longest a line waits before its batch is sent. Default 1000
+    /// (ClickHouse 5000).
+    #[serde(default)]
+    pub flush_interval_ms: Option<u64>,
+    #[serde(default = "default_sink_timeout_ms")]
+    pub timeout_ms: u64,
+    /// "gzip" (default) or "none".
+    #[serde(default = "default_sink_compression")]
+    pub compression: String,
+    /// Unsent lines kept in memory while the destination is down. Past this
+    /// the oldest batches go to the spool, or are dropped and counted
+    /// without one.
+    #[serde(default = "default_sink_max_buffer_bytes")]
+    pub max_buffer_bytes: usize,
+    /// Directory for batches that couldn't be sent yet. They're sent first
+    /// once the destination is back, also after a restart. Unset → no spool.
+    #[serde(default)]
+    pub spool_dir: Option<String>,
+    /// Spool size limit; the oldest batches are dropped (and counted) past it.
+    #[serde(default = "default_sink_spool_max_bytes")]
+    pub spool_max_bytes: u64,
+}
+
+fn default_sink_timeout_ms() -> u64 {
+    10_000
+}
+fn default_sink_compression() -> String {
+    "gzip".to_string()
+}
+fn default_sink_max_buffer_bytes() -> usize {
+    64 << 20
+}
+fn default_sink_spool_max_bytes() -> u64 {
+    1 << 30
 }
 
 fn default_log_queue_size() -> usize {

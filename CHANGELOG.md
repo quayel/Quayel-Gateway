@@ -44,6 +44,24 @@ write entries for people running the gateway, not for people reading the diff.
 
 ### Added
 
+- **Log sinks.** `plugins.logging.sinks` sends the same lines to `stdout`,
+  `clickhouse`, `datadog`, `otlp` (OpenTelemetry Collector and any OTLP/HTTP
+  receiver), `loki`, `elasticsearch` / `opensearch`, `splunk` (HEC) or any
+  `http` endpoint, each in its native format, alongside or instead of the
+  file. Lines are formatted once on the writer thread; batches are gzipped
+  and sent on the background runtime, so requests never wait on a sink.
+  Failed batches are retried with backoff; with `spool_dir` they go to disk
+  and are sent after an outage or a restart. ClickHouse inserts carry a
+  deduplication token so a retried batch isn't stored twice. Secrets can come
+  from env vars. `scripts/clickhouse/access_log.sql` creates a matching
+  table. See [Logging → Sinks](docs/logging.md#sinks).
+- **Prometheus metrics.** A top-level `metrics` section serves `/metrics` on
+  its own listener: requests by host, method and status, latency histograms,
+  blocks by type and rule, upstream responses and latency, requests by
+  country, cache status, and delivery counters for the log queue, file and
+  every sink. Counted on the writer thread from the access-log events, so it
+  adds no request-thread work beyond what logging already does. See
+  [Logging → Metrics](docs/logging.md#metrics).
 - **JWT verification.** A new top-level `jwt` section defines keys once:
   a shared secret (inline, env var or file), a pasted public key (PEM, `\n`
   line breaks, base64 body only, list of lines, or a certificate; also from an
@@ -95,6 +113,9 @@ write entries for people running the gateway, not for people reading the diff.
 
 ### Fixed
 
+- On shutdown the access log now writes what's still queued. The process
+  used to exit straight after Pingora stopped, losing up to one flush
+  interval of lines.
 - The access log queue had no size limit: with a slow or full disk, events
   piled up in memory until the process ran out of it. It's now bounded; when
   full, new events are dropped and the count is logged as a warning.

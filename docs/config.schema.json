@@ -15,6 +15,7 @@
     "client_ip": { "$ref": "#/definitions/client_ip" },
     "server": { "$ref": "#/definitions/server" },
     "jwt": { "$ref": "#/definitions/jwt" },
+    "metrics": { "$ref": "#/definitions/metrics" },
     "plugins": { "$ref": "#/definitions/plugins" }
   },
 
@@ -767,7 +768,58 @@
             "buffer_size": { "type": "integer", "minimum": 1, "default": 8192 },
             "flush_interval_ms": { "type": "integer", "minimum": 1, "default": 1000 }
           }
-        }
+        },
+        "user_field": { "type": "string", "description": "Condition field logged as `user` on every line, e.g. header.authorization.jwt.sub" },
+        "sinks": { "type": "array", "items": { "$ref": "#/definitions/log_sink" }, "description": "Where else lines go. With sinks set and no `file` section, no file is written" }
+      }
+    },
+    "log_sink": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type"],
+      "description": "One log destination. Fields that don't apply to the type are refused when the config loads",
+      "properties": {
+        "type": { "enum": ["stdout", "http", "clickhouse", "datadog", "otlp", "loki", "elasticsearch", "opensearch", "splunk"] },
+        "name": { "type": "string", "pattern": "^[A-Za-z0-9_-]+$", "description": "Unique per sink; used in the gateway log, metrics and the spool directory. Default: the type" },
+        "url": { "type": "string", "pattern": "^https?://" },
+        "database": { "type": "string", "description": "clickhouse (default \"default\")" },
+        "table": { "type": "string", "description": "clickhouse (default \"access_log\")" },
+        "index": { "type": "string", "description": "elasticsearch (default \"quayel-access\"), splunk" },
+        "site": { "type": "string", "description": "datadog (default \"datadoghq.com\")" },
+        "service": { "type": "string", "description": "datadog, otlp (default \"quayel-gateway\")" },
+        "source": { "type": "string", "description": "datadog ddsource, splunk source" },
+        "tags": { "type": "string", "description": "datadog ddtags, e.g. \"env:prod,team:edge\"" },
+        "sourcetype": { "type": "string", "description": "splunk (default \"quayel:access\")" },
+        "labels": { "type": "object", "additionalProperties": { "type": "string" }, "description": "loki stream labels (default {\"job\": \"quayel-gateway\"}); gateway_id is added" },
+        "resource_attributes": { "type": "object", "additionalProperties": { "type": "string" }, "description": "otlp resource attributes" },
+        "tenant_id": { "type": "string", "description": "loki X-Scope-OrgID" },
+        "user": { "type": "string" },
+        "password": { "type": "string" },
+        "password_env": { "type": "string" },
+        "api_key": { "type": "string" },
+        "api_key_env": { "type": "string" },
+        "token": { "type": "string" },
+        "token_env": { "type": "string" },
+        "headers": { "type": "object", "additionalProperties": { "type": "string" } },
+        "headers_env": { "type": "object", "additionalProperties": { "type": "string" }, "description": "Header name → env var holding its value" },
+        "batch_size": { "type": "integer", "minimum": 1 },
+        "flush_interval_ms": { "type": "integer", "minimum": 1 },
+        "timeout_ms": { "type": "integer", "minimum": 1, "default": 10000 },
+        "compression": { "enum": ["gzip", "none"], "default": "gzip" },
+        "max_buffer_bytes": { "type": "integer", "minimum": 1048576, "default": 67108864 },
+        "spool_dir": { "type": "string" },
+        "spool_max_bytes": { "type": "integer", "minimum": 0, "default": 1073741824 }
+      }
+    },
+    "metrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Prometheus /metrics endpoint on its own listener (startup only). Keep it private: it isn't behind the firewall plugin",
+      "properties": {
+        "enabled": { "type": "boolean", "default": true },
+        "listen": { "type": "string", "default": "127.0.0.1:9464" },
+        "path": { "type": "string", "pattern": "^/", "default": "/metrics" },
+        "max_hosts": { "type": "integer", "minimum": 1, "default": 1000, "description": "Distinct host label values kept; later hosts are counted as _other" }
       }
     },
 

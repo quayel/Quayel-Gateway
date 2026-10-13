@@ -211,8 +211,15 @@ fn main() {
         .clone()
         .unwrap_or_else(|| DEFAULT_HTTP_LISTEN.to_string());
 
-    // Log queue only when logging is enabled: otherwise no file is opened
-    // and no LogEvent is built per request. Config reloads can turn it on/off.
+    // Prometheus listener. Its address is read at startup only; the counters
+    // are fed by the log queue's writer thread.
+    if let Some(m) = compiled.metrics.clone() {
+        bg_handle.spawn(crate::logging::metrics::serve(m.listen, m.path));
+    }
+
+    // Log queue only when logging or metrics are enabled: otherwise no file
+    // is opened and no LogEvent is built per request. Config reloads can turn
+    // it on/off.
     let log_queue = match compiled.logging.clone() {
         Some(settings) => Some(LogQueue::new(settings, &bg_handle)),
         None => {
@@ -301,7 +308,14 @@ fn main() {
     server.add_service(proxy_service);
 
     tracing::info!("Quayel Gateway starting...");
-    server.run_forever();
+    // run() returns once Pingora has shut down (run_forever() would exit the
+    // process right there, with access-log lines still in memory).
+    server.run(pingora_core::server::RunArgs::default());
+    if let Some(queue) = state.log_queue.swap(None) {
+        queue.shutdown(std::time::Duration::from_secs(4));
+    }
+    tracing::info!("Quayel Gateway stopped");
+    std::process::exit(0)
 }
 
 fn start_background_tasks(state: &Arc<GatewayState>, bg_handle: &tokio::runtime::Handle) {

@@ -154,7 +154,7 @@ Let's Encrypt certificates are issued on the first request for a domain and rene
 <td width="50%" valign="top">
 
 ### 📜 Logs you can query
-One JSON line per request with the visitor's IP data, each plugin's decision, the transform rules that ran and per-phase timing. Config changes are hot-reloaded within 5 seconds, and a broken file is rejected while the old config keeps running. [Logging →](docs/logging.md)
+One JSON line per request with the visitor's IP data and which rule blocked it, sent to a file, ClickHouse, Datadog, OpenTelemetry, Loki, Elasticsearch or Splunk, plus a Prometheus `/metrics` endpoint. Config changes are hot-reloaded within 5 seconds, and a broken file is rejected while the old config keeps running. [Logging →](docs/logging.md)
 
 </td>
 </tr>
@@ -505,7 +505,7 @@ quayel-gateway [--workers N] [CONFIG_PATH]
 | `QUAYEL_IP_INTEL_CACHE_SIZE` | `65536` | IP lookups kept in memory |
 
 - **Hot reload:** the config file is checked every 5 seconds. A valid file is applied with no restart and no dropped connections (`Config hot-reloaded successfully`). An invalid one is rejected and the last good config keeps running (`Config validation FAILED`, with the reason).
-- **Logs:** the gateway's own output goes to stdout as JSON. Access logs are one JSON line per request, written to the file set in `plugins.logging` (`tail -f /var/log/quayel/access.jsonl | jq .`). Outside the `.deb`, set up `logrotate` for that file. Fields: [Logging](docs/logging.md).
+- **Logs:** the gateway's own output goes to stdout as JSON. Access logs are one JSON line per request, written to the file set in `plugins.logging` (`tail -f /var/log/quayel/access.jsonl | jq .`) and, with `sinks`, to stdout, ClickHouse, Datadog, OpenTelemetry, Loki, Elasticsearch, Splunk or any HTTP endpoint. A Prometheus endpoint is available with the top-level `metrics` section. Outside the `.deb`, set up `logrotate` for that file. Fields: [Logging](docs/logging.md).
 
 <details>
 <summary><b>Troubleshooting</b></summary>
@@ -583,7 +583,7 @@ quayel-gateway/
 │   ├── auto_ssl/         # Let's Encrypt (ACME)
 │   ├── condition/        # rule matching engine
 │   ├── config/           # config loading, validation and hot reload
-│   ├── logging/          # JSONL access log writer
+│   ├── logging/          # access log writer, sinks, spool, Prometheus metrics
 │   ├── data/             # embedded IP datasets
 │   └── utils/            # embedded data loading, CIDR sets, helpers
 ├── docs/                 # user docs, plugins/, development/
