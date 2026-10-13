@@ -48,6 +48,9 @@ parking_lot = "0.12"
 # Random request IDs (X-QG-Request-Id)
 rand = "0.8"
 
+# Integer formatting for the access log writer
+itoa = "1"
+
 # Bytes
 bytes = "1"
 

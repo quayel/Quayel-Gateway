@@ -1,5 +1,6 @@
 use crate::config::compiler::CompiledLogging;
 use crate::logging::event::LogEvent;
+use crate::logging::writer::LineWriter;
 use std::fs::{File, OpenOptions};
 use std::io::{BufWriter, Write};
 use std::os::unix::fs::MetadataExt;
@@ -23,11 +24,13 @@ use tracing::{error, info, warn};
 // - Rotation: the file is reopened when its path no longer points at the open
 //   file (logrotate's default move-and-create, `mv`, `rm`), checked every
 //   flush interval, or on SIGHUP (within HUP_POLL). `copytruncate` isn't needed.
-// - Serialization goes straight into a large BufWriter (WRITE_BUFFER bytes),
-//   so a batch of thousands of lines costs a handful of write() calls.
+// - Lines are formatted by `LineWriter` (hand-written JSON, fixed schema) into
+//   one reused buffer per batch, then written through a large BufWriter
+//   (WRITE_BUFFER bytes), so a batch of thousands of lines costs a handful of
+//   write() calls.
 
-/// Size of the file write buffer. Lines are ~300-400 bytes, so 1 MiB holds
-/// ~3,000 lines per write() instead of ~20 with the 8 KiB default.
+/// Size of the file write buffer. Lines are ~600 bytes, so 1 MiB holds
+/// ~1,700 lines per write() instead of ~13 with the 8 KiB default.
 const WRITE_BUFFER: usize = 1 << 20;
 
 /// Longest the writer thread sleeps before checking for a SIGHUP request.
@@ -72,6 +75,8 @@ impl LogQueue {
                 dropped: Arc::clone(&dropped),
                 reopen: Arc::clone(&reopen),
                 open_failed: false,
+                lines: LineWriter::new(),
+                scratch: Vec::with_capacity(WRITE_BUFFER),
             };
             if let Err(e) = std::thread::Builder::new()
                 .name("qg-access-log".into())
@@ -140,6 +145,9 @@ struct Writer {
     reopen: Arc<AtomicBool>,
     /// The last open attempt failed (log the error once, not every retry).
     open_failed: bool,
+    lines: LineWriter,
+    /// Formatted lines of the current batch.
+    scratch: Vec<u8>,
 }
 
 /// The open log file plus the identity of the file it was opened as.
@@ -256,27 +264,34 @@ impl Writer {
     }
 
     /// Write and flush the batch. Returns how many events were lost.
-    fn flush(&self, log: &mut Option<OpenLog>, buffer: &mut Vec<LogEvent>) -> u64 {
+    fn flush(&mut self, log: &mut Option<OpenLog>, buffer: &mut Vec<LogEvent>) -> u64 {
         if buffer.is_empty() {
             return 0;
         }
+        let n = buffer.len() as u64;
         let Some(l) = log.as_mut() else {
-            let n = buffer.len() as u64;
             buffer.clear();
             return n;
         };
-        let mut lost = 0;
+        self.scratch.clear();
         for event in buffer.drain(..) {
-            let ok = serde_json::to_writer(l.writer.by_ref(), &event).is_ok()
-                && l.writer.write_all(b"\n").is_ok();
-            if !ok {
-                lost += 1;
+            self.lines.write(&mut self.scratch, &event);
+        }
+        let result = l
+            .writer
+            .write_all(&self.scratch)
+            .and_then(|_| l.writer.flush());
+        // Don't keep a huge buffer around after one unusually large batch.
+        if self.scratch.capacity() > 4 * WRITE_BUFFER {
+            self.scratch = Vec::with_capacity(WRITE_BUFFER);
+        }
+        match result {
+            Ok(()) => 0,
+            Err(e) => {
+                error!("Failed to write access log {}: {}", self.path.display(), e);
+                n
             }
         }
-        if let Err(e) = l.writer.flush() {
-            error!("Failed to write access log {}: {}", self.path.display(), e);
-        }
-        lost
     }
 
     /// One warning per interval instead of one per event.
@@ -312,6 +327,7 @@ mod tests {
             queue_size,
             buffer_size: 1,
             flush_interval_ms: 50,
+            user_field: None,
         }
     }
 

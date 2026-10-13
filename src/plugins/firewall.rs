@@ -1,5 +1,5 @@
 use crate::condition::CompiledCondition;
-use crate::config::compiler::CompiledConfig;
+use crate::config::compiler::{CompiledConfig, CompiledFirewallRule};
 use crate::config::schema::*;
 use crate::gateway::request_context::*;
 use crate::plugins::{GatewayResponse, PluginFlow};
@@ -42,9 +42,11 @@ impl FirewallPlugin {
 
                 match &rule.action.action_type {
                     FirewallActionType::Allow => {
+                        ctx.allow_rule = Some(Arc::clone(&rule.id));
                         return PluginFlow::Continue;
                     }
                     FirewallActionType::Block => {
+                        record_block(ctx, rule, "block");
                         let status = rule.action.status.unwrap_or(403);
                         ctx.status_code = Some(status);
 
@@ -63,6 +65,7 @@ impl FirewallPlugin {
                         });
                     }
                     FirewallActionType::Redirect => {
+                        record_block(ctx, rule, "redirect");
                         let location = rule.action.location.as_deref().unwrap_or("/");
                         let status = rule.action.status.unwrap_or(302);
 
@@ -96,6 +99,48 @@ impl FirewallPlugin {
 
         PluginFlow::Continue
     }
+}
+
+/// Record the rule that stopped the request, with the conditions that decided
+/// the match as its key. Only runs on a block/redirect, so re-resolving the
+/// conditions here costs nothing on allowed traffic.
+fn record_block(ctx: &mut RequestContext, rule: &CompiledFirewallRule, action: &'static str) {
+    let key = deciding_conditions(ctx, &rule.conditions);
+    ctx.block = BlockResult {
+        kind: "fw",
+        action,
+        rule: Some(Arc::clone(&rule.id)),
+        key,
+    };
+}
+
+/// `field=value` for every condition of the first `and` chain that is true
+/// (for `A and B or C`, the chains are `A and B` and `C`). That chain is what
+/// made the rule match.
+pub fn deciding_conditions(ctx: &mut RequestContext, conditions: &[CompiledCondition]) -> String {
+    let mut start = 0;
+    while start < conditions.len() {
+        let mut end = start;
+        while end + 1 < conditions.len() && !matches!(conditions[end].next, Some(LogicalOp::Or)) {
+            end += 1;
+        }
+        let chain = &conditions[start..=end];
+        let mut key = String::new();
+        let mut all_true = true;
+        for cond in chain {
+            let value = resolve_condition_value(ctx, &cond.left);
+            crate::logging::key::push_pair(&mut key, &cond.left, value.as_ref());
+            if !evaluate_single_condition(value, cond) {
+                all_true = false;
+                break;
+            }
+        }
+        if all_true {
+            return key;
+        }
+        start = end + 1;
+    }
+    String::new()
 }
 
 /// Shared condition evaluator with correct OR/AND logic.
@@ -534,5 +579,33 @@ mod tests {
         let (r, seen) = eval(spec, &[("a", false), ("b", true), ("c", true)]);
         assert!(r);
         assert_eq!(seen, ["a", "c"]);
+    }
+
+    #[test]
+    fn deciding_conditions_log_the_chain_that_matched() {
+        let spec = serde_json::json!([
+            {"left": "req.path", "operator": "starts_with", "value": "/api", "next": "and"},
+            {"left": "header.x-team", "operator": "equals", "value": "red", "next": "or"},
+            {"left": "header.x-admin", "operator": "equals", "value": "yes"}
+        ]);
+        let conds: Vec<crate::config::schema::Condition> = serde_json::from_value(spec).unwrap();
+        let compiled = compile_conditions(&conds);
+
+        // First chain true: both of its conditions, path without the query.
+        let mut ctx = crate::logging::event::tests::ctx("/api/x?token=abc", &[("x-team", "red")]);
+        assert_eq!(
+            deciding_conditions(&mut ctx, &compiled),
+            "req.path=/api/x&header.x-team=red"
+        );
+
+        // Second chain true: only its condition.
+        let mut ctx = crate::logging::event::tests::ctx("/web", &[("x-admin", "yes")]);
+        assert_eq!(
+            deciding_conditions(&mut ctx, &compiled),
+            "header.x-admin=yes"
+        );
+
+        // No conditions (rule matches everything): empty key.
+        assert_eq!(deciding_conditions(&mut ctx, &[]), "");
     }
 }

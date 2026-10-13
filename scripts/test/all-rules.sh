@@ -36,8 +36,8 @@ record() {  # record <ok?> <name> <detail>
     else FAIL=$((FAIL+1)); RESULTS+=("FAIL|$2|$3"); fi
 }
 
-expect_log() {  # expect_log <rule_id> <Action>  (checked against the JSONL at the end)
-    EXPECTED_LOG+=("$1|$2")
+expect_log() {  # expect_log <rule_id>  (allow rule; checked against the JSONL at the end)
+    EXPECTED_LOG+=("$1")
 }
 
 cleanup() {
@@ -94,10 +94,12 @@ assert_block() {  # assert_block <name> <want_status> <want_rule_id> <curl args.
 
 assert_action() {  # assert_action <name> <rule_id> <Action> <curl args...>
     # set_request_header / set_response_header / allow: request must pass through
-    # to the origin (200) and the firewall action must appear in the access log.
+    # to the origin (200). An allow rule must appear as allow_rule in the access
+    # log; header actions aren't logged (the log records only what stopped or
+    # let through a request).
     local name="$1" rid="$2" act="$3"; shift 3
     local s b; req s b "$@"
-    expect_log "$rid" "$act"
+    [[ "$act" == "Allow" ]] && expect_log "$rid"
     record "$([[ "$s" == "200" ]] && echo 1 || echo 0)" "$name" "status=$s rule=$rid action=$act"
 }
 
@@ -308,18 +310,17 @@ record "$([[ "$s" == "200" ]] && echo 1 || echo 0)" "lb:weighted_round_robin rou
 # ── 9. Logging: JSONL events written ─────────────────────────────────────────
 sleep 2.5
 if [[ -s "$LOG" ]]; then
-    hit=$(grep -c '"status":"HIT"' "$LOG" || true)
-    rlevents=$(grep -c '"rule_id":"rl-' "$LOG" || true)
+    hit=$(grep -c '"cache":"HIT"' "$LOG" || true)
+    rlevents=$(grep -c '"type":"rl","action":"block","rule":"rl-' "$LOG" || true)
     record "$([[ "${hit:-0}" -gt 0 ]] && echo 1 || echo 0)" "logging:cache hit events" "hits=$hit"
     record "$([[ "${rlevents:-0}" -gt 0 ]] && echo 1 || echo 0)" "logging:rate-limit events" "events=$rlevents"
 
     missing=0
-    for e in "${EXPECTED_LOG[@]}"; do
-        IFS='|' read -r rid act <<<"$e"
-        grep -q "\"rule_id\":\"$rid\",\"action\":\"$act\"" "$LOG" || missing=$((missing+1))
+    for rid in "${EXPECTED_LOG[@]}"; do
+        grep -q "\"allow_rule\":\"$rid\"" "$LOG" || missing=$((missing+1))
     done
     record "$([[ $missing -eq 0 ]] && echo 1 || echo 0)" \
-        "logging:firewall action events for all rules" \
+        "logging:allow_rule for every allow rule" \
         "expected=${#EXPECTED_LOG[@]} missing=$missing"
 
     # Transform fields: one line per check → "<ok> <name> <detail>"
@@ -329,33 +330,19 @@ if [[ -s "$LOG" ]]; then
 import json, sys
 ev = [json.loads(l) for l in open(sys.argv[1]) if l.strip()]
 def find(path, status=None):
-    return next((e for e in ev if e["path"] == path and (status is None or e["cache"]["status"] == status)), None)
+    return next((e for e in ev if e["path"] == path and (status is None or e["cache"] == status)), None)
 def out(ok, name, detail):
     print(1 if ok else 0, name, detail or "-")
 
-e = find("/test/tf/api/hello?k=1")
-rt = e and e["request_transform"]
-out(rt and "rt-prefix" in rt["rules"] and rt["path"] == "/test/tf/v1/hello?k=1",
-    "logging:request_transform rules+path", rt and f'rules={",".join(rt["rules"])} path={rt["path"]}')
+e = find("/test/tf/api/hello")
+out(e is not None, "logging:path is the client's, without query", e and e["path"])
 e = find("/test/tf/host")
-rt = e and e["request_transform"]
-out(rt and "rt-host" in rt["rules"] and rt["host"] == "internal.test" and e["host"] == "127.0.0.1:8099",
-    "logging:request_transform host", rt and f'host={e["host"]} sent={rt["host"]}')
-e = find("/probe")
-rt = e and e["request_transform"]
-out(rt and rt["path"] is None and rt["host"] is None,
-    "logging:request_transform untouched", rt and f'path={rt["path"]} host={rt["host"]}')
-for phase in ("MISS", "HIT"):
-    e = find("/test/tf/resp", phase)
-    rs = e and e["response_transform"]["rules"]
-    out(rs and "rs-tf-all" in rs, f"logging:response_transform rules ({phase})", rs and ",".join(rs))
-e = find("/test/tf/teapot", "HIT")
-rs = e and e["response_transform"]["rules"]
-out(rs and {"rs-status", "rs-status-chain"} <= set(rs),
-    "logging:response_transform chained rules", rs and ",".join(rs))
-blocks = [e for e in ev if e["response_status"] in (403, 429) and e["termination_phase"]]
-out(blocks and all(e["response_transform"]["rules"] == [] for e in blocks),
-    "logging:no response_transform on blocks", f"blocks={len(blocks)}")
+out(e and e["host"] == "127.0.0.1:8099", "logging:host is the client's (not rewritten)", e and e["host"])
+out(all(len(e) == 33 for e in ev), "logging:every line has all 33 keys", f"lines={len(ev)}")
+out(all("?" not in e["path"] for e in ev), "logging:no query string in any path", "-")
+blocks = [e for e in ev if e["status"] in (403, 429) and e["block"]["type"] in ("fw", "rl", "dos")]
+out(blocks and all(e["block"]["rule"] for e in blocks), "logging:403/429 blocks name their rule",
+    f"blocks={len(blocks)}")
 EOF
 )
 else

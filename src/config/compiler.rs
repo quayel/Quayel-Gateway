@@ -164,6 +164,8 @@ pub struct CompiledLogging {
     pub queue_size: usize,
     pub buffer_size: usize,
     pub flush_interval_ms: u64,
+    /// plugins.logging.user_field
+    pub user_field: Option<String>,
 }
 
 pub const DEFAULT_LOG_PATH: &str = "/var/log/quayel/access.jsonl";
@@ -446,6 +448,12 @@ fn compile_logging(c: &LoggingConfig) -> Result<CompiledLogging, String> {
         queue_size: c.queue_size,
         buffer_size,
         flush_interval_ms,
+        user_field: c
+            .user_field
+            .as_deref()
+            .map(str::trim)
+            .filter(|f| !f.is_empty())
+            .map(String::from),
     })
 }
 

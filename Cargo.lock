@@ -2029,6 +2029,7 @@ dependencies = [
  "http",
  "instant-acme",
  "ipnet",
+ "itoa",
  "jsonwebtoken",
  "lru 0.12.5",
  "maxminddb",

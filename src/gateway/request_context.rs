@@ -31,8 +31,10 @@ pub struct RequestContext {
     pub server_name: Arc<str>,
     pub config_version: Arc<str>,
 
-    // Request identity
+    // Request identity — set first thing in early_request_filter
     pub request_id: String,
+    /// Arrival time, Unix milliseconds (also the time part of the UUIDv7).
+    pub ts_ms: u64,
     pub started_at: Instant,
 
     // Client / network
@@ -116,10 +118,20 @@ pub struct RequestContext {
     pub upstream_ttfb_us: Option<u64>,
     pub total_latency_us: Option<u64>,
 
+    /// When the upstream was chosen and the connection started (upstream_peer).
+    pub upstream_sent_at: Option<Instant>,
+    /// Upstream chosen → response header received (or failure), microseconds.
+    pub upstream_us: u64,
+
     // Final action
     pub termination_phase: Option<TerminationPhase>,
     /// server.protection / server.limits refusal (Violation::as_str).
     pub protection: Option<&'static str>,
+    /// What stopped the request (firewall block/redirect, rate limit, DoS
+    /// protection). Default (empty) when nothing did. Logged as `block`.
+    pub block: BlockResult,
+    /// Firewall `allow` rule that let the request skip the rules after it.
+    pub allow_rule: Option<Arc<str>>,
 }
 
 // Type aliases for Arc-wrapped shared cache data
@@ -148,6 +160,7 @@ impl RequestContext {
             server_name,
             config_version,
             request_id: String::new(),
+            ts_ms: 0,
             started_at: Instant::now(),
             peer_ip,
             client_ip,
@@ -192,8 +205,12 @@ impl RequestContext {
             upstream_connect_latency_us: None,
             upstream_ttfb_us: None,
             total_latency_us: None,
+            upstream_sent_at: None,
+            upstream_us: 0,
             termination_phase: None,
             protection: None,
+            block: BlockResult::default(),
+            allow_rule: None,
         }
     }
 
@@ -215,6 +232,34 @@ impl RequestContext {
 }
 
 // ── Plugin Result Types ──────────────────────────────────────────────────────
+
+/// The one thing that stopped a request. A request can only be stopped once
+/// (the first refusal ends the pipeline), so a single value covers firewall,
+/// rate limit and DoS protection.
+#[derive(Debug, Clone, Default)]
+pub struct BlockResult {
+    /// "" (not blocked), "fw", "rl" or "dos".
+    pub kind: &'static str,
+    /// "" or "block"; "redirect" for a firewall redirect rule.
+    pub action: &'static str,
+    /// Firewall / rate-limit rule ID, or the DoS check (request_rate, ...).
+    pub rule: Option<Arc<str>>,
+    /// What the rule matched on, as `field=value` pairs joined by `&`:
+    /// the firewall conditions that decided the match, the rate-limit key,
+    /// or `client_ip=...` for DoS protection.
+    pub key: String,
+}
+
+impl BlockResult {
+    pub fn dos(violation: &'static str, client_ip: IpAddr) -> Self {
+        Self {
+            kind: "dos",
+            action: "block",
+            rule: Some(Arc::from(violation)),
+            key: format!("client_ip={client_ip}"),
+        }
+    }
+}
 
 #[derive(Debug, Clone, Default)]
 pub struct FirewallResult {
@@ -276,7 +321,7 @@ pub enum CacheStatus {
 }
 
 impl CacheStatus {
-    pub fn as_str(&self) -> &str {
+    pub fn as_str(&self) -> &'static str {
         match self {
             CacheStatus::None => "NONE",
             CacheStatus::Hit => "HIT",

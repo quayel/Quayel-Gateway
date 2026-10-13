@@ -8,11 +8,13 @@ use crate::gateway::request_context::*;
 use crate::gateway::request_id;
 use crate::logging::event::LogEvent;
 use crate::logging::queue::LogQueue;
+use crate::logging::writer::strip_queries;
 use crate::plugins::cache::{
     bucket_accept_encoding, calculate_edge_ttl, calculate_stale_if_error,
     calculate_stale_while_revalidate, parse_cdn_cache_control, parse_upstream_cdn_cache_control,
     vary_is_cacheable, CacheEntry,
 };
+use crate::plugins::firewall::resolve_condition_value;
 use crate::plugins::transform::{
     apply_response_transform, replay_request_header_edits, CompiledTransform,
 };
@@ -230,17 +232,28 @@ impl ProxyHttp for QuayelGateway {
         )
     }
 
-    // early_request_filter: header is parsed — apply server.timeouts
+    // early_request_filter: header is parsed — request ID, then server.timeouts
 
     async fn early_request_filter(
         &self,
         session: &mut Session,
-        _ctx: &mut Self::CTX,
+        ctx: &mut Self::CTX,
     ) -> pingora_core::Result<()> {
+        // First thing for every request, before ACME, protection and the
+        // plugins, so every response and log line has an ID. ts_ms is also the
+        // time part of a generated UUIDv7.
+        let config = self.state.config.load();
+        ctx.ts_ms = request_id::now_ms();
+        ctx.started_at = std::time::Instant::now();
+        ctx.request_id = request_id::resolve(
+            &session.req_header().headers,
+            config.server.accept_incoming_request_id,
+            ctx.ts_ms,
+        );
+
         if let Some(guard) = header_guard(session) {
             guard.headers_done();
         }
-        let config = self.state.config.load();
         let server = &config.server;
         session.set_keepalive(server.keepalive_secs);
         session.set_read_timeout(server.body_read_timeout);
@@ -264,6 +277,9 @@ impl ProxyHttp for QuayelGateway {
                 let mut header = ResponseHeader::build(200, None)?;
                 header.insert_header("Content-Type", "text/plain")?;
                 header.insert_header("Content-Length", response.len().to_string())?;
+                insert_request_id(
+                    header.insert_header(request_id::HEADER, ctx.request_id.as_str()),
+                );
                 session
                     .write_response_header(Box::new(header), false)
                     .await?;
@@ -321,8 +337,6 @@ impl ProxyHttp for QuayelGateway {
         ctx.server_name = Arc::clone(&config.server_name);
         ctx.config_version = Arc::clone(&config.config_version);
         ctx.jwt = config.jwt.clone();
-        ctx.request_id = request_id::resolve(raw_headers, config.server.accept_incoming_request_id);
-        ctx.started_at = std::time::Instant::now();
         ctx.peer_ip = peer_addr;
         ctx.client_ip = client_ip;
         // Reuse Arc<str> allocations across keep-alive requests: when the value
@@ -390,8 +404,12 @@ impl ProxyHttp for QuayelGateway {
         ctx.upstream_connect_latency_us = None;
         ctx.upstream_ttfb_us = None;
         ctx.total_latency_us = None;
+        ctx.upstream_sent_at = None;
+        ctx.upstream_us = 0;
         ctx.termination_phase = None;
         ctx.protection = None;
+        ctx.block = BlockResult::default();
+        ctx.allow_rule = None;
 
         // server.protection: bans and the per-IP request flood limit
         if let Some(protection) = &config.server.protection {
@@ -400,6 +418,7 @@ impl ProxyHttp for QuayelGateway {
             {
                 ctx.termination_phase = Some(TerminationPhase::Protection);
                 ctx.protection = Some(violation.as_str());
+                ctx.block = BlockResult::dos(violation.as_str(), client_ip);
                 session.set_keepalive(None);
                 let resp = protection_response(429, violation, Some(retry_after));
                 send_gateway_response(session, &resp, ctx, None).await?;
@@ -425,6 +444,7 @@ impl ProxyHttp for QuayelGateway {
                 }
                 ctx.termination_phase = Some(TerminationPhase::Protection);
                 ctx.protection = Some(Violation::BodyTooLarge.as_str());
+                ctx.block = BlockResult::dos(Violation::BodyTooLarge.as_str(), client_ip);
                 session.set_keepalive(None);
                 let resp = protection_response(413, Violation::BodyTooLarge, None);
                 send_gateway_response(session, &resp, ctx, None).await?;
@@ -477,6 +497,7 @@ impl ProxyHttp for QuayelGateway {
                 }
                 ctx.termination_phase = Some(TerminationPhase::Protection);
                 ctx.protection = Some(Violation::BodyTooLarge.as_str());
+                ctx.block = BlockResult::dos(Violation::BodyTooLarge.as_str(), ctx.client_ip);
                 return Err(pingora_error::Error::explain(
                     pingora_error::ErrorType::HTTPStatus(413),
                     "request body larger than server.limits.max_body_bytes",
@@ -523,6 +544,9 @@ impl ProxyHttp for QuayelGateway {
         peer.options.read_timeout = server.upstream_read_timeout;
         peer.options.write_timeout = server.upstream_write_timeout;
         peer.options.idle_timeout = server.upstream_idle_timeout;
+        // From here on the request belongs to this upstream: logged as
+        // upstream/upstream_addr, and upstream_us counts connect time too.
+        ctx.upstream_sent_at = Some(std::time::Instant::now());
         Ok(Box::new(peer))
     }
 
@@ -630,6 +654,9 @@ impl ProxyHttp for QuayelGateway {
     ) -> pingora_core::Result<()> {
         let status = upstream_response.status.as_u16();
         ctx.upstream_status = Some(status);
+        if let Some(sent) = ctx.upstream_sent_at {
+            ctx.upstream_us = sent.elapsed().as_micros() as u64;
+        }
 
         // ── Revalidation outcome ─────────────────────────────────────────
         // A stored copy is held when this request is the revalidation lock
@@ -928,13 +955,40 @@ impl ProxyHttp for QuayelGateway {
         };
 
         ctx.finalize_latency();
+        ctx.client_bytes_out = session.body_bytes_sent() as u64;
+        // Failed before early_request_filter (e.g. a malformed header).
+        if ctx.request_id.is_empty() {
+            ctx.ts_ms = request_id::now_ms();
+            ctx.request_id = request_id::generate_at(ctx.ts_ms);
+        }
+        // The origin never answered: time spent waiting on it.
+        if ctx.upstream_us == 0 {
+            if let Some(sent) = ctx.upstream_sent_at {
+                ctx.upstream_us = sent.elapsed().as_micros() as u64;
+            }
+        }
 
         let mut event = LogEvent::from_context(ctx);
-        event.add_request_details(session.req_header(), ctx);
+        if let Some(field) = &queue.settings.user_field {
+            event.user = match resolve_condition_value(ctx, field) {
+                None | Some(serde_json::Value::Null) => None,
+                Some(serde_json::Value::String(s)) => Some(s),
+                Some(v) => Some(v.to_string()),
+            };
+        }
         // Answered from a stored copy: the internal error that stopped
         // proxying isn't a failure.
         if ctx.termination_phase != Some(TerminationPhase::Cache) {
-            event.error = error.map(|e| e.to_string());
+            if let Some(e) = error {
+                if client_closed(e) {
+                    // Nginx's convention: the client gave up before the
+                    // response was complete.
+                    event.status = 499;
+                    event.error = Some("client closed".to_string());
+                } else {
+                    event.error = Some(strip_queries(&e.to_string()).into_owned());
+                }
+            }
         }
         queue.enqueue(event);
     }
@@ -999,6 +1053,17 @@ async fn send_gateway_response(
 /// incoming one); this only exists to make the `Result` explicit.
 fn insert_request_id(r: pingora_core::Result<()>) {
     debug_assert!(r.is_ok(), "request id is a valid header value");
+}
+
+/// The client closed the connection (or stopped reading) before the
+/// response was complete.
+fn client_closed(e: &pingora_core::Error) -> bool {
+    use pingora_error::{ErrorSource, ErrorType};
+    *e.esource() == ErrorSource::Downstream
+        && matches!(
+            e.etype(),
+            ErrorType::ConnectionClosed | ErrorType::ReadError | ErrorType::WriteError
+        )
 }
 
 /// Pingora's `respond_error`, plus `X-QG-Request-Id`.

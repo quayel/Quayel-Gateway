@@ -931,6 +931,10 @@ pub struct LoggingConfig {
     pub queue_size: usize,
     #[serde(default)]
     pub file: Option<LogFileConfig>,
+    /// Condition field logged as `user` on every line, e.g.
+    /// "header.authorization.jwt.sub". Unset → `user` is "".
+    #[serde(default)]
+    pub user_field: Option<String>,
 }
 
 fn default_log_queue_size() -> usize {

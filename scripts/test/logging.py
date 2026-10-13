@@ -2,11 +2,14 @@
 """End-to-end test: access log and X-QG-Request-Id.
 
 Starts an origin and a gateway with logging on, then checks:
-  - X-QG-Request-Id: generated (32 hex), unique, the same in the response,
-    at the origin and in the log; a valid incoming ID is reused, a bad one is
-    replaced; 502s and firewall blocks carry it too; accept_incoming=false
-  - new log fields: http_version, user_agent, referer, upstream_status
-    (before response_transform), error, protection, jwt
+  - X-QG-Request-Id: a UUIDv7 whose time matches `ts`, unique, the same in
+    the response, at the origin and in the log; an incoming UUID is reused,
+    anything else is replaced; 502s and firewall blocks carry it too;
+    accept_incoming=false
+  - the fixed schema (schema_version 1): every key on every line, in order,
+    no nulls; block {type, action, rule, key} for firewall block/redirect,
+    rate limit and DoS protection; allow_rule; upstream fields; user_field;
+    req_bytes/bytes; 499 when the client gives up; no query string anywhere
   - rotation: the file is reopened after `mv` and after `rm`, and straight
     away on SIGHUP (the gateway keeps running)
   - hot reload: a new log path, logging switched off, a bad mode refused
@@ -35,7 +38,12 @@ import jwt as pyjwt
 GW_PORT, ORIGIN_PORT, DEAD_PORT = 18300, 18301, 18302
 BIN = os.environ.get("BIN", "./target/debug/quayel-gateway")
 SECRET = "logging-test-secret"
-HEX32 = re.compile(r"^[0-9a-f]{32}$")
+UUID7 = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
+KEYS = ["schema_version", "gateway_id", "ts", "request_id", "client_ip", "method", "scheme",
+        "host", "path", "user_agent", "status", "bytes", "req_bytes", "dur_us", "country",
+        "region", "asn", "provider", "datacenter", "vpn", "proxy", "tor", "risk", "block",
+        "allow_rule", "cache", "upstream", "upstream_addr", "upstream_status", "upstream_us",
+        "error", "user", "sample_rate"]
 RELOAD_WAIT = 7  # the config watcher checks every 5 s
 
 origin_seen = {}  # path → X-QG-Request-Id the origin received
@@ -46,12 +54,18 @@ class Origin(BaseHTTPRequestHandler):
 
     def do_GET(self):
         origin_seen[self.path] = self.headers.get("x-qg-request-id")
+        if self.path.startswith("/slow"):
+            time.sleep(1.5)
         body = b"origin ok"
         self.send_response(200)
         self.send_header("content-length", str(len(body)))
         self.send_header("cache-control", "no-store")
         self.end_headers()
         self.wfile.write(body)
+
+    def do_POST(self):
+        self.rfile.read(int(self.headers.get("content-length", 0)))
+        self.do_GET()
 
     def log_message(self, *a):
         pass
@@ -87,6 +101,12 @@ def config(log_path, logging_on=True, mode="file", accept_incoming=True):
         "jwt": {"keys": [{"id": "hs", "algorithms": ["HS256"], "secret": SECRET}], "required_claims": []},
         "plugins": {
             "firewall": {"enabled": True, "rules": [
+                {"id": "office", "name": "office", "enabled": True,
+                 "conditions": [cond("header.x-office", "equals", "yes")],
+                 "action": {"type": "allow"}},
+                {"id": "old-site", "name": "old", "enabled": True,
+                 "conditions": [cond("req.path", "starts_with", "/old")],
+                 "action": {"type": "redirect", "location": "/new", "status": 301}},
                 {"id": "blocked", "name": "blocked", "enabled": True,
                  "conditions": [cond("req.path", "starts_with", "/blocked")],
                  "action": {"type": "block", "status": 403}},
@@ -94,6 +114,12 @@ def config(log_path, logging_on=True, mode="file", accept_incoming=True):
                  "conditions": [cond("req.path", "starts_with", "/api", "and"),
                                 cond("header.authorization.jwt_valid", "not_equals", True)],
                  "action": {"type": "block", "status": 401}},
+            ]},
+            "rate_limiting": {"enabled": True, "rules": [
+                {"id": "per-user", "name": "per user", "enabled": True,
+                 "conditions": [cond("req.path", "starts_with", "/rl")],
+                 "key": ["header.x-user", "req.query.api_key"], "limit": 1, "window_seconds": 60,
+                 "action": {"type": "block", "status": 429}},
             ]},
             "response_transform": {"enabled": True, "rules": [
                 {"id": "status-203", "conditions": [cond("req.path", "starts_with", "/rewritten")],
@@ -104,6 +130,7 @@ def config(log_path, logging_on=True, mode="file", accept_incoming=True):
                 lb("origin", ORIGIN_PORT, []),
             ]},
             "logging": {"enabled": logging_on, "mode": mode,
+                        "user_field": "header.authorization.jwt.sub",
                         "file": {"path": log_path, "flush_interval_ms": 100}},
         },
     }
@@ -126,11 +153,20 @@ def section(title):
     print(f"\n── {title} " + "─" * max(0, 64 - len(title)))
 
 
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *a, **k):
+        return None
+
+
+OPENER = urllib.request.build_opener(NoRedirect)
+
+
 def req(path, headers=None, method="GET", data=None):
+    """One request; redirects are returned, not followed."""
     r = urllib.request.Request(f"http://127.0.0.1:{GW_PORT}{path}", headers=headers or {},
                                method=method, data=data)
     try:
-        with urllib.request.urlopen(r, timeout=5) as resp:
+        with OPENER.open(r, timeout=5) as resp:
             resp.read()
             return resp.status, resp.headers
     except urllib.error.HTTPError as e:
@@ -206,71 +242,159 @@ def main():
 
 def request_ids(log):
     section("X-QG-Request-Id")
+    before_ms = int(time.time() * 1000)
     s, h = req("/rid/a")
     a = rid(h)
-    check("response has a 32-hex request ID", s == 200 and a and HEX32.match(a), a)
+    check("response has a UUIDv7 request ID", s == 200 and a and UUID7.match(a), a)
     check("origin received the same ID", origin_seen.get("/rid/a") == a, origin_seen.get("/rid/a"))
     e = log_entry(log, a)
     check("log line has the same request_id", e is not None, a)
+    if e:
+        id_ms = int(a.replace("-", "")[:12], 16)
+        check("ID time part == ts", id_ms == e["ts"], f"{id_ms} vs {e['ts']}")
+        check("ts is the arrival time (Unix ms)", before_ms - 5 <= e["ts"] <= before_ms + 5000, e["ts"])
     s, h = req("/rid/b")
     check("next request gets a different ID", rid(h) and rid(h) != a, rid(h))
 
     incoming = "3f2504e0-4f89-11d3-9a0c-0305e82c3301"
     s, h = req("/rid/in", {"X-QG-Request-Id": incoming})
-    check("valid incoming ID returned to the client", rid(h) == incoming, rid(h))
-    check("valid incoming ID sent to the origin", origin_seen.get("/rid/in") == incoming)
-    check("valid incoming ID logged", log_entry(log, incoming) is not None)
+    check("incoming UUID returned to the client", rid(h) == incoming, rid(h))
+    check("incoming UUID sent to the origin", origin_seen.get("/rid/in") == incoming)
+    check("incoming UUID logged", log_entry(log, incoming) is not None)
 
-    s, h = req("/rid/bad", {"X-QG-Request-Id": "bad id; drop table"})
-    check("malformed incoming ID replaced", rid(h) and HEX32.match(rid(h)), rid(h))
-    check("origin got the replacement, not the bad one",
-          origin_seen.get("/rid/bad") == rid(h), origin_seen.get("/rid/bad"))
+    for bad in ["client-chosen-id", "bad id; drop table"]:
+        s, h = req("/rid/bad", {"X-QG-Request-Id": bad})
+        check(f"non-UUID incoming ID replaced ({bad[:12]})", rid(h) and UUID7.match(rid(h)), rid(h))
+        check("origin got the replacement", origin_seen.get("/rid/bad") == rid(h))
 
     s, h = req("/blocked")
-    check("firewall block (403) carries the ID", s == 403 and rid(h) and HEX32.match(rid(h)), f"{s} {rid(h)}")
+    check("firewall block (403) carries the ID", s == 403 and rid(h) and UUID7.match(rid(h)), f"{s} {rid(h)}")
     s, h = req("/down")
-    check("origin down (502) carries the ID", s == 502 and rid(h) and HEX32.match(rid(h)), f"{s} {rid(h)}")
-    e = log_entry(log, rid(h))
-    check("502 logged with an error and no upstream_status",
-          e is not None and e["error"] and e["upstream_status"] is None,
-          (e or {}).get("error"))
+    check("origin down (502) carries the ID", s == 502 and rid(h) and UUID7.match(rid(h)), f"{s} {rid(h)}")
+    e = log_entry(log, rid(h)) or {}
+    check("502: error set, upstream_status 0, upstream_addr set",
+          e.get("error") and e.get("upstream_status") == 0
+          and e.get("upstream_addr") == f"127.0.0.1:{DEAD_PORT}", e.get("error"))
+
+
+def raw_lines(path):
+    try:
+        with open(path) as f:
+            return f.read()
+    except FileNotFoundError:
+        return ""
+
+
+def keys_in_order(line):
+    pairs = []
+    json.loads(line, object_pairs_hook=lambda p: pairs.append([k for k, _ in p]) or dict(p))
+    return pairs[-1]  # the outer object is built last
 
 
 def fields(log):
-    section("New log fields")
-    s, h = req("/f", {"User-Agent": "qg-test/1.0", "Referer": "https://ref.example/page"})
+    section("Fixed schema")
+    s, h = req("/f?token=supersecret&page=2", {"User-Agent": "qg-test/1.0"})
     e = log_entry(log, rid(h)) or {}
-    check("http_version", e.get("http_version") == "HTTP/1.1", e.get("http_version"))
+    line = next((l for l in raw_lines(log).splitlines() if rid(h) in l), "{}")
+    check("every key, in order", keys_in_order(line) == KEYS, len(keys_in_order(line)))
+    check("no null values", "null" not in line)
+    check("schema_version 1, gateway_id", e.get("schema_version") == 1 and e.get("gateway_id") == "gw-log")
+    check("path has no query string", e.get("path") == "/f", e.get("path"))
+    check("query value never written", "supersecret" not in raw_lines(log))
+    check("method, scheme, host, client_ip",
+          (e.get("method"), e.get("scheme"), e.get("host"), e.get("client_ip"))
+          == ("GET", "http", f"127.0.0.1:{GW_PORT}", "127.0.0.1"))
     check("user_agent", e.get("user_agent") == "qg-test/1.0", e.get("user_agent"))
-    check("referer", e.get("referer") == "https://ref.example/page", e.get("referer"))
-    check("upstream_status 200, error null", e.get("upstream_status") == 200 and e.get("error") is None)
-    check("no jwt when no rule read a token", e.get("jwt") is None, e.get("jwt"))
-    check("protection null on a normal request", "protection" in e and e["protection"] is None)
+    check("status 200, bytes = body size", e.get("status") == 200 and e.get("bytes") == 9,
+          f"{e.get('status')} {e.get('bytes')}")
+    check("upstream id, addr, status",
+          (e.get("upstream"), e.get("upstream_addr"), e.get("upstream_status"))
+          == ("origin", f"127.0.0.1:{ORIGIN_PORT}", 200))
+    check("upstream_us > 0 and <= dur_us", 0 < e.get("upstream_us", 0) <= e.get("dur_us", 0),
+          f"{e.get('upstream_us')} / {e.get('dur_us')}")
+    check("not blocked: block all empty",
+          e.get("block") == {"type": "", "action": "", "rule": "", "key": ""}, e.get("block"))
+    check("defaults: cache NONE, error '', user '', sample_rate 1",
+          (e.get("cache"), e.get("error"), e.get("user"), e.get("sample_rate")) == ("NONE", "", "", 1))
 
     s, h = req("/rewritten")
     e = log_entry(log, rid(h)) or {}
     check("status rewrite: upstream 200, client 203",
-          s == 203 and e.get("upstream_status") == 200 and e.get("response_status") == 203,
-          f"{e.get('upstream_status')} → {e.get('response_status')}")
+          s == 203 and e.get("upstream_status") == 200 and e.get("status") == 203,
+          f"{e.get('upstream_status')} → {e.get('status')}")
 
-    s, h = req("/upload", {"Content-Type": "text/plain"}, method="POST", data=b"x" * 1000)
+    s, h = req("/post", {"Content-Type": "text/plain"}, method="POST", data=b"y" * 50)
     e = log_entry(log, rid(h)) or {}
-    check("oversized body: 413, protection=body_too_large",
-          s == 413 and e.get("protection") == "body_too_large", f"{s} {e.get('protection')}")
+    check("req_bytes = request body size", s == 200 and e.get("req_bytes") == 50, e.get("req_bytes"))
+
+    section("block / allow_rule")
+    s, h = req("/blocked/x?k=v")
+    e = log_entry(log, rid(h)) or {}
+    check("firewall block", s == 403 and e.get("block") ==
+          {"type": "fw", "action": "block", "rule": "blocked", "key": "req.path=/blocked/x"},
+          e.get("block"))
+    check("blocked: no upstream fields",
+          (e.get("upstream"), e.get("upstream_addr"), e.get("upstream_status")) == ("", "", 0))
+
+    s, h = req("/old/page")
+    e = log_entry(log, rid(h)) or {}
+    check("firewall redirect", s == 301 and e.get("block") ==
+          {"type": "fw", "action": "redirect", "rule": "old-site", "key": "req.path=/old/page"},
+          e.get("block"))
+
+    s, h = req("/blocked", {"X-Office": "yes"})
+    e = log_entry(log, rid(h)) or {}
+    check("allow rule: passes, allow_rule logged",
+          s == 200 and e.get("allow_rule") == "office" and e.get("block", {}).get("type") == "",
+          e.get("allow_rule"))
+
+    forged = pyjwt.encode({"sub": "admin", "exp": int(time.time()) + 600}, "wrong", algorithm="HS256")
+    s, h = req("/api/x", {"Authorization": f"Bearer {forged}"})
+    e = log_entry(log, rid(h)) or {}
+    check("JWT rejected by a firewall rule: key has the deciding conditions",
+          s == 401 and e.get("block") == {"type": "fw", "action": "block", "rule": "api-jwt",
+                                          "key": "req.path=/api/x&header.authorization.jwt_valid=false"},
+          e.get("block"))
+    check("forged token: user stays ''", e.get("user") == "", e.get("user"))
 
     good = pyjwt.encode({"sub": "user-7", "exp": int(time.time()) + 600}, SECRET, algorithm="HS256")
     s, h = req("/api/x", {"Authorization": f"Bearer {good}"})
     e = log_entry(log, rid(h)) or {}
-    check("valid token: jwt.valid, jwt.sub logged",
-          s == 200 and e.get("jwt") == {"valid": True, "error": None, "sub": "user-7"}, e.get("jwt"))
-    forged = pyjwt.encode({"sub": "admin", "exp": int(time.time()) + 600}, "wrong", algorithm="HS256")
-    s, h = req("/api/x", {"Authorization": f"Bearer {forged}"})
+    check("valid token: user = sub (user_field)", s == 200 and e.get("user") == "user-7", e.get("user"))
+
+    req("/rl/a?api_key=k-secret-1", {"X-User": "u1"})
+    s, h = req("/rl/a?api_key=k-secret-1", {"X-User": "u1"})
     e = log_entry(log, rid(h)) or {}
-    check("forged token: 401, jwt.error=bad_signature, no sub",
-          s == 401 and e.get("jwt") == {"valid": False, "error": "bad_signature", "sub": None}, e.get("jwt"))
-    s, h = req("/plain", {"Authorization": f"Bearer {good}"})
+    b = e.get("block") or {}
+    check("rate limit: type rl, rule per-user",
+          s == 429 and (b.get("type"), b.get("action"), b.get("rule")) == ("rl", "block", "per-user"), b)
+    check("rate limit key: field=value pairs, query value hashed",
+          re.fullmatch(r"header\.x-user=u1&req\.query\.api_key=#[0-9a-f]{6}", b.get("key", "")) is not None,
+          b.get("key"))
+    check("rate-limit query value never written", "k-secret-1" not in raw_lines(log))
+
+    s, h = req("/upload", {"Content-Type": "text/plain"}, method="POST", data=b"x" * 1000)
     e = log_entry(log, rid(h)) or {}
-    check("token not read by any rule: jwt null", s == 200 and e.get("jwt") is None, e.get("jwt"))
+    check("oversized body: 413, block dos/body_too_large", s == 413 and e.get("block") ==
+          {"type": "dos", "action": "block", "rule": "body_too_large", "key": "client_ip=127.0.0.1"},
+          e.get("block"))
+
+    section("Client gives up (499)")
+    import socket
+    before = len(read_log(log))
+    sock = socket.create_connection(("127.0.0.1", GW_PORT))
+    sock.sendall(f"GET /slow HTTP/1.1\r\nHost: 127.0.0.1:{GW_PORT}\r\n\r\n".encode())
+    time.sleep(0.3)
+    sock.close()
+    e = None
+    end = time.time() + 5
+    while time.time() < end and e is None:
+        e = next((x for x in read_log(log)[before:] if x["path"] == "/slow"), None)
+        time.sleep(0.1)
+    e = e or {}
+    check("status 499, error 'client closed'",
+          e.get("status") == 499 and e.get("error") == "client closed",
+          f"{e.get('status')} {e.get('error')}")
 
 
 def rotation(log, gw):
@@ -316,9 +440,11 @@ def reload(cfg, log, tmp, gw_out):
 
     write_cfg(cfg, config(log2, accept_incoming=False))
     time.sleep(RELOAD_WAIT)
-    s, h = req("/reload/noaccept", {"X-QG-Request-Id": "client-chosen-id"})
-    check("accept_incoming=false: incoming ID ignored",
-          rid(h) and HEX32.match(rid(h)) and origin_seen.get("/reload/noaccept") == rid(h), rid(h))
+    incoming = "3f2504e0-4f89-11d3-9a0c-0305e82c3301"
+    s, h = req("/reload/noaccept", {"X-QG-Request-Id": incoming})
+    check("accept_incoming=false: incoming UUID ignored",
+          rid(h) and rid(h) != incoming and UUID7.match(rid(h))
+          and origin_seen.get("/reload/noaccept") == rid(h), rid(h))
 
     write_cfg(cfg, config(log2, logging_on=False))
     time.sleep(RELOAD_WAIT)
@@ -326,7 +452,7 @@ def reload(cfg, log, tmp, gw_out):
     s, h = req("/reload/off")
     time.sleep(0.5)
     check("logging off: no new lines", s == 200 and len(read_log(log2)) == before)
-    check("logging off: request ID still sent", rid(h) and HEX32.match(rid(h)), rid(h))
+    check("logging off: request ID still sent", rid(h) and UUID7.match(rid(h)), rid(h))
 
 
 def rejected(tmp):

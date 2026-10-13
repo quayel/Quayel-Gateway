@@ -1047,7 +1047,7 @@ mod tests {
     }
 
     #[test]
-    fn log_event_shows_original_and_rewritten_request() {
+    fn log_event_shows_the_original_request() {
         use crate::logging::event::LogEvent;
         use serde_json::json;
         let mut c = ctx("/api/a?x=1", &[("host", "public.example")]);
@@ -1065,24 +1065,13 @@ mod tests {
             &mut resp,
         );
 
-        let ev = serde_json::to_value(LogEvent::from_context(&c)).unwrap();
-        assert_eq!(ev["path"], "/api/a?x=1");
-        assert_eq!(ev["host"], "public.example");
-        assert_eq!(
-            ev["request_transform"],
-            json!({"rules": ["rw"], "path": "/v1/a?x=1", "host": "internal.test"})
-        );
-        assert_eq!(ev["response_transform"], json!({"rules": ["rs"]}));
+        // The log shows what the client sent, not the rewrite.
+        let ev = LogEvent::from_context(&c);
+        assert_eq!(&*ev.path, "/api/a?x=1");
+        assert_eq!(ev.host.as_deref(), Some("public.example"));
 
-        // No rule matched: nothing rewritten, empty lists.
-        let ev =
-            serde_json::to_value(LogEvent::from_context(&ctx("/p", &[("host", "h")]))).unwrap();
-        assert_eq!(ev["path"], "/p");
-        assert_eq!(
-            ev["request_transform"],
-            json!({"rules": [], "path": null, "host": null})
-        );
-        assert_eq!(ev["response_transform"], json!({"rules": []}));
+        let ev = LogEvent::from_context(&ctx("/p", &[("host", "h")]));
+        assert_eq!(&*ev.path, "/p");
     }
 
     #[test]

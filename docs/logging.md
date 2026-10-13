@@ -15,7 +15,8 @@ The gateway produces structured JSONL (JSON Lines) access logs — one JSON obje
         "path": "/var/log/quayel/access.jsonl",
         "buffer_size": 8192,
         "flush_interval_ms": 1000
-      }
+      },
+      "user_field": "header.authorization.jwt.sub"
     }
   }
 }
@@ -29,6 +30,7 @@ The gateway produces structured JSONL (JSON Lines) access logs — one JSON obje
 | `file.path` | string | `/var/log/quayel/access.jsonl` | Path to the JSONL log file |
 | `file.buffer_size` | int | `8192` | Events written per batch |
 | `file.flush_interval_ms` | int | `1000` | Write at least this often, in ms. Also how often the gateway checks whether the file was rotated |
+| `user_field` | string | unset | Condition field logged as `user` on every line (see [user and sample_rate](#user-and-sample_rate)) |
 
 All of these settings apply on [hot reload](configuration.md): changing the
 path, turning logging on or off, or changing a size starts a new writer. The
@@ -37,13 +39,17 @@ old writer finishes the events it already had, writing them to the old file.
 ## Request ID
 
 Every request gets an ID, sent to the origin and returned to the client in the
-`X-QG-Request-Id` header, and logged as `request_id`:
+`X-QG-Request-Id` header, and logged as `request_id`. It's created first,
+before ACME challenges, DoS protection and every plugin, so blocked, refused
+and failed requests (403, 429, 413, 502, …) carry one too.
 
-- If the request already has a well-formed `X-QG-Request-Id` (1–128
-  characters from `A-Z a-z 0-9 - _ . : / + =`), that ID is reused, so one ID
-  follows the request through every proxy in the chain.
-- Otherwise the gateway generates a random 128-bit ID (32 hex characters).
-  IDs don't repeat across restarts or between gateway instances.
+- IDs are **UUIDv7** (RFC 9562), e.g. `0192d4e8-7c1a-7b3e-9f2c-4e1a7b3d5c6f`:
+  48 bits of Unix milliseconds followed by random bits. They sort by time,
+  don't repeat across restarts or between gateway instances, and fit
+  ClickHouse's native `UUID` type. The time part equals the line's `ts`.
+- If the request already has an `X-QG-Request-Id` that is a valid UUID (any
+  version), it's reused, so one ID follows the request through every proxy in
+  the chain. Any other value is replaced with a new ID.
 
 ```json
 "server": { "request_id": { "accept_incoming": true } }
@@ -56,410 +62,216 @@ on the way back to the client.
 
 ## Log Format
 
-Each line is a complete JSON object:
+One JSON object per line. **Every line has every key, in the same order.** A
+value that doesn't apply gets its typed default (`""`, `0` or `false`), never
+`null` and never a missing key, so a graph or a ClickHouse column works on
+every line. `schema_version` changes only when a key is added or renamed.
+
+A request that went to the origin (pretty-printed here; one line in the file,
+about 600 bytes):
 
 ```json
 {
-  "timestamp": "2026-01-15T10:30:45.123456789+00:00",
-  "gateway_id": "gw-prod-01",
-  "gateway_name": "production",
-  "server_name": "api.example.com",
-  "config_version": "2026-01-15-001",
-  "request_id": "4f0c1a9e2b7d4c38a5e6f1d2c3b4a596",
-  "client_ip": "203.0.113.50",
-  "peer_ip": "203.0.113.50",
-  "client_ip_source": "X-Forwarded-For",
+  "schema_version": 1,
+  "gateway_id": "gw-1",
+  "ts": 1791892991482,
+  "request_id": "0192d4e8-7c1a-7b3e-9f2c-4e1a7b3d5c6f",
+  "client_ip": "203.0.113.7",
   "method": "GET",
   "scheme": "https",
   "host": "api.example.com",
-  "path": "/api/v1/users",
-  "http_version": "HTTP/1.1",
-  "user_agent": "curl/8.5.0",
-  "referer": null,
-  "response_status": 200,
+  "path": "/api/users",
+  "user_agent": "Mozilla/5.0 (X11; Linux x86_64)",
+  "status": 200,
+  "bytes": 512,
+  "req_bytes": 0,
+  "dur_us": 2104,
+  "country": "IN",
+  "region": "MH",
+  "asn": 24560,
+  "provider": "",
+  "datacenter": false,
+  "vpn": false,
+  "proxy": false,
+  "tor": false,
+  "risk": 5,
+  "block": { "type": "", "action": "", "rule": "", "key": "" },
+  "allow_rule": "",
+  "cache": "MISS",
+  "upstream": "origin-2",
+  "upstream_addr": "10.0.0.5:8080",
   "upstream_status": 200,
-  "error": null,
-  "bandwidth": { ... },
-  "ip_intel": { ... },
-  "protection": null,
-  "jwt": { ... },
-  "firewall": { ... },
-  "rate_limit": { ... },
-  "request_transform": { ... },
-  "cache": { ... },
-  "response_transform": { ... },
-  "load_balancer": { ... },
-  "termination_phase": null,
-  "timings_us": { ... }
+  "upstream_us": 1830,
+  "error": "",
+  "user": "user_123",
+  "sample_rate": 1
 }
+```
+
+How `block` looks when something stopped the request:
+
+```json
+"block": {"type":"fw",  "action":"block",    "rule":"block-dc",     "key":"ip.is_datacenter=true"}
+"block": {"type":"fw",  "action":"block",    "rule":"api-needs-jwt","key":"req.path=/api/orders&header.authorization.jwt_valid=false"}
+"block": {"type":"fw",  "action":"redirect", "rule":"old-site",     "key":"req.path=/old/page"}
+"block": {"type":"rl",  "action":"block",    "rule":"api-per-user", "key":"header.authorization.jwt.user_id=u_123&header.authorization.jwt.site_id=s_9"}
+"block": {"type":"dos", "action":"block",    "rule":"request_rate", "key":"client_ip=5.6.7.8"}
 ```
 
 ## Fields Reference
 
-### Identity
+### Identity and time
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `timestamp` | string | ISO 8601 timestamp with nanoseconds |
-| `gateway_id` | string | Gateway instance ID |
-| `gateway_name` | string | Gateway name |
-| `server_name` | string | Server name |
-| `config_version` | string | Config version string |
-| `request_id` | string | The `X-QG-Request-Id` for this request (see [Request ID](#request-id)) |
+| `schema_version` | int | Line layout version (`1`) |
+| `gateway_id` | string | From the config's `gateway_id` |
+| `ts` | int | Arrival time, Unix milliseconds |
+| `request_id` | string | UUIDv7, see [Request ID](#request-id). Never empty |
 
-### Client
+### Request
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `client_ip` | string | Resolved real client IP |
-| `peer_ip` | string | Direct TCP connection IP |
-| `client_ip_source` | string | How client_ip was determined |
+| `client_ip` | string | Client IP (after `client_ip` resolution) |
+| `method` | string | `GET`, `POST`, … |
+| `scheme` | string | `http` or `https` |
+| `host` | string | `Host` the client sent (before any `request_transform`) |
+| `path` | string | Path the client sent, **without the query string** |
+| `user_agent` | string | Capped at 256 bytes (ends in `…` when cut) |
 
-### HTTP
+The query string is never written anywhere in the log: not in `path`, not in
+`block.key` (query values are hashed, see below) and not in `error`.
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `method` | string | HTTP method |
-| `scheme` | string | Request scheme (http/https) |
-| `host` | string | Host the client sent (a `request_transform` rewrite is in `request_transform.host`) |
-| `path` | string | Path and query the client sent (a `request_transform` rewrite is in `request_transform.path`) |
-| `http_version` | string | `HTTP/1.0`, `HTTP/1.1` or `HTTP/2` |
-| `user_agent` | string \| null | `User-Agent` the client sent |
-| `referer` | string \| null | `Referer` the client sent |
-
-### Response
+### Result
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `response_status` | number | Status sent to the client |
-| `upstream_status` | number \| null | Status the origin sent, before `response_transform`. `null` when the request never got an answer from the origin (cache hit, block, connection error) |
-| `error` | string \| null | Why the request failed, e.g. the origin refused the connection or timed out. `null` on success and when a stored copy was served instead |
+| `status` | int | Status sent to the client (after `response_transform`). `499` when the client closed the connection before the response was complete; `0` when no response was sent |
+| `bytes` | int | Response body bytes sent to the client |
+| `req_bytes` | int | Request body bytes read from the client |
+| `dur_us` | int | Total time in the gateway, microseconds |
 
-### Protection
+### IP intelligence
 
-`protection` names the `server.protection` / `server.limits` check that refused
-the request: `banned`, `request_rate` or `body_too_large`. `null` when the
-request wasn't refused. Connections refused before a request is read
-(connection limits, slow or oversized headers) never produce a log line.
+`""` / `0` / `false` when `ip_intel` is off or has no data for the IP.
 
-### JWT
+| Field | Type | Description |
+|-------|------|-------------|
+| `country` | string | ISO country code |
+| `region` | string | Region / subdivision code |
+| `asn` | int | Autonomous system number |
+| `provider` | string | Hosting provider label for datacenter ranges |
+| `datacenter` | bool | Datacenter / hosting range |
+| `vpn` | bool | Known VPN |
+| `proxy` | bool | Known proxy |
+| `tor` | bool | Tor exit node |
+| `risk` | int | Risk score, 0–100 |
 
-```json
-{
-  "jwt": { "valid": true, "error": null, "sub": "user-123" }
-}
-```
+### block and allow_rule
 
-The result for the token in the `Authorization` header. It's only present when
-a rule read the token, so logging never verifies a token by itself; otherwise
-`jwt` is `null`.
+A request can only be stopped once, so one `block` object covers the firewall,
+rate limiting and DoS protection.
 
-| Field | Description |
-|-------|-------------|
-| `valid` | The token passed every check against the configured `jwt` keys |
-| `error` | Why it failed (`missing`, `malformed`, `expired`, `bad_signature`, ...), or `unverified` when no `jwt` keys are configured |
-| `sub` | The `sub` claim, only for a valid token |
+| Field | Type | Description |
+|-------|------|-------------|
+| `block.type` | string | `""` (not blocked), `fw`, `rl` or `dos` |
+| `block.action` | string | `block`, or `redirect` for a firewall redirect rule |
+| `block.rule` | string | Firewall / rate-limit rule ID, or the DoS check: `banned`, `request_rate`, `body_too_large` |
+| `block.key` | string | What the rule matched on, as `field=value` pairs joined by `&` |
+| `allow_rule` | string | Firewall `allow` rule that let the request skip the rules after it |
 
-### Bandwidth
+`block.key`:
 
-```json
-{
-  "bandwidth": {
-    "client_bytes_in": 1234,
-    "client_bytes_out": 5678,
-    "total_client_bytes": 6912,
-    "upstream_bytes_out": 1234,
-    "upstream_bytes_in": 5678,
-    "total_origin_bytes": 6912
-  }
-}
-```
+- **Firewall:** the conditions that made the rule match. For `A and B or C`,
+  that's `A&B` when the first branch matched, or just `C`.
+- **Rate limit:** the key the limiter counted on, one pair per key part.
+- **DoS protection:** `client_ip=…`.
+- Values from the query string (`req.query.*`, `http.query.*`) are written as
+  `#` plus the first 6 hex digits of their SHA-256, e.g.
+  `req.query.api_key=#a91f3c`. The same value always gives the same hash, so
+  "top keys" queries still work. `req.path` values are cut at `?`.
+- Capped at 256 bytes (ends in `…` when cut).
 
-| Field | Description |
-|-------|-------------|
-| `client_bytes_in` | Bytes received from client |
-| `client_bytes_out` | Bytes sent to client |
-| `total_client_bytes` | client_bytes_in + client_bytes_out |
-| `upstream_bytes_out` | Bytes sent to upstream |
-| `upstream_bytes_in` | Bytes received from upstream |
-| `total_origin_bytes` | upstream_bytes_out + upstream_bytes_in |
+JWT has no section of its own: a token shows up through the rule that used
+it (`header.authorization.jwt_valid=false` in a firewall key, a claim in a
+rate-limit key), or through `user`.
 
-### IP Intelligence
+Requests refused at the connection level (connection limits, slow or
+oversized headers) never become an HTTP request, so they aren't in the access
+log.
 
-```json
-{
-  "ip_intel": {
-    "country": "US",
-    "region": "CA",
-    "asn": 16509,
-    "provider": "Amazon AWS",
-    "network_type": "datacenter",
-    "is_vpn": false,
-    "is_proxy": false,
-    "is_datacenter": true,
-    "is_mobile": null,
-    "is_tor": false,
-    "risk_score": 10
-  }
-}
-```
+### Cache and upstream
 
-See [IP Intelligence](plugins/ip-intel.md) for field details.
+| Field | Type | Description |
+|-------|------|-------------|
+| `cache` | string | `NONE`, `HIT`, `MISS`, `EXPIRED`, `BYPASS`, `DYNAMIC`, `STALE`, `REVALIDATING`, `REVALIDATED` (same as the `Quayel-Cache-Status` header) |
+| `upstream` | string | Load balancer target ID. `""` when the request wasn't sent to an origin (cache hit, blocked) |
+| `upstream_addr` | string | `host:port` it was sent to |
+| `upstream_status` | int | Status the origin sent, before `response_transform`. `0` when the origin never answered |
+| `upstream_us` | int | From sending the request to the origin until its response header arrived (or until it failed), microseconds |
+| `error` | string | Why the request failed (connection refused, timeout, …), or `client closed` with status `499` |
 
-### Firewall
+### user and sample_rate
 
-```json
-{
-  "firewall": {
-    "matched": true,
-    "rule_id": "block-tor",
-    "action": "Block"
-  }
-}
-```
+| Field | Type | Description |
+|-------|------|-------------|
+| `user` | string | Value of the condition field set in `plugins.logging.user_field`, e.g. `"header.authorization.jwt.sub"`. `""` when unset or empty |
+| `sample_rate` | int | How many requests this line stands for. Always `1` today; count requests with `sum(sample_rate)` so queries stay right once sampling is added |
 
-| Field | Description |
-|-------|-------------|
-| `matched` | Whether any firewall rule matched |
-| `rule_id` | ID of the matched rule |
-| `action` | Action taken (`Allow`, `Block`, `Redirect`, etc.) |
-
-### Rate Limiting
-
-```json
-{
-  "rate_limit": {
-    "matched": true,
-    "rule_id": "api-limit",
-    "blocked": false,
-    "remaining": 87
-  }
-}
-```
-
-| Field | Description |
-|-------|-------------|
-| `matched` | Whether any rate limit rule matched |
-| `rule_id` | ID of the matched rule |
-| `blocked` | Whether the request was blocked |
-| `remaining` | Remaining requests in current window |
-
-### Request Transform
-
-```json
-{
-  "request_transform": {
-    "rules": ["rt-api-v1"],
-    "path": "/v1/users?page=2",
-    "host": null
-  }
-}
-```
-
-| Field | Description |
-|-------|-------------|
-| `rules` | IDs of the `request_transform` rules that matched, in order. Empty when none matched |
-| `path` | Path and query sent to the origin, when a rule rewrote them; otherwise `null` |
-| `host` | Host sent to the origin, when a rule changed the `Host` header; otherwise `null` |
-
-### Cache
-
-```json
-{
-  "cache": {
-    "rule_id": "cache-static",
-    "status": "HIT",
-    "key_hash": "a1b2c3d4..."
-  }
-}
-```
-
-| Field | Description |
-|-------|-------------|
-| `rule_id` | ID of the matched cache rule |
-| `status` | Cache status (see below) |
-| `key_hash` | Hash of the cache key |
-
-#### Cache status values
-
-| Status | Description |
-|--------|-------------|
-| `NONE` | No cache rule matched |
-| `HIT` | Fresh cache hit — served from cache |
-| `MISS` | Cache miss — fetched from upstream |
-| `EXPIRED` | Entry past its stale-while-revalidate window, kept only as a stale-if-error fallback; fetched from upstream |
-| `BYPASS` | Cache bypassed by rule |
-| `DYNAMIC` | (Reserved for future use) |
-| `STALE` | Stored copy served because the origin failed (stale-if-error) |
-| `REVALIDATING` | Served stale data while another request refreshes cache |
-| `REVALIDATED` | Origin answered 304; stored copy served and its TTL restarted |
-
-### Response Transform
-
-```json
-{
-  "response_transform": {
-    "rules": ["rs-powered-by", "rs-cors"]
-  }
-}
-```
-
-| Field | Description |
-|-------|-------------|
-| `rules` | IDs of the `response_transform` rules that matched, in order. Always empty for gateway blocks (403, 429, ...), which aren't transformed |
-
-### Load Balancer
-
-```json
-{
-  "load_balancer": {
-    "lb_id": "default",
-    "algorithm": "RoundRobin",
-    "target_id": "backend-1",
-    "target": "10.0.0.1"
-  }
-}
-```
-
-| Field | Description |
-|-------|-------------|
-| `lb_id` | Load balancer pool ID |
-| `algorithm` | Algorithm used |
-| `target_id` | Selected target ID |
-| `target` | Selected target host |
-
-### Termination Phase
-
-```json
-{
-  "termination_phase": "Firewall"
-}
-```
-
-| Value | Description |
-|-------|-------------|
-| `null` | Request completed normally |
-| `IpIntel` | Terminated by IP Intel plugin |
-| `Firewall` | Terminated by Firewall (blocked/redirected) |
-| `RateLimit` | Terminated by Rate Limiting (429) |
-| `Cache` | Terminated by Cache (HIT served) |
-| `LoadBalancer` | Terminated by Load Balancer (no upstream) |
-| `Protection` | Refused by `server.protection` / `server.limits` (see `protection`) |
-
-### Timings
-
-```json
-{
-  "timings_us": {
-    "ip_intel_us": 42,
-    "firewall_us": 3,
-    "rate_limit_us": 0,
-    "cache_lookup_us": null,
-    "load_balancer_us": 7,
-    "upstream_connect_us": null,
-    "upstream_ttfb_us": null,
-    "total_us": 1091
-  }
-}
-```
-
-All timings are in microseconds (μs).
-
-| Field | Description |
-|-------|-------------|
-| `ip_intel_us` | Time spent in IP intelligence lookup |
-| `firewall_us` | Time spent evaluating firewall rules |
-| `rate_limit_us` | Time spent in rate limit checking |
-| `cache_lookup_us` | Time spent in cache lookup |
-| `load_balancer_us` | Time spent selecting upstream target |
-| `upstream_connect_us` | Time to connect to upstream |
-| `upstream_ttfb_us` | Upstream time to first byte |
-| `total_us` | Total request processing time |
+`user_field` uses the same verified-token cache as the rules: a token a rule
+already checked costs nothing more. With `jwt` keys configured, `jwt.*` fields
+only return claims from tokens that pass verification, so a forged token logs
+`user: ""`.
 
 ## Log Analysis Examples
 
-### Count requests by country
+### What is blocking traffic
 
 ```bash
-cat access.jsonl | jq -r '.ip_intel.country' | sort | uniq -c | sort -rn | head -20
+jq -r 'select(.block.type != "") | "\(.block.type) \(.block.rule)"' access.jsonl | sort | uniq -c | sort -rn
 ```
 
-### Find blocked requests
+### Who a rate-limit rule is hitting
 
 ```bash
-cat access.jsonl | jq 'select(.firewall.matched == true)' | wc -l
+jq -r 'select(.block.rule == "api-per-user") | .block.key' access.jsonl | sort | uniq -c | sort -rn | head
 ```
 
-### Find rate-limited requests
+### Requests by country
 
 ```bash
-cat access.jsonl | jq 'select(.rate_limit.blocked == true)'
+jq -r '.country' access.jsonl | sort | uniq -c | sort -rn
 ```
 
-### Average response time
+### Datacenter / VPN / Tor traffic
 
 ```bash
-cat access.jsonl | jq '.timings_us.total_us' | awk '{sum+=$1; n++} END {print sum/n " μs"}'
-```
-
-### Requests per second
-
-```bash
-cat access.jsonl | jq -r '.timestamp' | cut -c1-19 | uniq -c | sort -rn | head
-```
-
-### Top IPs by request count
-
-```bash
-cat access.jsonl | jq -r '.client_ip' | sort | uniq -c | sort -rn | head -20
-```
-
-### VPN/Tor traffic
-
-```bash
-cat access.jsonl | jq 'select(.ip_intel.is_vpn == true or .ip_intel.is_tor == true)'
-```
-
-### High-risk requests
-
-```bash
-cat access.jsonl | jq 'select(.ip_intel.risk_score > 30)'
+jq -c 'select(.datacenter or .vpn or .tor) | {client_ip, asn, provider, path, status}' access.jsonl
 ```
 
 ### Cache hit rate
 
 ```bash
-total=$(cat access.jsonl | jq 'select(.cache.status != "NONE")' | wc -l)
-hits=$(cat access.jsonl | jq 'select(.cache.status == "HIT")' | wc -l)
-echo "Cache hit rate: $(echo "scale=2; $hits * 100 / $total" | bc)%"
+jq -r 'select(.cache != "NONE") | .cache' access.jsonl | sort | uniq -c
 ```
 
-### Cache revalidation events
+### Slow requests (>100 ms) and slow origins
 
 ```bash
-# Count concurrent stale serving events
-cat access.jsonl | jq 'select(.cache.status == "REVALIDATING")' | wc -l
-
-# Count stale fallbacks (lock race condition)
-cat access.jsonl | jq 'select(.cache.status == "STALE")' | wc -l
+jq -c 'select(.dur_us > 100000) | {path, dur_us, upstream, upstream_us}' access.jsonl
 ```
 
-### Slow requests (>100ms)
+### Origin errors and clients giving up
 
 ```bash
-cat access.jsonl | jq 'select(.timings_us.total_us > 100000)'
+jq -c 'select(.error != "") | {ts, path, status, upstream_addr, error}' access.jsonl
 ```
 
 ### Follow one request across services
 
 ```bash
-jq 'select(.request_id == "4f0c1a9e2b7d4c38a5e6f1d2c3b4a596")' access.jsonl
-```
-
-### Origin errors
-
-```bash
-jq 'select(.error != null) | {timestamp, path, response_status, error}' access.jsonl
+jq 'select(.request_id == "0192d4e8-7c1a-7b3e-9f2c-4e1a7b3d5c6f")' access.jsonl
 ```
 
 ## How events are written
@@ -468,6 +280,9 @@ jq 'select(.error != null) | {timestamp, path, response_status, error}' access.j
   thread (`qg-access-log`) writes events in batches (`file.buffer_size`
   events, or every `file.flush_interval_ms`). Requests never wait for the
   disk, and a slow disk can't hold up the gateway's other background work.
+- Lines are formatted on the writer thread by a hand-written JSON writer
+  (fixed key bytes, integers without allocation, strings copied as they are
+  unless they need escaping). The request thread only collects raw values.
 - Lines go through a 1 MiB write buffer, so a batch of thousands of events
   takes a few `write()` calls. Each batch is flushed to the OS but not
   `fsync`ed: a gateway crash loses nothing already flushed, a machine crash

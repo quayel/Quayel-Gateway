@@ -199,9 +199,14 @@ impl RateLimitPlugin {
             }
 
             if count > rule.limit {
-                {
-                    ctx.rate_limit.blocked = true;
-                }
+                ctx.rate_limit.blocked = true;
+                let key = log_key(ctx, &rule.key);
+                ctx.block = BlockResult {
+                    kind: "rl",
+                    action: "block",
+                    rule: Some(Arc::clone(&rule.id)),
+                    key,
+                };
 
                 let status = rule.action.status.unwrap_or(429);
                 ctx.status_code = Some(status);
@@ -307,6 +312,31 @@ fn resolve_rate_limit_key_into(ctx: &mut RequestContext, key_parts: &[String], o
             None => out.push_str("unknown"),
         }
     }
+}
+
+/// The limited key for the access log: each key part as `field=value`, joined
+/// by `&` (see `logging::key`). Only built for a request that was limited.
+fn log_key(ctx: &mut RequestContext, key_parts: &[String]) -> String {
+    use crate::logging::key::{push_pair, push_text};
+    let mut out = String::new();
+    for part in key_parts {
+        if part.contains('{') {
+            let v = resolve_template_key(ctx, part);
+            push_text(&mut out, part, &v);
+            continue;
+        }
+        match part.as_str() {
+            "req.client_ip" | "http.ip" | "req.ip" => {
+                push_text(&mut out, part, &ctx.client_ip.to_string())
+            }
+            "req.peer_ip" | "http.peer_ip" => push_text(&mut out, part, &ctx.peer_ip.to_string()),
+            _ => {
+                let v = resolve_condition_value(ctx, part);
+                push_pair(&mut out, part, v.as_ref());
+            }
+        }
+    }
+    out
 }
 
 /// Legacy template-based key resolution (backward compatible).

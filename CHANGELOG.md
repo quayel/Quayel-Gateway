@@ -12,6 +12,36 @@ write entries for people running the gateway, not for people reading the diff.
 
 ## [Unreleased]
 
+### ⚠️ Breaking changes
+
+- **New access-log line format (`schema_version: 1`).** Each line now has the
+  same 33 flat keys in the same order, with `""` / `0` / `false` instead of
+  `null`, so dashboards and ClickHouse columns work on every line. Lines are
+  about 600 bytes instead of about 1.4 KB. Update anything that reads the
+  log:
+  - Renamed: `timestamp` (RFC 3339 text) → `ts` (Unix milliseconds),
+    `response_status` → `status`, `ip_intel.*` → `country`, `region`, `asn`,
+    `provider`, `datacenter`, `vpn`, `proxy`, `tor`, `risk`,
+    `bandwidth.client_bytes_out` → `bytes`, `client_bytes_in` → `req_bytes`,
+    `timings_us.total_us` → `dur_us`, `load_balancer.target_id` → `upstream`.
+  - `firewall`, `rate_limit` and `protection` are replaced by one `block`
+    object: `type` (`fw`, `rl`, `dos`), `action` (`block`, `redirect`), `rule`
+    and `key` (what the rule matched on, as `field=value` pairs). A firewall
+    `allow` rule is logged as `allow_rule`.
+  - Removed: `gateway_name`, `server_name`, `config_version`, `peer_ip`,
+    `client_ip_source`, `http_version`, `referer`, `jwt`, the transform rule
+    lists, `cache.rule_id` / `key_hash`, the per-plugin timings and the rest of
+    `bandwidth`.
+  - New: `upstream_addr`, `upstream_us`, `allow_rule`, `user`,
+    `sample_rate` (always 1 for now; count with `sum(sample_rate)`).
+  - **`path` no longer includes the query string**, and query values never
+    appear anywhere in the log (rate-limit keys log a short hash instead).
+  - A client that disconnects before the response is complete is logged as
+    `status: 499`, `error: "client closed"`.
+- `X-QG-Request-Id` values are UUIDv7 now, and an incoming ID is only reused
+  when it's a valid UUID. Other values (any string up to 128 characters was
+  accepted before) are replaced.
+
 ### Added
 
 - **JWT verification.** A new top-level `jwt` section defines keys once:
@@ -31,23 +61,25 @@ write entries for people running the gateway, not for people reading the diff.
   client reusing its token pays for the signature check once rather than on
   every request.
 - `scripts/test/jwt-verify.py` end-to-end test, also run by `run-all.sh`.
-- **`X-QG-Request-Id`.** Every request gets an ID that is logged as
-  `request_id`, sent to the origin and returned to the client. A well-formed
-  incoming `X-QG-Request-Id` is reused, so one ID follows the request through
-  every proxy; set `server.request_id.accept_incoming: false` to always
-  generate a new one.
-- New access-log fields: `http_version`, `user_agent`, `referer`,
-  `upstream_status` (before `response_transform`), `error` (why the request
-  failed), `protection` (which DoS check refused it) and `jwt` (`valid`,
-  `error`, `sub`; only when a rule read the token).
+- **`X-QG-Request-Id`.** Every request gets a UUIDv7 ID, created before
+  anything else runs, that is logged as `request_id`, sent to the origin and
+  returned to the client, blocked and failed requests included. An incoming
+  `X-QG-Request-Id` that is a valid UUID is reused, so one ID follows the
+  request through every proxy; set `server.request_id.accept_incoming: false`
+  to always generate a new one.
+- `plugins.logging.user_field`: a condition field (e.g.
+  `header.authorization.jwt.sub`) logged as `user` on every line.
 - `plugins.logging.queue_size` (default 65,536): the most access-log events
   held in memory while waiting for the disk.
 
 ### Changed
 
-- `request_id` in the access log is now a random 128-bit ID (32 hex
-  characters) instead of a counter that restarted at 0 on every restart and
-  repeated across instances.
+- `request_id` in the access log is now a UUIDv7 instead of a counter that
+  restarted at 0 on every restart and repeated across instances.
+- Access log lines are formatted by a hand-written JSON writer on the writer
+  thread instead of serde, and the request thread only collects raw values.
+  Formatting a line takes about 5× less CPU (1.9 µs → 0.4 µs) and the
+  request-thread part about 9× less (0.6 µs → 0.07 µs).
 - The access log is written by a dedicated thread (`qg-access-log`) through a
   1 MiB write buffer, instead of a task on the background runtime with an
   8 KiB buffer. A slow disk no longer holds up JWKS refreshes, Auto-SSL or
@@ -78,6 +110,8 @@ write entries for people running the gateway, not for people reading the diff.
   wasted work (signature checks, regexes) is skipped.
 - Origin connection errors (502s) now carry `X-QG-Request-Id` like every
   other response.
+- The access log's response size (`bandwidth.client_bytes_out`, now `bytes`)
+  was always 0. It's now the number of body bytes sent to the client.
 - The config watcher no longer reloads an unchanged config 5 seconds after
   startup. That extra reload rebuilt every compiled rule and restarted JWKS
   fetches for nothing.
