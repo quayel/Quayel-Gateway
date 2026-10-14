@@ -11,9 +11,14 @@
 //!   backoff (0.5 s doubling to 30 s), oldest first. A 4xx other than 408/429
 //!   means the destination refuses the data: the batch is dropped and counted
 //!   rather than retried forever.
-//! - Over `max_buffer_bytes` the oldest batches go to the spool directory, or
-//!   are dropped and counted without one. Spooled batches are sent first once
-//!   the destination answers again, also after a restart.
+//! - Up to `concurrency` batches are in flight at once, so a destination with
+//!   long round trips doesn't cap throughput at one batch per round trip.
+//! - With a spool, the oldest batches go to disk once memory passes 3/4 of
+//!   `max_buffer_bytes` (lower if the writer's hand-overs are big: room for
+//!   two of them is always kept), so `push()` doesn't have to drop new
+//!   lines. Spooled batches are sent first once the destination answers
+//!   again, also after a restart. Without a spool, lines past
+//!   `max_buffer_bytes` are dropped, counted and logged.
 //! - Every batch has a UUIDv7 ID that survives retries and the spool: it's
 //!   ClickHouse's `insert_deduplication_token` and the Elasticsearch document
 //!   ID prefix, so a retried batch that had actually landed isn't stored twice.
@@ -23,12 +28,13 @@ use crate::logging::encode;
 use crate::logging::metrics::{registry, SinkStats};
 use crate::logging::spool::Spool;
 use parking_lot::Mutex;
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::io::Write;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::Notify;
+use tokio::task::JoinSet;
 use tracing::{error, info, warn};
 
 const BACKOFF_MIN: Duration = Duration::from_millis(500);
@@ -53,6 +59,11 @@ struct Shared {
     inbox: Mutex<Inbox>,
     notify: Notify,
     stats: Arc<SinkStats>,
+    /// Lines push() dropped since the task last logged it.
+    backstop_dropped: AtomicU64,
+    /// Largest single hand-over from the writer, in bytes. The spool keeps
+    /// room for two of them so a whole hand-over is never dropped.
+    largest_push: AtomicU64,
     /// Set when the task has stopped (everything sent, spooled or counted).
     done: Arc<AtomicBool>,
 }
@@ -71,6 +82,8 @@ impl SinkHandle {
             inbox: Mutex::new(Inbox::default()),
             notify: Notify::new(),
             stats: registry().sink(&sink.name),
+            backstop_dropped: AtomicU64::new(0),
+            largest_push: AtomicU64::new(0),
             done: Arc::new(AtomicBool::new(false)),
         });
         let h = Self {
@@ -79,11 +92,12 @@ impl SinkHandle {
             max_buffer_bytes: sink.max_buffer_bytes,
         };
         info!(
-            "Log sink {} ({}) started: batch_size={}, flush_interval_ms={}, spool={}",
+            "Log sink {} ({}) started: batch_size={}, flush_interval_ms={}, concurrency={}, spool={}",
             sink.name,
             sink.format.type_name(),
             sink.batch_size,
             sink.flush_interval_ms,
+            sink.concurrency,
             sink.spool_dir.as_deref().unwrap_or("off")
         );
         handle.spawn(Shipper::new(sink, shared).run());
@@ -101,14 +115,21 @@ impl SinkHandle {
             return;
         }
         let stats = &self.shared.stats;
-        // The task moves batches out of memory (to the spool) when it can;
-        // this is the backstop for when it can't keep up at all.
+        self.shared
+            .largest_push
+            .fetch_max(data.len() as u64, Ordering::Relaxed);
+        // The task moves batches out of memory (to the spool) well before
+        // this; it's the backstop for no spool, or a spool that can't keep up.
         if stats.buffered_bytes.load(Ordering::Relaxed) as usize + data.len()
             > self.max_buffer_bytes
         {
             stats
                 .dropped_lines
                 .fetch_add(lines as u64, Ordering::Relaxed);
+            self.shared
+                .backstop_dropped
+                .fetch_add(lines as u64, Ordering::Relaxed);
+            self.shared.notify.notify_one();
             return;
         }
         let wake = {
@@ -163,6 +184,8 @@ struct Shipper {
     failures_since_warn: u64,
     failing: bool,
     last_rescan: Instant,
+    /// IDs of spooled batches in flight, so they aren't sent twice.
+    inflight_spooled: HashSet<String>,
 }
 
 impl Shipper {
@@ -214,58 +237,90 @@ impl Shipper {
             failures_since_warn: 0,
             failing: false,
             last_rescan: Instant::now(),
+            inflight_spooled: HashSet::new(),
         }
     }
 
     async fn run(mut self) {
         let flush = Duration::from_millis(self.sink.flush_interval_ms);
         let tick = (flush / 4).clamp(Duration::from_millis(10), Duration::from_millis(250));
+        let mut inflight: JoinSet<(Batch, Outcome)> = JoinSet::new();
+        if matches!(self.sink.format, SinkFormat::ClickHouse) {
+            let (client, sink) = (self.client.clone(), Arc::clone(&self.sink));
+            tokio::spawn(async move { check_clickhouse(&client, &sink).await });
+        }
         loop {
             let closed = self.cut(flush);
             self.enforce_limit();
+            self.report_backstop();
 
             if closed {
+                while let Some(r) = inflight.join_next().await {
+                    self.joined(r);
+                }
                 self.stop().await;
                 self.shared.done.store(true, Ordering::Release);
                 return;
             }
 
-            let ready = self.retry_at.is_none_or(|t| Instant::now() >= t);
-            let next = if ready { self.next_batch() } else { None };
-            match next {
-                Some(batch) => {
-                    // Keep cutting and spilling while the request is in
-                    // flight, so a slow destination fills the spool rather
-                    // than the memory backstop in push().
-                    let client = self.client.clone();
-                    let sink = Arc::clone(&self.sink);
-                    let fut = async move {
-                        let o = send(&client, &sink, &batch).await;
-                        (batch, o)
-                    };
-                    tokio::pin!(fut);
-                    let (batch, outcome) = loop {
-                        tokio::select! {
-                            r = &mut fut => break r,
-                            _ = self.shared.notify.notified() => {}
-                            _ = tokio::time::sleep(tick) => {}
-                        }
-                        self.cut(flush);
-                        self.enforce_limit();
-                    };
-                    self.settle(batch, outcome);
+            // Fill the free send slots. Cutting and spilling carry on while
+            // requests are in flight, so a slow destination fills the spool
+            // rather than the memory backstop in push().
+            while inflight.len() < self.sink.concurrency
+                && self.retry_at.is_none_or(|t| Instant::now() >= t)
+            {
+                let Some(batch) = self.next_batch() else { break };
+                if batch.spooled {
+                    self.inflight_spooled.insert(batch.id.clone());
                 }
-                None => {
-                    let wait = match self.retry_at {
-                        Some(t) => t.saturating_duration_since(Instant::now()).min(tick),
-                        None => tick,
-                    };
-                    tokio::select! {
-                        _ = self.shared.notify.notified() => {}
-                        _ = tokio::time::sleep(wait) => {}
-                    }
-                }
+                let client = self.client.clone();
+                let sink = Arc::clone(&self.sink);
+                inflight.spawn(async move {
+                    let o = send(&client, &sink, &batch).await;
+                    (batch, o)
+                });
             }
+
+            let wait = match self.retry_at {
+                Some(t) => t.saturating_duration_since(Instant::now()).min(tick),
+                None => tick,
+            };
+            tokio::select! {
+                Some(r) = inflight.join_next(), if !inflight.is_empty() => self.joined(r),
+                _ = self.shared.notify.notified() => {}
+                _ = tokio::time::sleep(wait) => {}
+            }
+        }
+    }
+
+    fn joined(&mut self, r: Result<(Batch, Outcome), tokio::task::JoinError>) {
+        match r {
+            Ok((batch, outcome)) => {
+                self.inflight_spooled.remove(&batch.id);
+                self.settle(batch, outcome);
+            }
+            // A send task panicked: its batch is gone. Spooled batches are
+            // still on disk and get picked up again by ID.
+            Err(e) => {
+                self.inflight_spooled.clear();
+                error!("Log sink {}: send task failed: {}", self.sink.name, e);
+            }
+        }
+    }
+
+    /// Log lines push() dropped because memory was full.
+    fn report_backstop(&mut self) {
+        let n = self.shared.backstop_dropped.swap(0, Ordering::Relaxed);
+        if n > 0 {
+            let hint = if self.spool.is_some() {
+                "spool can't keep up"
+            } else {
+                "set spool_dir or raise concurrency"
+            };
+            self.warn(&format!(
+                "dropped {n} new lines: memory buffer full ({} bytes, {hint})",
+                self.sink.max_buffer_bytes
+            ));
         }
     }
 
@@ -340,12 +395,21 @@ impl Shipper {
         self.queue.push_front(b);
     }
 
-    /// Keep memory under max_buffer_bytes: oldest batches to the spool, or
-    /// dropped without one. The newest batch always stays in memory.
+    /// Keep memory under max_buffer_bytes. With a spool, oldest batches go
+    /// to disk early enough that push() keeps room for new lines: the larger
+    /// of 1/4 of the buffer and two of the biggest hand-overs stays free.
+    /// Without one they're dropped past the limit. The newest batch always
+    /// stays in memory.
     fn enforce_limit(&mut self) {
+        let max = self.sink.max_buffer_bytes;
+        let limit = if self.spool.is_some() {
+            let largest = self.shared.largest_push.load(Ordering::Relaxed) as usize;
+            max.saturating_sub((max / 4).max(largest.saturating_mul(2)))
+        } else {
+            max
+        };
         while self.queue.len() > 1
-            && self.shared.stats.buffered_bytes.load(Ordering::Relaxed) as usize
-                > self.sink.max_buffer_bytes
+            && self.shared.stats.buffered_bytes.load(Ordering::Relaxed) as usize > limit
         {
             let Some(b) = self.pop_front() else { break };
             self.spill(b, "memory buffer full");
@@ -385,7 +449,7 @@ impl Shipper {
                 s.rescan();
                 self.last_rescan = Instant::now();
             }
-            while let Some(e) = s.oldest() {
+            while let Some(e) = s.oldest_except(&self.inflight_spooled) {
                 match s.read(&e) {
                     Ok(data) => {
                         return Some(Batch {
@@ -456,8 +520,11 @@ impl Shipper {
                     "send failed, retrying in {:.1}s: {msg}",
                     self.backoff.as_secs_f64()
                 ));
-                self.retry_at = Some(Instant::now() + self.backoff);
-                self.backoff = (self.backoff * 2).min(BACKOFF_MAX);
+                // Batches in flight together fail together: back off once.
+                if self.retry_at.is_none_or(|t| Instant::now() >= t) {
+                    self.retry_at = Some(Instant::now() + self.backoff);
+                    self.backoff = (self.backoff * 2).min(BACKOFF_MAX);
+                }
                 if b.spooled {
                     // Still in the spool; retried from there.
                 } else if self.spool.is_some() {
@@ -603,6 +670,43 @@ async fn send(client: &reqwest::Client, sink: &CompiledSink, b: &Batch) -> Outco
         Outcome::Retry(msg)
     } else {
         Outcome::Refused(msg)
+    }
+}
+
+/// An empty INSERT on the sink's own URL: checks the address, credentials,
+/// database and table without writing a row, so a missing table is a clear
+/// error at startup instead of only a drop counter. Lines are still queued
+/// either way; an unreachable server is just retried like any outage.
+async fn check_clickhouse(client: &reqwest::Client, sink: &CompiledSink) {
+    // ClickHouse answers 411 to a POST without Content-Length.
+    let mut req = client
+        .post(&sink.url)
+        .header(reqwest::header::CONTENT_LENGTH, "0")
+        .body(Vec::new());
+    for (k, v) in &sink.headers {
+        req = req.header(k.as_str(), v.0.as_str());
+    }
+    match req.send().await {
+        Ok(r) if r.status().is_success() => {
+            info!("Log sink {}: ClickHouse table check ok", sink.name)
+        }
+        Ok(r) => {
+            let status = r.status().as_u16();
+            let text = r.text().await.unwrap_or_default();
+            error!(
+                "Log sink {}: ClickHouse refuses inserts (HTTP {}): {} \
+                 (create the table with scripts/clickhouse/access_log.sql; \
+                 lines are dropped until then)",
+                sink.name,
+                status,
+                snippet(&text)
+            );
+        }
+        Err(e) => warn!(
+            "Log sink {}: ClickHouse table check failed: {} (will keep retrying)",
+            sink.name,
+            describe(&e)
+        ),
     }
 }
 

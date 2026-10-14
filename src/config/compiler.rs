@@ -4,7 +4,9 @@ use crate::config::sinks::{compile_metrics, compile_sinks, CompiledMetrics, Comp
 use crate::gateway::forward_headers::{compile_forward_headers, CompiledForwardHeaders};
 use crate::gateway::protection::{compile_server, CompiledServer};
 use crate::jwt::{compile_jwt, CompiledJwt};
-use crate::plugins::transform::{compile_transform, CompiledTransform, TransformPhase};
+use crate::plugins::transform::{check_header, compile_transform, CompiledTransform, TransformPhase};
+use crate::utils::cidr::{parse_cidr_file, CidrRange, CidrSet};
+use crate::utils::embedded_data::CLOUDFLARE_CIDRS;
 use std::sync::Arc;
 
 // ── Compiled Configuration ───────────────────────────────────────────────────
@@ -47,6 +49,8 @@ pub struct CompiledClientIp {
     pub header: Option<Arc<str>>,
     pub index: Option<usize>,
     pub fallback: Option<FallbackMode>,
+    /// Peers whose header is believed (see `ClientIpConfig::trusted_proxies`).
+    pub trusted_proxies: CidrSet,
 }
 
 // ── IP Intel compiled ────────────────────────────────────────────────────────
@@ -74,6 +78,8 @@ pub struct CompiledFirewallRule {
     pub enabled: bool,
     pub conditions: Vec<CompiledCondition>,
     pub action: FirewallAction,
+    /// Parsed `action.headers` for set_request_header / set_response_header.
+    pub headers: Vec<(http::HeaderName, http::HeaderValue)>,
 }
 
 // ── Rate limiting compiled ───────────────────────────────────────────────────
@@ -202,6 +208,39 @@ pub struct CompiledAutoSsl {
     pub renewal_days_before: u32,
 }
 
+/// Default trusted proxies: loopback, private ranges and Cloudflare.
+fn compile_trusted_proxies(list: Option<&[String]>) -> Result<CidrSet, String> {
+    let lines = match list {
+        Some(l) => {
+            for cidr in l {
+                if CidrRange::parse(cidr).is_none() {
+                    return Err(format!(
+                        "client_ip.trusted_proxies: '{}' is not a valid IP or CIDR",
+                        cidr
+                    ));
+                }
+            }
+            l.to_vec()
+        }
+        None => {
+            let mut l: Vec<String> = [
+                "127.0.0.0/8",
+                "::1/128",
+                "10.0.0.0/8",
+                "172.16.0.0/12",
+                "192.168.0.0/16",
+                "fc00::/7",
+            ]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+            l.extend(parse_cidr_file(CLOUDFLARE_CIDRS));
+            l
+        }
+    };
+    Ok(CidrSet::from_lines("client_ip.trusted_proxies", &lines))
+}
+
 // ── Compiler ─────────────────────────────────────────────────────────────────
 
 pub fn compile_config(raw: &GatewayConfig) -> Result<CompiledConfig, String> {
@@ -210,6 +249,7 @@ pub fn compile_config(raw: &GatewayConfig) -> Result<CompiledConfig, String> {
         header: raw.client_ip.header.as_deref().map(Arc::from),
         index: raw.client_ip.index,
         fallback: raw.client_ip.fallback.clone(),
+        trusted_proxies: compile_trusted_proxies(raw.client_ip.trusted_proxies.as_deref())?,
     };
 
     let ip_intel = match raw.plugins.ip_intel.as_ref().filter(|c| c.enabled) {
@@ -228,7 +268,8 @@ pub fn compile_config(raw: &GatewayConfig) -> Result<CompiledConfig, String> {
         .firewall
         .as_ref()
         .filter(|c| c.enabled)
-        .map(|c| compile_firewall(c));
+        .map(compile_firewall)
+        .transpose()?;
 
     let rate_limiting = raw
         .plugins
@@ -328,21 +369,40 @@ pub fn compile_config(raw: &GatewayConfig) -> Result<CompiledConfig, String> {
     })
 }
 
-fn compile_firewall(c: &FirewallConfig) -> CompiledFirewall {
-    CompiledFirewall {
-        enabled: c.enabled,
-        rules: c
-            .rules
-            .iter()
-            .map(|r| CompiledFirewallRule {
-                id: Arc::from(r.id.as_str()),
-                name: Arc::from(r.name.as_str()),
-                enabled: r.enabled,
-                conditions: compile_conditions(&r.conditions),
-                action: r.action.clone(),
-            })
-            .collect(),
+fn compile_firewall(c: &FirewallConfig) -> Result<CompiledFirewall, String> {
+    let mut rules = Vec::with_capacity(c.rules.len());
+    for r in &c.rules {
+        let phase = match r.action.action_type {
+            FirewallActionType::SetRequestHeader => Some(TransformPhase::Request),
+            FirewallActionType::SetResponseHeader => Some(TransformPhase::Response),
+            _ => None,
+        };
+        let mut headers = Vec::new();
+        if let Some(phase) = phase {
+            let map = r.action.headers.as_ref().filter(|h| !h.is_empty()).ok_or_else(|| {
+                format!("Firewall rule '{}': {:?} needs `headers`", r.id, r.action.action_type)
+            })?;
+            for (k, v) in map {
+                let pair = check_header(k, v, phase)
+                    .map_err(|e| format!("Firewall rule '{}': {e}", r.id))?;
+                headers.push(pair);
+            }
+            // HashMap order isn't stable; keep the result the same each load.
+            headers.sort_by(|a, b| a.0.as_str().cmp(b.0.as_str()));
+        }
+        rules.push(CompiledFirewallRule {
+            id: Arc::from(r.id.as_str()),
+            name: Arc::from(r.name.as_str()),
+            enabled: r.enabled,
+            conditions: compile_conditions(&r.conditions),
+            action: r.action.clone(),
+            headers,
+        });
     }
+    Ok(CompiledFirewall {
+        enabled: c.enabled,
+        rules,
+    })
 }
 
 fn compile_rate_limiting(c: &RateLimitingConfig) -> CompiledRateLimiting {

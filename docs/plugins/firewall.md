@@ -95,23 +95,44 @@ Returns a redirect response.
 
 ### Set Request Header
 
-Modifies request headers before forwarding to upstream.
+Sets headers on the request forwarded to the upstream. Later rules see them
+too (e.g. `header.x-tier`).
 
 ```json
 {
   "action": {
     "type": "set_request_header",
-    "headers": {
-      "X-Custom-Header": "value",
-      "X-Client-Country": "${ip.country}"
-    }
+    "headers": { "X-Tier": "partner" }
   }
 }
 ```
 
 ### Set Response Header
 
-Reserved for future use.
+Sets headers on the response sent to the client, whether it comes from the
+upstream, the cache, or a block by a later rule.
+
+```json
+{
+  "action": {
+    "type": "set_response_header",
+    "headers": { "X-Frame-Options": "DENY" }
+  }
+}
+```
+
+Both header actions:
+
+- **Don't stop evaluation.** The firewall keeps checking later rules, so a
+  block rule after a header rule still applies.
+- Take literal values (no templates).
+- Can't set framing headers (`content-length`, `transfer-encoding`,
+  `connection`, `upgrade`). `set_request_header` can't set
+  `x-forwarded-for`, `x-forwarded-proto`, `x-forwarded-host` or
+  `x-qg-request-id` either; the gateway builds those. Such a rule fails
+  config validation.
+- On the same header, `request_transform` / `response_transform` rules win,
+  since they run after the firewall.
 
 ## Rule Evaluation
 
@@ -237,24 +258,23 @@ Request
 }
 ```
 
-### Set custom headers for upstream
+### Set a header for the upstream
 
 ```json
 {
-  "id": "inject-geo-headers",
-  "name": "Inject Geo Headers",
+  "id": "tag-edge-requests",
+  "name": "Tag edge requests",
   "enabled": true,
-  "conditions": [],
+  "conditions": [{ "left": "req.path", "operator": "starts_with", "value": "/" }],
   "action": {
     "type": "set_request_header",
-    "headers": {
-      "X-Client-Country": "${ip.country}",
-      "X-Client-ASN": "${ip.asn}",
-      "X-Client-Risk": "${ip.risk_score}"
-    }
+    "headers": { "X-Internal-Source": "edge" }
   }
 }
 ```
+
+To send IP intel to the upstream (country, ASN, risk score…), use
+`plugins.ip_intel.forward_headers` instead.
 
 ### Allow specific ASN (whitelist)
 

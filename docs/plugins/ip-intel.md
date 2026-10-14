@@ -280,21 +280,20 @@ systemctl restart quayel-gateway
 
 ## Log Output
 
-Every request produces an `ip_intel` section in the JSONL log:
+IP intel fields are top-level keys on every access log line (`""` / `0` /
+`false` when there's no data for the IP). See
+[Logging](../logging.md#ip-intelligence).
 
 ```json
 {
-  "ip_intel": {
-    "country": "US",
-    "region": "CA",
-    "asn": 16509,
-    "network_type": "datacenter",
-    "is_vpn": false,
-    "is_proxy": false,
-    "is_datacenter": true,
-    "is_mobile": null,
-    "is_tor": false,
-    "risk_score": 10
-  }
+  "country": "US",
+  "region": "CA",
+  "asn": 16509,
+  "provider": "aws",
+  "datacenter": true,
+  "vpn": false,
+  "proxy": false,
+  "tor": false,
+  "risk": 10
 }
 ```

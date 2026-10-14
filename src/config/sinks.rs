@@ -79,6 +79,7 @@ pub struct CompiledSink {
     pub timeout_ms: u64,
     pub gzip: bool,
     pub max_buffer_bytes: usize,
+    pub concurrency: usize,
     pub spool_dir: Option<String>,
     pub spool_max_bytes: u64,
 }
@@ -153,6 +154,7 @@ const COMMON: &[&str] = &[
     "timeout_ms",
     "compression",
     "max_buffer_bytes",
+    "concurrency",
     "spool_dir",
     "spool_max_bytes",
 ];
@@ -444,6 +446,9 @@ fn compile_sink(c: &LogSinkConfig, at: &str) -> Result<CompiledSink, String> {
             ))
         }
     };
+    if c.concurrency == 0 || c.concurrency > 64 {
+        return Err(format!("{at}: concurrency must be between 1 and 64"));
+    }
     if c.max_buffer_bytes < (1 << 20) {
         return Err(format!(
             "{at}: max_buffer_bytes must be at least 1048576 (1 MiB)"
@@ -460,6 +465,7 @@ fn compile_sink(c: &LogSinkConfig, at: &str) -> Result<CompiledSink, String> {
         timeout_ms: c.timeout_ms,
         gzip,
         max_buffer_bytes: c.max_buffer_bytes,
+        concurrency: c.concurrency,
         spool_dir: c.spool_dir.clone().filter(|d| !d.trim().is_empty()),
         spool_max_bytes: c.spool_max_bytes,
     })
@@ -496,6 +502,7 @@ fn check_fields(c: &LogSinkConfig, at: &str, own: &[&str]) -> Result<(), String>
         ("timeout_ms", c.timeout_ms != 10_000),
         ("compression", c.compression != "gzip"),
         ("max_buffer_bytes", c.max_buffer_bytes != 256 << 20),
+        ("concurrency", c.concurrency != 4),
         ("spool_dir", c.spool_dir.is_some()),
         ("spool_max_bytes", c.spool_max_bytes != 1 << 30),
     ];

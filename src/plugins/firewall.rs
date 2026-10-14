@@ -78,20 +78,18 @@ impl FirewallPlugin {
                             body: Bytes::new(),
                         });
                     }
+                    // Header rules don't end evaluation: later rules (a block,
+                    // say) still run, and see the headers set here.
                     FirewallActionType::SetRequestHeader => {
-                        if let Some(hdrs) = &rule.action.headers {
-                            for (k, v) in hdrs {
-                                if let Ok(name) = http::HeaderName::from_bytes(k.as_bytes()) {
-                                    if let Ok(val) = http::HeaderValue::from_str(v) {
-                                        ctx.headers.insert(name, val);
-                                    }
-                                }
-                            }
+                        for (name, val) in &rule.headers {
+                            ctx.headers.insert(name.clone(), val.clone());
+                            ctx.firewall.request_headers.push((name.clone(), val.clone()));
                         }
-                        return PluginFlow::Continue;
                     }
                     FirewallActionType::SetResponseHeader => {
-                        return PluginFlow::Continue;
+                        ctx.firewall
+                            .response_headers
+                            .extend(rule.headers.iter().cloned());
                     }
                 }
             }

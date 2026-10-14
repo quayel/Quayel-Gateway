@@ -585,6 +585,11 @@ impl ProxyHttp for QuayelGateway {
                 }
             }
         }
+        // Firewall set_request_header first, so request_transform rules
+        // (which run after the firewall) win on the same header.
+        for (name, val) in &ctx.firewall.request_headers {
+            let _ = upstream_request.insert_header(name.clone(), val.clone());
+        }
         replay_request_header_edits(&ctx.request_transform.header_edits, upstream_request);
 
         // 2. Cache: the origin answer may be stored, so it must not depend on
@@ -747,6 +752,9 @@ impl ProxyHttp for QuayelGateway {
         insert_request_id(
             upstream_response.insert_header(request_id::HEADER, ctx.request_id.as_str()),
         );
+        for (name, val) in &ctx.firewall.response_headers {
+            let _ = upstream_response.insert_header(name.clone(), val.clone());
+        }
         let config = self.state.config.load();
         if let Some(rt) = &config.response_transform {
             apply_response_transform(ctx, rt, upstream_response);
@@ -1038,6 +1046,9 @@ async fn send_gateway_response(
         http::HeaderValue::from_str(cache_status).unwrap_or(http::HeaderValue::from_static("")),
     )?;
     insert_request_id(header.insert_header(request_id::HEADER, ctx.request_id.as_str()));
+    for (name, val) in &ctx.firewall.response_headers {
+        let _ = header.insert_header(name.clone(), val.clone());
+    }
 
     if let Some(rt) = transform {
         apply_response_transform(ctx, rt, &mut header);
@@ -1193,6 +1204,11 @@ fn resolve_client_ip_from_raw(
     headers: &http::HeaderMap,
     peer_ip: std::net::IpAddr,
 ) -> std::net::IpAddr {
+    if config.client_ip.source != ClientIpSource::PeerIp
+        && !config.client_ip.trusted_proxies.contains(peer_ip)
+    {
+        return peer_ip;
+    }
     match &config.client_ip.source {
         ClientIpSource::PeerIp => peer_ip,
         ClientIpSource::Header => {
@@ -1226,5 +1242,52 @@ fn resolve_client_ip_from_raw(
             }
             peer_ip
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn compiled(client_ip: &str) -> CompiledConfig {
+        let raw: crate::config::schema::GatewayConfig = serde_json::from_str(&format!(
+            r#"{{"gateway_id":"t","gateway_name":"t","server_name":"t","config_version":"1",
+                "client_ip":{},"plugins":{{}}}}"#,
+            client_ip
+        ))
+        .unwrap();
+        crate::config::compiler::compile_config(&raw).unwrap()
+    }
+
+    fn resolve(c: &CompiledConfig, xff: &str, peer: &str) -> String {
+        let mut h = http::HeaderMap::new();
+        h.insert("x-forwarded-for", xff.parse().unwrap());
+        resolve_client_ip_from_raw(c, &h, peer.parse().unwrap()).to_string()
+    }
+
+    #[test]
+    fn header_only_believed_from_trusted_proxies() {
+        let c = compiled(r#"{"source":"header_index","header":"X-Forwarded-For","index":0}"#);
+        // Default trust: private ranges and Cloudflare.
+        assert_eq!(resolve(&c, "8.8.8.8", "10.1.2.3"), "8.8.8.8");
+        assert_eq!(resolve(&c, "8.8.8.8", "173.245.48.1"), "8.8.8.8");
+        // A public client sending the header itself is ignored.
+        assert_eq!(resolve(&c, "10.0.0.1", "203.0.113.9"), "203.0.113.9");
+
+        let c = compiled(
+            r#"{"source":"header","header":"X-Forwarded-For","trusted_proxies":["203.0.113.0/24"]}"#,
+        );
+        assert_eq!(resolve(&c, "8.8.8.8", "203.0.113.9"), "8.8.8.8");
+        assert_eq!(resolve(&c, "8.8.8.8", "10.1.2.3"), "10.1.2.3");
+    }
+
+    #[test]
+    fn invalid_trusted_proxy_is_rejected() {
+        let raw: crate::config::schema::GatewayConfig = serde_json::from_str(
+            r#"{"gateway_id":"t","gateway_name":"t","server_name":"t","config_version":"1",
+                "client_ip":{"source":"header","header":"X","trusted_proxies":["nope"]},"plugins":{}}"#,
+        )
+        .unwrap();
+        assert!(crate::config::compiler::compile_config(&raw).is_err());
     }
 }

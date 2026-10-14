@@ -89,6 +89,18 @@ CONFIG = {
     "client_ip": {"source": "peer_ip"},
     "plugins": {
         "firewall": {"enabled": True, "rules": [{
+            "id": "fw-req-hdr", "name": "request header", "enabled": True,
+            "conditions": [{"left": "req.path", "operator": "starts_with", "value": "/api/fwh"}],
+            "action": {"type": "set_request_header", "headers": {"X-From-Firewall": "1"}},
+        }, {
+            "id": "fw-resp-hdr", "name": "response header", "enabled": True,
+            "conditions": [{"left": "req.path", "operator": "starts_with", "value": "/api/fwh"}],
+            "action": {"type": "set_response_header", "headers": {"X-Fw-Resp": "yes"}},
+        }, {
+            "id": "fw-hdr-block", "name": "block after header rules", "enabled": True,
+            "conditions": [{"left": "req.path", "operator": "starts_with", "value": "/api/fwh/blocked"}],
+            "action": {"type": "block", "status": 403},
+        }, {
             "id": "fw-block", "name": "block original path", "enabled": True,
             "conditions": [{"left": "req.path", "operator": "starts_with", "value": "/api/blocked"}],
             "action": {"type": "block", "status": 403},
@@ -197,6 +209,17 @@ def run():
     s, h, b = req("/api/blocked")
     check("firewall sees original path", s == 403, s)
     check("block not transformed", "x-powered-by" not in h, h)
+
+    section("firewall header actions")
+    s, h, b = req("/api/fwh/one")
+    seen = json.loads(b)
+    check("set_request_header reaches the origin", seen["headers"].get("x-from-firewall") == "1", seen["headers"])
+    check("set_response_header on MISS", h.get("x-fw-resp") == "yes", h)
+    s, h, b = req("/api/fwh/one")
+    check("set_response_header on HIT", h.get("x-fw-resp") == "yes" and h.get("quayel-cache-status") == "HIT", h)
+    s, h, b = req("/api/fwh/blocked")
+    check("later block rule still runs after header rules", s == 403, s)
+    check("set_response_header on the block response", h.get("x-fw-resp") == "yes", h)
 
     section("response_transform")
     s, h, _ = req("/status404")

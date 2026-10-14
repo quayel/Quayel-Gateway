@@ -55,6 +55,7 @@ Controls how the real client IP is determined from incoming requests.
 | `header` | string | — | Header name (when source is `header` or `header_index`) |
 | `index` | integer | — | Comma-separated index (0-based, when source is `header_index`) |
 | `fallback` | enum | — | Fallback when header is missing |
+| `trusted_proxies` | string[] | loopback, private ranges, Cloudflare | Peer IPs/CIDRs whose `header` is believed. From any other peer the header is ignored and the peer IP is used, so clients can't fake their IP |
 
 ### `source` values
 
@@ -63,6 +64,16 @@ Controls how the real client IP is determined from incoming requests.
 | `"peer_ip"` | Use the direct TCP connection IP |
 | `"header"` | Read IP from a single-valued header |
 | `"header_index"` | Read IP from a specific index in a comma-separated header |
+
+### Trusted proxies
+
+The header is only read when the TCP peer is in `trusted_proxies`. The default covers the usual setups (a load balancer or ingress on a private network, Cloudflare) with no config. If your proxy has a public IP that isn't Cloudflare's, list it:
+
+```json
+{ "client_ip": { "source": "header", "header": "X-Real-IP", "trusted_proxies": ["203.0.113.10"] } }
+```
+
+`["0.0.0.0/0", "::/0"]` trusts every peer, which was the behaviour before 0.4.1.
 
 ### Example: Cloudflare
 

@@ -427,6 +427,11 @@ pub struct ClientIpConfig {
     pub index: Option<usize>,
     #[serde(default)]
     pub fallback: Option<FallbackMode>,
+    /// Peers whose `header` is believed. Requests from any other peer use the
+    /// peer IP, so a client can't fake its IP by sending the header itself.
+    /// Omitted → loopback, private ranges and Cloudflare.
+    #[serde(default)]
+    pub trusted_proxies: Option<Vec<String>>,
 }
 
 fn default_client_ip() -> ClientIpConfig {
@@ -435,6 +440,7 @@ fn default_client_ip() -> ClientIpConfig {
         header: None,
         index: None,
         fallback: None,
+        trusted_proxies: None,
     }
 }
 
@@ -1085,6 +1091,10 @@ pub struct LogSinkConfig {
     /// without one.
     #[serde(default = "default_sink_max_buffer_bytes")]
     pub max_buffer_bytes: usize,
+    /// Batches sent at the same time. More than 1 keeps a distant
+    /// destination (long round trips) from capping throughput.
+    #[serde(default = "default_sink_concurrency")]
+    pub concurrency: usize,
     /// Directory for batches that couldn't be sent yet. They're sent first
     /// once the destination is back, also after a restart. Unset → no spool.
     #[serde(default)]
@@ -1094,6 +1104,9 @@ pub struct LogSinkConfig {
     pub spool_max_bytes: u64,
 }
 
+fn default_sink_concurrency() -> usize {
+    4
+}
 fn default_sink_timeout_ms() -> u64 {
     10_000
 }

@@ -365,6 +365,7 @@ gateway's own log.
 | `flush_interval_ms` | ClickHouse 5000, others 1000 | Longest a line waits for its batch |
 | `timeout_ms` | 10000 | Per request |
 | `compression` | `gzip` | or `none` |
+| `concurrency` | 4 | Batches in flight at once (1–64) |
 | `max_buffer_bytes` | 256 MiB | Unsent lines kept in memory |
 | `spool_dir` | unset | Directory for batches that couldn't be sent yet (a subdirectory per sink) |
 | `spool_max_bytes` | 1 GiB | Spool size; the oldest batches are dropped past it |
@@ -376,10 +377,11 @@ gateway's own log.
   the destination refuses the data (bad credentials, wrong table): the batch
   is dropped, counted and logged instead of being retried forever.
 - **Spool.** With `spool_dir` set, a batch that fails goes to disk straight
-  away, and so do the oldest batches when memory reaches `max_buffer_bytes`.
-  Spooled batches are sent first once the destination answers, also after a
-  restart. Without a spool, the oldest batches are dropped (and counted) past
-  `max_buffer_bytes`.
+  away, and so do the oldest batches once memory passes 3/4 of
+  `max_buffer_bytes` (earlier with a small buffer: room for two of the
+  writer's hand-overs is always kept), so new lines always have room. Spooled batches are sent
+  first once the destination answers, also after a restart. Without a spool,
+  new lines are dropped (counted and logged) past `max_buffer_bytes`.
 - **No duplicates on retry.** Each batch has an ID that survives retries and
   the spool. ClickHouse gets it as `insert_deduplication_token`, so a batch
   that had landed before a timeout isn't inserted twice; Elasticsearch uses
@@ -391,8 +393,13 @@ gateway's own log.
   [metrics](#metrics); failures are also logged, at most once per 30 s per
   sink.
 
-Batches are encoded, gzipped and sent on the background runtime, one at a
-time per sink.
+Batches are encoded, gzipped and sent on the background runtime, up to
+`concurrency` at a time per sink, so a destination with a long round trip
+(e.g. 300 ms) still takes several batches per second.
+
+A ClickHouse sink checks at startup that it can insert into its table (an
+empty `INSERT`, nothing written). A missing table or database, or bad
+credentials, is logged as an error straight away.
 
 ### ClickHouse table
 

@@ -18,6 +18,7 @@ These headers are automatically added to requests forwarded to backend servers.
 | `X-Forwarded-For` | `client_ip` | Client IP appended to existing chain |
 | `X-Forwarded-Proto` | `http` / `https` | Original request scheme |
 | `X-Forwarded-Host` | `host` | Original request host |
+| `X-QG-Request-Id` | UUIDv7 | Request ID, also returned to the client and written to the access log |
 
 ### Client IP Resolution
 
@@ -117,8 +118,8 @@ These paths can be used in the `left` field of any condition (firewall, rate lim
 | `block` | Return error response | `status` (default: 403) |
 | `allow` | Continue pipeline (skip remaining firewall rules) | — |
 | `redirect` | Return redirect response | `status` (default: 302), `location` |
-| `set_request_header` | Modify request headers before forwarding | `headers` (map) |
-| `set_response_header` | Modify response headers (reserved) | `headers` (map) |
+| `set_request_header` | Set headers on the upstream request; later rules still run | `headers` (map) |
+| `set_response_header` | Set headers on the client response; later rules still run | `headers` (map) |
 
 ### Block Response Body
 
@@ -185,6 +186,7 @@ Status: `503 Service Unavailable`
 | `X-Forwarded-For` | Client IP (appended to chain) |
 | `X-Forwarded-Proto` | Original scheme (`http` / `https`) |
 | `X-Forwarded-Host` | Original `Host` header |
+| `X-QG-Request-Id` | Request ID (UUIDv7) |
 
 ### TLS / SNI Behavior
 

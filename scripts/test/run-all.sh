@@ -10,8 +10,9 @@
 #   6. jwt-verify.py               JWT keys, verification and claim fields
 #   7. logging.py                  access log, X-QG-Request-Id, rotation, reload
 #   8. websocket.py                WebSocket proxying, body limit, idle timeout
-#   9. auto-ssl.py                 ACME issuance against Pebble (needs Docker)
-#  10. sinks.py                    log sinks + /metrics against ClickHouse, Loki,
+#   9. sink-backpressure.py        slow sink: concurrency, spool instead of drop
+#  10. auto-ssl.py                 ACME issuance against Pebble (needs Docker)
+#  11. sinks.py                    log sinks + /metrics against ClickHouse, Loki,
 #                                  OTel Collector, Prometheus (needs Docker)
 #
 # Each suite prints its own PASS/FAIL list; a summary per suite is at the end.
@@ -41,6 +42,7 @@ run "dos-protection"     python3 scripts/test/dos-protection.py "$BIN"
 run "jwt-verify"         env BIN="$BIN" python3 scripts/test/jwt-verify.py
 run "logging"            env BIN="$BIN" python3 scripts/test/logging.py
 run "websocket"          env BIN="$BIN" python3 scripts/test/websocket.py
+run "sink-backpressure"  env BIN="$BIN" python3 scripts/test/sink-backpressure.py
 if command -v docker >/dev/null && docker info >/dev/null 2>&1; then
     run "auto-ssl"       env BIN="$BIN" python3 scripts/test/auto-ssl.py
     run "sinks"          env BIN="$BIN" python3 scripts/test/sinks.py

@@ -12,6 +12,27 @@ write entries for people running the gateway, not for people reading the diff.
 
 ## [Unreleased]
 
+### Security
+
+- **Client IP headers are only believed from trusted proxies.** Before, when
+  `client_ip` read the IP from a header such as `X-Forwarded-For`, anyone
+  could put any IP in it and get past per-IP rate limits, DoS limits and
+  bans. The new `client_ip.trusted_proxies` lists the peers whose header is
+  read; from any other peer the TCP peer IP is used. The default (loopback,
+  private ranges, Cloudflare) covers a load balancer or ingress in your own
+  network and Cloudflare with no config. **If your proxy has another public
+  IP, add it to `trusted_proxies`**, or every request will appear to come
+  from the proxy. `["0.0.0.0/0", "::/0"]` restores the old behaviour.
+
+### Added
+
+- **`concurrency` on network sinks** (default 4, up to 64): several batches in
+  flight at once, so a destination with a long round trip isn't limited to
+  one batch per round trip.
+- **ClickHouse table check at startup.** A ClickHouse sink sends an empty
+  `INSERT` when it starts and logs an error straight away if the table or
+  database is missing or the credentials are wrong.
+
 ### Changed
 
 - **No request body limit by default.** `server.limits.max_body_bytes` now
@@ -41,6 +62,18 @@ write entries for people running the gateway, not for people reading the diff.
   `server.timeouts.websocket_idle_secs` closes silent sockets if you want
   that (default `0`, no limit). The upgrade request itself still goes through
   the firewall, rate limits and DoS checks.
+- **Network sinks no longer drop lines when they fall behind** (known issue
+  in 0.4.0). With `spool_dir` set, the oldest batches now move to disk once
+  memory passes 3/4 of `max_buffer_bytes` (earlier with a small buffer), so
+  new lines always have room.
+  Lines dropped because memory is full (no spool, or a full spool) are now
+  logged as well as counted.
+- **Firewall `set_request_header` and `set_response_header` work** (known
+  issue in 0.4.0 and 0.3.x). Request headers reach the upstream and are
+  visible to later rules; response headers are set on upstream, cached and
+  blocked responses. Neither stops rule evaluation. Headers the gateway
+  manages (`content-length`, `x-forwarded-*`, `x-qg-request-id`, …) are
+  refused when the config loads.
 
 ## [0.4.0] - 2026-10-13
 

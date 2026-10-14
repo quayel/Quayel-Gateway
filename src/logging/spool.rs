@@ -6,7 +6,7 @@
 //! batch ID survives restarts, which keeps ClickHouse's dedup token and
 //! Elasticsearch's document IDs stable when a spooled batch is retried.
 
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone)]
@@ -77,6 +77,10 @@ impl Spool {
     }
     pub fn oldest(&self) -> Option<SpoolEntry> {
         self.entries.front().cloned()
+    }
+    /// The oldest entry whose ID isn't in `skip` (batches already in flight).
+    pub fn oldest_except(&self, skip: &HashSet<String>) -> Option<SpoolEntry> {
+        self.entries.iter().find(|e| !skip.contains(&e.id)).cloned()
     }
 
     /// Store a batch. Returns how many lines were dropped to stay under

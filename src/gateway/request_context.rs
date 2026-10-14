@@ -272,6 +272,10 @@ pub struct FirewallResult {
     pub rule_name: Option<String>,
     pub action: Option<FirewallActionType>,
     pub status: Option<u16>,
+    /// From matching set_request_header rules, added to the upstream request.
+    pub request_headers: Vec<(http::HeaderName, http::HeaderValue)>,
+    /// From matching set_response_header rules, added to the response.
+    pub response_headers: Vec<(http::HeaderName, http::HeaderValue)>,
 }
 
 #[derive(Debug, Clone, Default)]

@@ -274,6 +274,16 @@ fn header_name(s: &str, phase: TransformPhase) -> Result<HeaderName, String> {
     Ok(name)
 }
 
+/// A header a rule sets, checked like a transform header: framing headers,
+/// and on requests the forwarding headers, are refused.
+pub fn check_header(
+    name: &str,
+    value: &str,
+    phase: TransformPhase,
+) -> Result<(HeaderName, HeaderValue), String> {
+    Ok((header_name(name, phase)?, header_value(value)?))
+}
+
 fn header_value(s: &str) -> Result<HeaderValue, String> {
     HeaderValue::from_str(s).map_err(|_| format!("invalid header value '{s}'"))
 }
