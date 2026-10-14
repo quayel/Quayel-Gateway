@@ -386,7 +386,22 @@ mod tests {
         assert_eq!(c.max_body_bytes, 1000);
         assert_eq!(c.websocket_idle_timeout, Some(Duration::from_secs(300)));
         // Untouched fields keep their defaults.
-        assert_eq!(c.body_read_timeout, Some(Duration::from_secs(30)));
+        assert_eq!(c.body_read_timeout, Some(Duration::from_secs(60)));
+    }
+
+    #[test]
+    fn private_ranges_are_exempt_by_default() {
+        let s = compile(r#"{"protection":{"max_connections_per_ip":1}}"#).unwrap();
+        let p = s.protection.unwrap();
+        let t = IpTracker::new();
+        for lb in ["10.0.0.5", "172.20.1.1", "192.168.1.10", "fd00::1"] {
+            for _ in 0..5 {
+                std::mem::forget(t.open_connection(&p, ip(lb)).unwrap());
+            }
+        }
+        // Public IPs still get the limit.
+        let _a = t.open_connection(&p, ip("203.0.113.9")).unwrap();
+        assert!(t.open_connection(&p, ip("203.0.113.9")).is_err());
     }
 
     #[test]

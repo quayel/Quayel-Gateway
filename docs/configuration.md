@@ -127,12 +127,12 @@ All values are in seconds.
 |-------|---------|----------------|
 | `header_secs` | `10` | Time for the **whole** request header to arrive. Counted from the connection opening (first request) or from the first byte of each later keep-alive request. Stops Slowloris |
 | `keepalive_secs` | `60` | How long an idle keep-alive connection waits for the next request. `0` turns keep-alive off |
-| `body_read_secs` | `30` | Longest gap between two reads of a request body (slow POST / R.U.D.Y.) |
+| `body_read_secs` | `60` | Longest gap between two reads of a request body (slow POST / R.U.D.Y.) |
 | `websocket_idle_secs` | `0` (no limit) | How long an upgraded connection (WebSocket) may stay silent before it is closed. Replaces `body_read_secs` and `upstream_read_secs` once a request asks to upgrade |
 | `response_write_secs` | `60` | Longest a single write to the client may take (clients that read the response very slowly) |
 | `upstream_connect_secs` | `5` | TCP connect to the upstream |
 | `upstream_total_connect_secs` | `10` | TCP connect plus TLS handshake to the upstream |
-| `upstream_read_secs` | `60` | Longest wait for data from the upstream |
+| `upstream_read_secs` | `300` | Longest wait for data from the upstream (long enough for slow APIs and streamed LLM output) |
 | `upstream_write_secs` | `30` | Longest a single write to the upstream may take |
 | `upstream_idle_secs` | `30` | How long an unused upstream connection stays in the pool |
 | `graceful_shutdown_secs` | `5` | Time in-flight requests get to finish after `SIGTERM`. Startup only |
@@ -162,11 +162,11 @@ gateway; the request limit and bans also use the [resolved client IP](#client_ip
 | Field | Default | Description |
 |-------|---------|-------------|
 | `enabled` | `true` | Turns every check in this block on or off |
-| `exempt_ips` | `["127.0.0.0/8", "::1/128"]` | IPs or CIDRs that skip every limit and are never banned |
+| `exempt_ips` | `["127.0.0.0/8", "::1/128", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "fc00::/7"]` | IPs or CIDRs that skip every limit and are never banned. Private ranges are in the default because a peer there is normally your own load balancer or proxy, carrying many users over one IP. Setting this list replaces the default |
 | `exempt_cloudflare` | `true` | Skip the limits for [Cloudflare's edge IPs](data-sources.md), which carry many visitors over a few addresses. Set `client_ip` to `CF-Connecting-IP` so the request limit applies to real visitors |
-| `max_connections_per_ip` | `256` | Open connections one IP may hold at once. Over the limit → new connection dropped |
-| `max_new_connections_per_ip_per_sec` | `100` | New connections per second from one IP. Over → dropped |
-| `max_requests_per_ip_per_sec` | `500` | Requests per second from one client IP across all routes. Over → `429` with `Retry-After` |
+| `max_connections_per_ip` | `4096` | Open connections one IP may hold at once. Over the limit → new connection dropped |
+| `max_new_connections_per_ip_per_sec` | `1000` | New connections per second from one IP. Over → dropped |
+| `max_requests_per_ip_per_sec` | `2000` | Requests per second from one client IP across all routes. Over → `429` with `Retry-After` |
 
 #### `server.protection.ban`
 
@@ -177,9 +177,9 @@ banned, its new connections are dropped and its requests get `429`.
 | Field | Default | Description |
 |-------|---------|-------------|
 | `enabled` | `true` | Turn automatic bans on or off |
-| `strikes` | `50` | Violations that trigger a ban |
+| `strikes` | `1000` | Violations that trigger a ban |
 | `window_secs` | `60` | Window the strikes are counted in |
-| `duration_secs` | `600` | Ban length |
+| `duration_secs` | `300` | Ban length |
 
 Requests refused by `server.protection` or `server.limits` are logged with
 `block.type: "dos"` and the reason in `block.rule`, and the response carries an

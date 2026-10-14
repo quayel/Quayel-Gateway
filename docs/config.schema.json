@@ -256,12 +256,12 @@
           "properties": {
             "header_secs": { "type": "integer", "minimum": 0, "default": 10, "description": "Whole request header deadline (Slowloris)" },
             "keepalive_secs": { "type": "integer", "minimum": 0, "default": 60, "description": "Idle keep-alive wait; 0 turns keep-alive off" },
-            "body_read_secs": { "type": "integer", "minimum": 0, "default": 30, "description": "Max gap between request body reads (slow POST)" },
+            "body_read_secs": { "type": "integer", "minimum": 0, "default": 60, "description": "Max gap between request body reads (slow POST)" },
             "websocket_idle_secs": { "type": "integer", "minimum": 0, "default": 0, "description": "Idle limit for upgraded (WebSocket) connections; 0 = no limit" },
             "response_write_secs": { "type": "integer", "minimum": 0, "default": 60, "description": "Max time for one write to the client (slow read)" },
             "upstream_connect_secs": { "type": "integer", "minimum": 0, "default": 5 },
             "upstream_total_connect_secs": { "type": "integer", "minimum": 0, "default": 10, "description": "TCP connect + TLS handshake" },
-            "upstream_read_secs": { "type": "integer", "minimum": 0, "default": 60 },
+            "upstream_read_secs": { "type": "integer", "minimum": 0, "default": 300 },
             "upstream_write_secs": { "type": "integer", "minimum": 0, "default": 30 },
             "upstream_idle_secs": { "type": "integer", "minimum": 0, "default": 30 },
             "graceful_shutdown_secs": { "type": "integer", "minimum": 0, "default": 5, "description": "Startup only" }
@@ -282,19 +282,19 @@
           "additionalProperties": false,
           "properties": {
             "enabled": { "type": "boolean", "default": true },
-            "exempt_ips": { "type": "array", "items": { "type": "string" }, "default": ["127.0.0.0/8", "::1/128"] },
+            "exempt_ips": { "type": "array", "items": { "type": "string" }, "default": ["127.0.0.0/8", "::1/128", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "fc00::/7"] },
             "exempt_cloudflare": { "type": "boolean", "default": true },
-            "max_connections_per_ip": { "type": "integer", "minimum": 0, "default": 256 },
-            "max_new_connections_per_ip_per_sec": { "type": "integer", "minimum": 0, "default": 100 },
-            "max_requests_per_ip_per_sec": { "type": "integer", "minimum": 0, "default": 500, "description": "Over → 429" },
+            "max_connections_per_ip": { "type": "integer", "minimum": 0, "default": 4096 },
+            "max_new_connections_per_ip_per_sec": { "type": "integer", "minimum": 0, "default": 1000 },
+            "max_requests_per_ip_per_sec": { "type": "integer", "minimum": 0, "default": 2000, "description": "Over → 429" },
             "ban": {
               "type": "object",
               "additionalProperties": false,
               "properties": {
                 "enabled": { "type": "boolean", "default": true },
-                "strikes": { "type": "integer", "minimum": 0, "default": 50 },
+                "strikes": { "type": "integer", "minimum": 0, "default": 1000 },
                 "window_secs": { "type": "integer", "minimum": 0, "default": 60 },
-                "duration_secs": { "type": "integer", "minimum": 0, "default": 600 }
+                "duration_secs": { "type": "integer", "minimum": 0, "default": 300 }
               }
             }
           }

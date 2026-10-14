@@ -17,6 +17,18 @@ write entries for people running the gateway, not for people reading the diff.
 - **No request body limit by default.** `server.limits.max_body_bytes` now
   defaults to `0` (no limit) instead of 100 MB, so large uploads work without
   config. Set it if you want a cap; anything over it still gets `413`.
+- **Looser DoS defaults, so normal traffic never hits them.** Many users
+  can share one IP (office NAT, mobile carrier NAT, a load balancer), so the
+  per-IP defaults are raised; a single-IP flood is still stopped:
+  - `max_connections_per_ip` 256 → 4096
+  - `max_new_connections_per_ip_per_sec` 100 → 1000
+  - `max_requests_per_ip_per_sec` 500 → 2000
+  - `ban.strikes` 50 → 1000, `ban.duration_secs` 600 → 300
+  - `exempt_ips` now also covers private ranges (`10.0.0.0/8`,
+    `172.16.0.0/12`, `192.168.0.0/16`, `fc00::/7`), so a load balancer or
+    proxy in your own network isn't limited as if it were one user.
+- **Longer timeouts for slow backends and uploads.** `upstream_read_secs`
+  60 → 300 (slow APIs, streamed LLM output), `body_read_secs` 30 → 60.
 
 ### Fixed
 
