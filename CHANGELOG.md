@@ -12,6 +12,8 @@ write entries for people running the gateway, not for people reading the diff.
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-10-14
+
 ### Security
 
 - **Client IP headers are only believed from trusted proxies.** Before, when
@@ -419,7 +421,8 @@ Initial version (not published as a release): reverse proxy built on Pingora
 with IP intelligence, firewall rules, rate limiting, caching, load balancing,
 Auto-SSL and JSONL access logs.
 
-[Unreleased]: https://github.com/quayel/Quayel-Gateway/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/quayel/Quayel-Gateway/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/quayel/Quayel-Gateway/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/quayel/Quayel-Gateway/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/quayel/Quayel-Gateway/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/quayel/Quayel-Gateway/releases/tag/v0.3.0
