@@ -194,6 +194,10 @@ pub struct ServerConfig {
     pub protection: ProtectionConfig,
     #[serde(default)]
     pub request_id: RequestIdConfig,
+    /// HTTP/2 for clients: h2c (prior knowledge) on the HTTP port and ALPN
+    /// `h2` on the HTTPS port. HTTP/1.1 clients are unaffected. Startup only.
+    #[serde(default = "default_true")]
+    pub http2: bool,
 }
 
 /// `X-QG-Request-Id`: one ID per request, logged, sent upstream and returned
@@ -905,6 +909,10 @@ fn default_weight() -> u32 {
 pub enum TargetProtocol {
     Http,
     Https,
+    /// HTTP/2 without TLS (prior knowledge), e.g. a plaintext gRPC server.
+    H2c,
+    /// HTTP/2 over TLS (ALPN `h2` only).
+    H2,
 }
 
 impl TargetProtocol {
@@ -912,7 +920,17 @@ impl TargetProtocol {
         match self {
             TargetProtocol::Http => "http",
             TargetProtocol::Https => "https",
+            TargetProtocol::H2c => "h2c",
+            TargetProtocol::H2 => "h2",
         }
+    }
+
+    pub fn is_tls(&self) -> bool {
+        matches!(self, TargetProtocol::Https | TargetProtocol::H2)
+    }
+
+    pub fn is_http2(&self) -> bool {
+        matches!(self, TargetProtocol::H2c | TargetProtocol::H2)
     }
 }
 

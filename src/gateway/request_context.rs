@@ -89,6 +89,9 @@ pub struct RequestContext {
     /// Upgrade request (WebSocket): no body limit, websocket_idle_secs instead
     /// of the read timeouts.
     pub upgrade: bool,
+    /// gRPC request (`content-type: application/grpc*`): long-lived like a
+    /// WebSocket, and gateway errors are sent as gRPC status codes.
+    pub grpc: bool,
     pub client_bytes_out: u64,
     pub upstream_bytes_out: u64,
     pub upstream_bytes_in: u64,
@@ -192,6 +195,7 @@ impl RequestContext {
             upstream_status: None,
             client_bytes_in: 0,
             upgrade: false,
+            grpc: false,
             client_bytes_out: 0,
             upstream_bytes_out: 0,
             upstream_bytes_in: 0,
@@ -379,4 +383,6 @@ pub enum TerminationPhase {
 pub enum UpstreamProtocol {
     Http,
     Https,
+    H2c,
+    H2,
 }

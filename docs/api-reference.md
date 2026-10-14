@@ -190,7 +190,7 @@ Status: `503 Service Unavailable`
 
 ### TLS / SNI Behavior
 
-When target `protocol` is `https`:
+When target `protocol` is `https` or `h2`:
 
 | Scenario | SNI used |
 |----------|----------|

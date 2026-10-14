@@ -41,6 +41,8 @@ pub struct CompiledServer {
     pub protection: Option<Arc<CompiledProtection>>,
     /// server.request_id.accept_incoming
     pub accept_incoming_request_id: bool,
+    /// server.http2
+    pub http2: bool,
 }
 
 #[derive(Debug)]
@@ -128,6 +130,7 @@ pub fn compile_server(raw: &ServerConfig) -> Result<CompiledServer, String> {
         upstream_keepalive_pool_size: l.upstream_keepalive_pool_size,
         protection,
         accept_incoming_request_id: raw.request_id.accept_incoming,
+        http2: raw.http2,
     })
 }
 

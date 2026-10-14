@@ -14,6 +14,8 @@
 #  10. auto-ssl.py                 ACME issuance against Pebble (needs Docker)
 #  11. sinks.py                    log sinks + /metrics against ClickHouse, Loki,
 #                                  OTel Collector, Prometheus (needs Docker)
+#  12. grpc.py                     HTTP/2 + gRPC: h2c/h2 in and out, streaming,
+#                                  gRPC error statuses (needs Docker)
 #
 # Each suite prints its own PASS/FAIL list; a summary per suite is at the end.
 # Usage:  bash scripts/test/run-all.sh        (builds the release binary first)
@@ -46,8 +48,9 @@ run "sink-backpressure"  env BIN="$BIN" python3 scripts/test/sink-backpressure.p
 if command -v docker >/dev/null && docker info >/dev/null 2>&1; then
     run "auto-ssl"       env BIN="$BIN" python3 scripts/test/auto-ssl.py
     run "sinks"          env BIN="$BIN" python3 scripts/test/sinks.py
+    run "grpc"           env BIN="$BIN" python3 scripts/test/grpc.py
 else
-    echo ""; echo "auto-ssl, sinks: skipped (Docker not available)"
+    echo ""; echo "auto-ssl, sinks, grpc: skipped (Docker not available)"
 fi
 
 echo ""

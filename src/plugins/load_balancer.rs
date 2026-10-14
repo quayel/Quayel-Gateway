@@ -97,6 +97,8 @@ impl LoadBalancerPlugin {
             ctx.upstream_protocol = Some(match target.protocol {
                 TargetProtocol::Http => UpstreamProtocol::Http,
                 TargetProtocol::Https => UpstreamProtocol::Https,
+                TargetProtocol::H2c => UpstreamProtocol::H2c,
+                TargetProtocol::H2 => UpstreamProtocol::H2,
             });
 
             let conn_key = format!("{}:{}", target.host, target.port);

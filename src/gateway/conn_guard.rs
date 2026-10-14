@@ -16,6 +16,13 @@
 //!   new request header, so the deadline restarts on its first byte.
 //!
 //! HTTP/2 connections are not wrapped; h2 has its own frame-level limits.
+//!
+//! Cleartext HTTP/2 (h2c, used by gRPC without TLS) is detected here rather
+//! than by Pingora's `h2c` option: Pingora waits for the 24-byte preface with
+//! no deadline, so a connection that sends nothing (or a short HTTP/1.0
+//! request) would wait forever. Here the peek is bounded by the header
+//! deadline and needs only 3 bytes to rule h2 out, and an h2c connection is
+//! marked with ALPN h2 so Pingora runs its HTTP/2 path.
 
 use crate::gateway::gateway::GatewayState;
 use crate::gateway::protection::{CompiledProtection, ConnPermit, IpTracker, Violation};
@@ -66,12 +73,13 @@ where
         stream: Stream,
         shutdown: &ShutdownWatch,
     ) -> Option<Stream> {
-        let (header_timeout, max_header_bytes, protection) = {
+        let (header_timeout, max_header_bytes, protection, h2c) = {
             let config = self.state.config.load();
             (
                 config.server.header_timeout,
                 config.server.max_header_bytes,
                 config.server.protection.clone(),
+                config.server.http2,
             )
         };
         let peer_ip = stream
@@ -95,8 +103,29 @@ where
             });
         }
 
-        let is_h2 = matches!(stream.selected_alpn_proto(), Some(ALPN::H2));
-        let stream: Stream = if !is_h2 && (header_timeout.is_some() || max_header_bytes > 0) {
+        let mut stream = stream;
+        let mut is_h2 = matches!(stream.selected_alpn_proto(), Some(ALPN::H2));
+        if !is_h2 && h2c && stream.get_ssl_digest().is_none() {
+            match peek_h2c_preface(&mut stream, header_timeout).await {
+                Ok(true) => is_h2 = true,
+                Ok(false) => {}
+                Err(timed_out) => {
+                    if timed_out {
+                        if let Some(s) = &strike {
+                            s.tracker.strike(&s.protection, s.ip, Violation::SlowHeaders);
+                        }
+                    }
+                    return None;
+                }
+            }
+        }
+        let stream: Stream = if is_h2 {
+            if matches!(stream.selected_alpn_proto(), Some(ALPN::H2)) {
+                stream
+            } else {
+                Box::new(HeaderGuardStream::h2c(stream))
+            }
+        } else if header_timeout.is_some() || max_header_bytes > 0 {
             Box::new(HeaderGuardStream::new(
                 stream,
                 header_timeout,
@@ -107,6 +136,8 @@ where
             stream
         };
 
+        // Pingora serves every keep-alive request (and every h2 stream) of
+        // this connection inside this call, so the permit covers it all.
         let reused = self.inner.process_new(stream, shutdown).await;
         drop(permit);
         reused
@@ -114,6 +145,32 @@ where
 
     async fn cleanup(&self) {
         self.inner.cleanup().await
+    }
+}
+
+const H2_PREFACE: &[u8; 24] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
+
+/// Does this cleartext connection start with the HTTP/2 preface? Peeked
+/// bytes are put back for whoever reads next. Only 3 bytes are needed to rule
+/// h2 out (no HTTP/1 method starts with "PRI"), so short HTTP/1.1 requests
+/// never wait for 24 bytes. Err(true) → the header deadline passed,
+/// Err(false) → the connection failed or closed.
+async fn peek_h2c_preface(stream: &mut Stream, deadline: Option<Duration>) -> Result<bool, bool> {
+    let peek = async {
+        let mut head = [0u8; 3];
+        if !stream.try_peek(&mut head).await.map_err(|_| false)? {
+            return Ok(false); // stream type can't peek
+        }
+        if &head != b"PRI" {
+            return Ok(false);
+        }
+        let mut full = [0u8; 24];
+        stream.try_peek(&mut full).await.map_err(|_| false)?;
+        Ok(&full == H2_PREFACE)
+    };
+    match deadline {
+        Some(d) => tokio::time::timeout(d, peek).await.unwrap_or(Err(true)),
+        None => peek.await,
     }
 }
 
@@ -148,6 +205,7 @@ pub struct HeaderGuardStream {
     sleep: Option<Pin<Box<Sleep>>>,
     header_read: usize,
     strike: Option<StrikeCtx>,
+    h2c: bool,
 }
 
 impl HeaderGuardStream {
@@ -168,7 +226,17 @@ impl HeaderGuardStream {
             sleep: None,
             header_read: 0,
             strike,
+            h2c: false,
         }
+    }
+
+    /// A cleartext HTTP/2 connection: no header limits (h2 has its own), and
+    /// reports ALPN h2 so Pingora speaks HTTP/2 on it.
+    fn h2c(inner: Stream) -> Self {
+        let mut g = Self::new(inner, None, 0, None);
+        g.phase = AtomicU8::new(PHASE_BODY);
+        g.h2c = true;
+        g
     }
 
     /// The current request header has been parsed.
@@ -310,6 +378,9 @@ impl Ssl for HeaderGuardStream {
         self.inner.get_ssl_digest()
     }
     fn selected_alpn_proto(&self) -> Option<ALPN> {
+        if self.h2c {
+            return Some(ALPN::H2);
+        }
         self.inner.selected_alpn_proto()
     }
 }
@@ -374,6 +445,43 @@ mod tests {
             None,
         );
         (g, client)
+    }
+
+    async fn raw_pair() -> (Stream, tokio::net::TcpStream) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let client = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let (server, _) = listener.accept().await.unwrap();
+        (Box::new(pingora_core::protocols::l4::stream::Stream::from(server)), client)
+    }
+
+    #[tokio::test]
+    async fn h2c_preface_detected_and_kept() {
+        let (mut s, mut client) = raw_pair().await;
+        client.write_all(H2_PREFACE).await.unwrap();
+        assert_eq!(peek_h2c_preface(&mut s, Some(Duration::from_secs(1))).await, Ok(true));
+        let mut buf = [0u8; 24];
+        s.read_exact(&mut buf).await.unwrap();
+        assert_eq!(&buf, H2_PREFACE);
+    }
+
+    #[tokio::test]
+    async fn short_http1_request_is_not_held() {
+        let (mut s, mut client) = raw_pair().await;
+        client.write_all(b"GET / HTTP/1.0\r\n\r\n").await.unwrap();
+        assert_eq!(peek_h2c_preface(&mut s, Some(Duration::from_secs(1))).await, Ok(false));
+        let mut buf = [0u8; 18];
+        s.read_exact(&mut buf).await.unwrap();
+        assert_eq!(&buf, b"GET / HTTP/1.0\r\n\r\n");
+    }
+
+    #[tokio::test]
+    async fn silent_or_partial_preface_hits_deadline() {
+        let (mut s, _client) = raw_pair().await;
+        assert_eq!(peek_h2c_preface(&mut s, Some(Duration::from_millis(200))).await, Err(true));
+        let (mut s, mut client) = raw_pair().await;
+        client.write_all(b"PRI * HT").await.unwrap();
+        assert_eq!(peek_h2c_preface(&mut s, Some(Duration::from_millis(200))).await, Err(true));
     }
 
     #[tokio::test]

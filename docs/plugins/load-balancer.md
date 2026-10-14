@@ -145,11 +145,25 @@ The `key` field accepts any [condition path](../conditions.md#condition-paths):
 | `id` | string | ✅ | Unique target identifier |
 | `host` | string | ✅ | Backend hostname or IP |
 | `port` | number | ✅ | Backend port |
-| `protocol` | string | `"http"` | `"http"` or `"https"` |
+| `protocol` | string | `"http"` | `"http"`, `"https"`, `"h2c"` (HTTP/2 without TLS) or `"h2"` (HTTP/2 over TLS). Use `h2c` / `h2` for gRPC servers |
 | `weight` | number | `100` | Weight for weighted algorithms |
 | `enabled` | bool | `true` | Enable/disable target |
 | `tls.verify` | bool | `false` | Verify upstream TLS certificate |
 | `tls.sni` | string | — | Custom SNI for TLS handshake |
+
+### HTTP/2 and gRPC targets
+
+gRPC needs HTTP/2 all the way to the server. `"h2c"` talks HTTP/2 with prior
+knowledge over plain TCP; `"h2"` talks HTTP/2 over TLS (ALPN `h2`, the
+`tls.*` settings apply). Up to 100 requests share one upstream connection.
+
+```json
+{ "id": "grpc", "host": "10.0.0.7", "port": 50051, "protocol": "h2c" }
+```
+
+For health checks on gRPC servers use `accepts_connections`: a gRPC server
+usually answers a plain `GET` with an error status, which the `https` mode
+counts as unhealthy.
 
 ### TLS configuration
 

@@ -306,7 +306,8 @@
           "properties": {
             "accept_incoming": { "type": "boolean", "default": true, "description": "Reuse a well-formed incoming X-QG-Request-Id; false → always generate" }
           }
-        }
+        },
+        "http2": { "type": "boolean", "default": true, "description": "HTTP/2 for clients: h2c on the HTTP port, ALPN h2 on the HTTPS port. HTTP/1.1 clients are unaffected. Startup only." }
       }
     },
     "listen": {
@@ -703,7 +704,7 @@
                     "id": { "type": "string" },
                     "host": { "type": "string" },
                     "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
-                    "protocol": { "enum": ["http", "https"], "default": "http" },
+                    "protocol": { "enum": ["http", "https", "h2c", "h2"], "default": "http", "description": "h2c: HTTP/2 without TLS (plaintext gRPC). h2: HTTP/2 over TLS." },
                     "weight": { "type": "integer", "minimum": 0, "default": 100 },
                     "enabled": { "type": "boolean", "default": true },
                     "tls": {

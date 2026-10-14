@@ -129,6 +129,7 @@ the others also change on [live reload](../README.md#changing-the-config).
 | Field | Default | Description |
 |-------|---------|-------------|
 | `workers` | all CPU cores | Worker threads. `--workers` on the command line wins. Startup only |
+| `http2` | `true` | HTTP/2 for clients: h2c (prior knowledge) on the HTTP port and ALPN `h2` on the HTTPS port. HTTP/1.1 clients are unaffected. Startup only |
 
 ### `server.timeouts`
 
@@ -139,7 +140,7 @@ All values are in seconds.
 | `header_secs` | `10` | Time for the **whole** request header to arrive. Counted from the connection opening (first request) or from the first byte of each later keep-alive request. Stops Slowloris |
 | `keepalive_secs` | `60` | How long an idle keep-alive connection waits for the next request. `0` turns keep-alive off |
 | `body_read_secs` | `60` | Longest gap between two reads of a request body (slow POST / R.U.D.Y.) |
-| `websocket_idle_secs` | `0` (no limit) | How long an upgraded connection (WebSocket) may stay silent before it is closed. Replaces `body_read_secs` and `upstream_read_secs` once a request asks to upgrade |
+| `websocket_idle_secs` | `0` (no limit) | How long an upgraded connection (WebSocket) or a gRPC call may stay silent before it is closed. Replaces `body_read_secs` and `upstream_read_secs` for those requests |
 | `response_write_secs` | `60` | Longest a single write to the client may take (clients that read the response very slowly) |
 | `upstream_connect_secs` | `5` | TCP connect to the upstream |
 | `upstream_total_connect_secs` | `10` | TCP connect plus TLS handshake to the upstream |
@@ -155,6 +156,19 @@ messages in both directions are passed through: they never count against
 `websocket_idle_secs`. The access log gets one line per socket when it closes,
 with `status: 101`, `bytes` / `req_bytes` for the whole session and `dur_us`
 for how long it was open.
+
+**gRPC** works with no gateway config: clients can use HTTP/2 on either
+port. Set the target's `protocol` to `h2c` (plaintext gRPC server) or `h2`
+(TLS); see [targets](plugins/load-balancer.md#targets). Requests with
+`content-type: application/grpc*` are treated as long-lived streams, like
+WebSockets (`websocket_idle_secs` instead of the read timeouts). When the
+gateway itself answers a gRPC call (firewall block, rate limit, DoS refusal,
+unreachable origin), it sends a gRPC status instead of an HTTP error page:
+`403` → `PERMISSION_DENIED`, `401` → `UNAUTHENTICATED`, `413`/`429` →
+`RESOURCE_EXHAUSTED`, `502`/`503`/`504` → `UNAVAILABLE`, `404` →
+`UNIMPLEMENTED`, `400` → `INTERNAL`, anything else → `UNKNOWN`. The access
+log keeps the HTTP status (`403`, `429`, ...) so blocks are counted the same
+way for every protocol.
 
 ### `server.limits`
 

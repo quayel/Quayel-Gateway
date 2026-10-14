@@ -12,6 +12,28 @@ write entries for people running the gateway, not for people reading the diff.
 
 ## [Unreleased]
 
+### Added
+
+- **HTTP/2 and gRPC.** Clients can now use HTTP/2 on both ports: h2c (prior
+  knowledge) on the HTTP port and ALPN `h2` on the HTTPS port. HTTP/1.1
+  clients are unaffected. On by default; `server.http2: false` turns it off.
+- **`h2c` and `h2` target protocols** for HTTP/2 upstreams such as gRPC
+  servers, with up to 100 requests multiplexed per upstream connection.
+  Health checks in `https` mode use HTTP/2 for these targets.
+- **gRPC-aware handling.** Requests with `content-type: application/grpc*`
+  are long-lived like WebSockets (`websocket_idle_secs` instead of the read
+  timeouts), and responses the gateway makes itself (firewall block, rate
+  limit, DoS refusal, unreachable origin) are sent as gRPC statuses, e.g.
+  `403` → `PERMISSION_DENIED`, `429` → `RESOURCE_EXHAUSTED`, `502` →
+  `UNAVAILABLE`. The access log keeps the HTTP status.
+- New `grpc` test suite (needs Docker).
+
+### Changed
+
+- Cleartext h2c detection is done in the connection guard, with the
+  `header_secs` deadline, instead of Pingora's untimed peek, so silent
+  connections and short HTTP/1.0 requests are not held.
+
 ## [0.4.1] - 2026-10-14
 
 ### Security

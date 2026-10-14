@@ -135,12 +135,17 @@ impl HealthChecker {
         protocol: &TargetProtocol,
         tls_verify: bool,
     ) -> bool {
-        let url = format!("{}://{}:{}{}", protocol.as_str(), host, port, path);
+        let scheme = if protocol.is_tls() { "https" } else { "http" };
+        let url = format!("{}://{}:{}{}", scheme, host, port, path);
 
-        let client = match reqwest::Client::builder()
+        let mut builder = reqwest::Client::builder()
             .danger_accept_invalid_certs(!tls_verify)
-            .timeout(timeout)
-            .build()
+            .timeout(timeout);
+        // h2c / h2 targets may not speak HTTP/1.1 at all (gRPC servers).
+        if protocol.is_http2() {
+            builder = builder.http2_prior_knowledge();
+        }
+        let client = match builder.build()
         {
             Ok(c) => c,
             Err(_) => return false,

@@ -278,6 +278,10 @@ fn main() {
                     .unwrap()
             });
         tls_settings.set_cert_resolver(sni_resolver);
+        // server.http2: offer h2 over ALPN; HTTP/1.1 clients still get h1.
+        if state.config.load().server.http2 {
+            tls_settings.enable_h2();
+        }
 
         // Add TLS listener
         proxy_service.add_tls_with_settings(&https_addr, None, tls_settings);

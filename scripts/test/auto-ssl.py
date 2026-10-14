@@ -180,6 +180,20 @@ def verified_https(host, root):
         return False, str(e)
 
 
+def alpn(host, offer):
+    """Protocol the HTTPS listener picks from the client's ALPN offer."""
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    ctx.set_alpn_protocols(offer)
+    try:
+        with socket.create_connection(("127.0.0.1", HTTPS_PORT), timeout=3) as s:
+            with ctx.wrap_socket(s, server_hostname=host) as t:
+                return t.selected_alpn_protocol()
+    except Exception as e:
+        return str(e)
+
+
 def mode(path):
     try:
         return stat.S_IMODE(os.stat(path).st_mode)
@@ -220,6 +234,10 @@ def main():
         check("certificate names only the domain", sans == ["a.quayel.test"], sans)
         ok, detail = verified_https("a.quayel.test", root)
         check("HTTPS verifies against the CA root", ok, detail)
+        got = alpn("a.quayel.test", ["h2", "http/1.1"])
+        check("HTTP/2 negotiated over ALPN", got == "h2", got)
+        got = alpn("a.quayel.test", ["http/1.1"])
+        check("HTTP/1.1-only client still served", got == "http/1.1", got)
 
         section("Account reuse")
         c = wait_for_pebble_cert("b.quayel.test")

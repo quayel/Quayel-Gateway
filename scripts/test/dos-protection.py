@@ -112,6 +112,7 @@ def main():
                 except OSError:
                     time.sleep(0.1)
         run_tests()
+        keepalive_rate_check(tmp)
     finally:
         gw.terminate()
         origin.terminate()
@@ -123,6 +124,59 @@ def main():
     passed = sum(results)
     print(f"\n{passed}/{len(results)} passed  (gateway log: {tmp}/gateway.out)")
     sys.exit(0 if passed == len(results) else 1)
+
+
+def keepalive_rate_check(tmp):
+    """Requests on one kept-alive connection are not new connections.
+
+    A second gateway with max_new_connections_per_ip_per_sec: 5 and no
+    request-rate limit. 30 quick requests on one connection must all pass.
+    (Holds because Pingora serves the whole keep-alive loop inside one
+    process_new call; this guards against that changing in an upgrade.)
+    """
+    print("Keep-alive vs new-connection rate")
+    port = GW_PORT + 2
+    cfg = json.loads(json.dumps(CONFIG))
+    cfg["listen"]["http"] = f"127.0.0.1:{port}"
+    cfg["server"]["protection"]["max_new_connections_per_ip_per_sec"] = 5
+    cfg["server"]["protection"]["max_requests_per_ip_per_sec"] = 0
+    path = os.path.join(tmp, "config-rate.json")
+    with open(path, "w") as f:
+        json.dump(cfg, f)
+    gw = subprocess.Popen([BINARY, "--workers", "2", path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        for _ in range(100):
+            try:
+                socket.create_connection(("127.0.0.1", port), timeout=0.2).close()
+                break
+            except OSError:
+                time.sleep(0.1)
+        time.sleep(1.1)  # the readiness probe used one of this second's 5
+        c = http.client.HTTPConnection("127.0.0.1", port, timeout=10, source_address=("127.0.0.11", 0))
+        ok = 0
+        try:
+            for _ in range(30):
+                c.request("GET", "/")
+                r = c.getresponse()
+                r.read()
+                ok += r.status == 200
+        except Exception:
+            pass
+        check("30 keep-alive requests on one connection (new-connection limit 5/s)", ok == 30, f"{ok}/30 answered")
+        c.close()
+        socks = [conn_to(port, "127.0.0.12") for _ in range(8)]
+        time.sleep(0.3)
+        dropped = sum(closed_within(x, 0.3) is not None for x in socks)
+        check("8 new connections in one second (limit 5/s): extra ones are dropped", dropped >= 3, f"{dropped} dropped")
+        for x in socks:
+            x.close()
+    finally:
+        gw.terminate()
+        gw.wait(10)
+
+
+def conn_to(port, src):
+    return socket.create_connection(("127.0.0.1", port), timeout=10, source_address=(src, 0))
 
 
 def run_tests():
@@ -239,6 +293,7 @@ def run_tests():
     r.read()
     check("the IP can connect again once its connections close (3 strikes, below the ban)", r.status == 200, str(r.status))
     c.close()
+
 
     print("Request flood")
     codes = []

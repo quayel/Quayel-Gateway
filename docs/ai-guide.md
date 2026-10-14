@@ -160,7 +160,7 @@ first LB in the array whose conditions match handles the request),
 - `sticky_session` uses `algorithm.key` (a condition path, e.g. `"req.header.X-Session-Id"`).
 
 ### Target
-`id*`, `host*`, `port*` (1–65535), `protocol: "http" | "https" = "http"` (⚠️ **lowercase**),
+`id*`, `host*`, `port*` (1–65535), `protocol: "http" | "https" | "h2c" | "h2" = "http"` (⚠️ **lowercase**; `h2c`/`h2` for gRPC),
 `weight: int = 100`, `enabled = true`, `tls?: { verify: bool = false, sni?: string }`
 
 ### HealthCheck
@@ -199,7 +199,7 @@ in, not_in, greater_than, greater_than_or_equal, less_than, less_than_or_equal, 
 | `browser_ttl.mode` | `bypass` `origin` `custom` |
 | `cache_key.mode` | `default` `custom` |
 | `algorithm.type` | `round_robin` `weighted_round_robin` `least_connections` `fast_response` `sticky_session` |
-| `target.protocol` | `http` `https` |
+| `target.protocol` | `http` `https` `h2c` `h2` |
 | `host_header.mode` | `visitor` `custom` `target` |
 | `health_check.mode` | `https` `accepts_connections` `off` |
 

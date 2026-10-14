@@ -259,7 +259,9 @@ impl ProxyHttp for QuayelGateway {
         // After a 101 the request "body" is the WebSocket client stream, read
         // with the same timeout, so it gets the idle limit instead.
         ctx.upgrade = session.is_upgrade_req();
-        session.set_read_timeout(if ctx.upgrade {
+        // gRPC streams can stay open and quiet for a long time, like a WebSocket.
+        ctx.grpc = is_grpc(session.req_header());
+        session.set_read_timeout(if ctx.upgrade || ctx.grpc {
             server.websocket_idle_timeout
         } else {
             server.body_read_timeout
@@ -536,7 +538,8 @@ impl ProxyHttp for QuayelGateway {
         let tls_verify = ctx.load_balancer.target_tls_verify.unwrap_or(false);
         let tls_sni = ctx.load_balancer.target_tls_sni.clone();
 
-        let mut peer = if target_protocol.eq_ignore_ascii_case("https") {
+        let tls = matches!(target_protocol.as_ref(), "https" | "h2");
+        let mut peer = if tls {
             let sni = resolve_upstream_sni(&target_host, tls_sni.as_deref(), ctx.host.as_deref());
             let mut peer = HttpPeer::new((target_host.as_ref(), target_port), true, sni);
             peer.options.verify_cert = tls_verify;
@@ -544,12 +547,18 @@ impl ProxyHttp for QuayelGateway {
         } else {
             HttpPeer::new((target_host.as_ref(), target_port), false, String::new())
         };
+        // h2c / h2 targets: HTTP/2 only (prior knowledge without TLS, ALPN h2
+        // with it), with many requests multiplexed on one connection.
+        if matches!(target_protocol.as_ref(), "h2c" | "h2") {
+            peer.options.set_http_version(2, 2);
+            peer.options.max_h2_streams = H2_UPSTREAM_STREAMS;
+        }
         // server.timeouts.upstream_*
         let config = self.state.config.load();
         let server = &config.server;
         peer.options.connection_timeout = server.upstream_connect_timeout;
         peer.options.total_connection_timeout = server.upstream_total_connect_timeout;
-        peer.options.read_timeout = if ctx.upgrade {
+        peer.options.read_timeout = if ctx.upgrade || ctx.grpc {
             server.websocket_idle_timeout
         } else {
             server.upstream_read_timeout
@@ -907,7 +916,12 @@ impl ProxyHttp for QuayelGateway {
         };
         if code > 0 {
             ctx.status_code = Some(code);
-            let _ = respond_error_with_id(session, code, &ctx.request_id).await;
+            if ctx.grpc && session.response_written().is_none() {
+                let message = grpc_message(code, &[]);
+                let _ = send_grpc_error(session, ctx, code, &message, &[]).await;
+            } else {
+                let _ = respond_error_with_id(session, code, &ctx.request_id).await;
+            }
         }
         FailToProxy {
             error_code: code,
@@ -919,10 +933,12 @@ impl ProxyHttp for QuayelGateway {
         &self,
         _session: &Session,
         ctx: &Self::CTX,
-        _error: &pingora_error::Error,
+        error: &pingora_error::Error,
     ) -> bool {
-        // Answered from cache: not a failure from the client's point of view.
+        // Answered from cache, or a gRPC stream the client ended normally:
+        // not a failure from the client's point of view.
         ctx.termination_phase == Some(TerminationPhase::Cache)
+            || (ctx.grpc && h2_finished_reset(error))
     }
 
     // logging: SINGLE log point
@@ -1000,7 +1016,10 @@ impl ProxyHttp for QuayelGateway {
         // proxying isn't a failure.
         if ctx.termination_phase != Some(TerminationPhase::Cache) {
             if let Some(e) = error {
-                if client_closed(e) {
+                if ctx.grpc && h2_finished_reset(e) {
+                    // The client ended the stream after the response with
+                    // RST_STREAM(NO_ERROR): normal for gRPC, not a failure.
+                } else if client_closed(e) {
                     // Nginx's convention: the client gave up before the
                     // response was complete.
                     event.status = 499;
@@ -1022,6 +1041,12 @@ async fn send_gateway_response(
     ctx: &mut RequestContext,
     transform: Option<&CompiledTransform>,
 ) -> pingora_core::Result<()> {
+    // A gRPC client can't read an HTTP error page: answer with a gRPC status
+    // instead. Cached copies are never gRPC (only GET/HEAD are cached).
+    if ctx.grpc && ctx.termination_phase != Some(TerminationPhase::Cache) {
+        let message = grpc_message(resp.status, &resp.body);
+        return send_grpc_error(session, ctx, resp.status, &message, &resp.headers).await;
+    }
     let mut header = ResponseHeader::build(resp.status, None)?;
     for (name, value) in resp.headers.iter() {
         // Framing comes from the body we send, not from the stored headers.
@@ -1072,6 +1097,121 @@ async fn send_gateway_response(
     Ok(())
 }
 
+/// Upstream HTTP/2 streams multiplexed on one connection (h2c / h2 targets).
+const H2_UPSTREAM_STREAMS: usize = 100;
+
+/// `application/grpc`, `application/grpc+proto`, `application/grpc-web`, ...
+fn is_grpc(req: &pingora_http::RequestHeader) -> bool {
+    req.headers
+        .get(http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|ct| {
+            ct.len() >= 16 && ct.as_bytes()[..16].eq_ignore_ascii_case(b"application/grpc")
+        })
+}
+
+/// gRPC status for an HTTP status the gateway decided on. Follows gRPC's
+/// HTTP-to-status mapping, except 413 and 429 which are RESOURCE_EXHAUSTED.
+fn grpc_code(status: u16) -> u8 {
+    match status {
+        400 => 13,             // INTERNAL
+        401 => 16,             // UNAUTHENTICATED
+        403 => 7,              // PERMISSION_DENIED
+        404 => 12,             // UNIMPLEMENTED
+        413 | 429 => 8,        // RESOURCE_EXHAUSTED
+        502 | 503 | 504 => 14, // UNAVAILABLE
+        _ => 2,                // UNKNOWN
+    }
+}
+
+/// `grpc-message`: the gateway's text body if it is one short line, else the
+/// HTTP reason phrase. Percent-encoded as the gRPC spec requires.
+fn grpc_message(status: u16, body: &[u8]) -> String {
+    // Gateway blocks are JSON like {"error":"blocked","rule_id":"x",...}.
+    let from_json = serde_json::from_slice::<serde_json::Value>(body)
+        .ok()
+        .and_then(|v| {
+            let error = v.get("error")?.as_str()?.to_string();
+            Some(match v.get("rule_id").and_then(|r| r.as_str()) {
+                Some(rule) => format!("{error} (rule {rule})"),
+                None => error,
+            })
+        });
+    let text = from_json
+        .or_else(|| std::str::from_utf8(body).ok().map(str::to_string))
+        .as_deref()
+        .map(str::trim)
+        .filter(|t| !t.is_empty() && t.len() <= 200 && !t.contains('\n'))
+        .map(str::to_string)
+        .unwrap_or_else(|| {
+            http::StatusCode::from_u16(status)
+                .ok()
+                .and_then(|s| s.canonical_reason())
+                .unwrap_or("gateway error")
+                .to_string()
+        });
+    let mut out = String::with_capacity(text.len());
+    for b in text.bytes() {
+        if (0x20..=0x7e).contains(&b) && b != b'%' {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("%{:02X}", b));
+        }
+    }
+    out
+}
+
+/// A gRPC error response: HTTP 200 with no body and the status in
+/// grpc-status / grpc-message. The log keeps the HTTP status the gateway
+/// decided on.
+async fn send_grpc_error(
+    session: &mut Session,
+    ctx: &mut RequestContext,
+    status: u16,
+    message: &str,
+    extra_headers: &[(String, String)],
+) -> pingora_core::Result<()> {
+    let mut status_fields = http::HeaderMap::new();
+    status_fields.insert(
+        "grpc-status",
+        http::HeaderValue::from(grpc_code(status) as u16),
+    );
+    status_fields.insert(
+        "grpc-message",
+        http::HeaderValue::from_str(message)
+            .unwrap_or(http::HeaderValue::from_static("gateway error")),
+    );
+    // Pingora can't end an h2 stream on the HEADERS frame (a "trailers-only"
+    // response), so over HTTP/2 the status goes in a trailers frame after
+    // the headers. HTTP/1.1 (grpc-web) carries it in the headers.
+    let h2 = session.as_http2().is_some();
+    let mut header = ResponseHeader::build(200, None)?;
+    header.insert_header(http::header::CONTENT_TYPE, "application/grpc")?;
+    if !h2 {
+        for (name, value) in &status_fields {
+            header.insert_header(name.clone(), value.clone())?;
+        }
+        header.insert_header(http::header::CONTENT_LENGTH, "0")?;
+    }
+    for (name, value) in extra_headers {
+        if name.eq_ignore_ascii_case("retry-after") {
+            let _ = header.insert_header("retry-after", value.as_str());
+        }
+    }
+    insert_request_id(header.insert_header(request_id::HEADER, ctx.request_id.as_str()));
+    for (name, val) in &ctx.firewall.response_headers {
+        let _ = header.insert_header(name.clone(), val.clone());
+    }
+    ctx.status_code = Some(status);
+    if h2 {
+        session.write_response_header(Box::new(header), false).await?;
+        session.write_response_trailers(status_fields).await
+    } else {
+        session.write_response_header(Box::new(header), false).await?;
+        session.write_response_body(Some(Bytes::new()), true).await
+    }
+}
+
 /// The request ID is always a valid header value (generated hex or a checked
 /// incoming one); this only exists to make the `Result` explicit.
 fn insert_request_id(r: pingora_core::Result<()>) {
@@ -1087,6 +1227,15 @@ fn client_closed(e: &pingora_core::Error) -> bool {
             e.etype(),
             ErrorType::ConnectionClosed | ErrorType::ReadError | ErrorType::WriteError
         )
+}
+
+/// An HTTP/2 client reset the stream with NO_ERROR ("done, nothing wrong").
+/// gRPC clients do this when the server finishes before they half-close;
+/// a real cancel uses CANCEL.
+fn h2_finished_reset(e: &pingora_core::Error) -> bool {
+    e.root_cause()
+        .downcast_ref::<h2::Error>()
+        .is_some_and(|h| h.reason() == Some(h2::Reason::NO_ERROR))
 }
 
 /// Pingora's `respond_error`, plus `X-QG-Request-Id`.
@@ -1248,6 +1397,36 @@ fn resolve_client_ip_from_raw(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn grpc_content_types() {
+        let req = |ct: &str| {
+            let mut r = pingora_http::RequestHeader::build("POST", b"/s/M", None).unwrap();
+            r.insert_header("content-type", ct).unwrap();
+            r
+        };
+        assert!(is_grpc(&req("application/grpc")));
+        assert!(is_grpc(&req("application/grpc+proto")));
+        assert!(is_grpc(&req("Application/GRPC-web")));
+        assert!(!is_grpc(&req("application/json")));
+        assert!(!is_grpc(&req("application/gr")));
+    }
+
+    #[test]
+    fn grpc_status_and_message() {
+        assert_eq!(grpc_code(403), 7);
+        assert_eq!(grpc_code(429), 8);
+        assert_eq!(grpc_code(502), 14);
+        assert_eq!(grpc_code(418), 2);
+        assert_eq!(
+            grpc_message(403, br#"{"error":"blocked","status":403,"rule_id":"r1"}"#),
+            "blocked (rule r1)"
+        );
+        assert_eq!(grpc_message(429, b"Too many requests\n"), "Too many requests");
+        assert_eq!(grpc_message(502, b""), "Bad Gateway");
+        // Non-ASCII and '%' are percent-encoded.
+        assert_eq!(grpc_message(400, "100% caf\u{e9}".as_bytes()), "100%25 caf%C3%A9");
+    }
 
     fn compiled(client_ip: &str) -> CompiledConfig {
         let raw: crate::config::schema::GatewayConfig = serde_json::from_str(&format!(
