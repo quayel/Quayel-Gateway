@@ -12,6 +12,21 @@ write entries for people running the gateway, not for people reading the diff.
 
 ## [Unreleased]
 
+### Added
+
+- **TCP proxy (`streams`).** Forward raw TCP connections from a port on the
+  gateway to backends, like nginx's `stream` module: databases, MQTT, SSH,
+  game servers, TLS passthrough. Each stream has load balancing
+  (`round_robin`, `weighted_round_robin`, `least_connections`, `ip_hash`),
+  fallback to the next target when connecting fails, `accepts_connections`
+  health checks, allow/block `rules` on the client IP and IP intel, an
+  optional PROXY protocol v1/v2 header, and an optional `idle_secs` (off by
+  default, so pooled database connections stay open). `server.protection`
+  connection limits and bans apply, shared with HTTP. Every connection
+  gets one access-log line (`method: "TCP"`, `path`: the stream id,
+  bytes each way, connect time). Targets, rules and timeouts follow config
+  reloads; new listen addresses need a restart. See `docs/streams.md`.
+
 ## [0.5.0] - 2026-10-14
 
 ### Added

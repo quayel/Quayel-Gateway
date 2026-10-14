@@ -139,6 +139,8 @@ fn method_label(m: &str) -> &'static str {
         "OPTIONS" => "OPTIONS",
         "CONNECT" => "CONNECT",
         "TRACE" => "TRACE",
+        "TCP" => "TCP",
+        "UDP" => "UDP",
         _ => "OTHER",
     }
 }

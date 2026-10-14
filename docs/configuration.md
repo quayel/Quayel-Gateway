@@ -14,6 +14,7 @@ Complete reference for `config.json`.
 | `client_ip` | object | — | Client IP resolution strategy |
 | `server` | object | — | Workers, timeouts, size limits and DoS protection. Every field has a default |
 | `jwt` | object | — | Keys for verifying JWTs read by `header.<name>.jwt.*` fields. Without it, tokens are decoded unchecked |
+| `streams` | array | — | TCP proxies (layer 4): raw ports forwarded to backends. See [Streams](streams.md) |
 | `plugins` | object | ✅ | Plugin configurations |
 
 ## `listen`
@@ -299,6 +300,20 @@ A token with an unknown `kid` triggers an early refetch, at most once every
     { "id": "legacy", "algorithms": ["HS256"], "secret_env": "QG_LEGACY_JWT_SECRET" }
   ]
 }
+```
+
+## `streams`
+
+Forwards raw TCP connections (databases, MQTT, SSH, game servers…) from a
+port on the gateway to one of several targets, with load balancing,
+failover, health checks, IP rules, PROXY protocol and one access-log line
+per connection. Full reference: [Streams](streams.md).
+
+```json
+"streams": [
+  { "id": "redis", "listen": "0.0.0.0:6379",
+    "targets": [{ "id": "r1", "host": "10.0.0.5", "port": 6379 }] }
+]
 ```
 
 ## `plugins`

@@ -34,6 +34,11 @@ pub struct GatewayConfig {
     #[serde(default)]
     pub metrics: Option<MetricsConfig>,
 
+    /// TCP proxies (layer 4): each entry forwards raw connections from a
+    /// port to its targets. Optional; omitted → no stream listeners.
+    #[serde(default)]
+    pub streams: Vec<StreamConfig>,
+
     pub plugins: PluginsConfig,
 }
 
@@ -1197,4 +1202,111 @@ fn default_cert_storage_path() -> String {
 
 fn default_renewal_days_before() -> u32 {
     30
+}
+
+// ── Streams (layer 4 proxy) ──────────────────────────────────────────────────
+
+/// One TCP proxy: connections to `listen` are forwarded byte for byte to one
+/// of `targets`. HTTP rules (path, headers, JWT, cache, transform) can't see
+/// inside these connections; `rules` work on the client IP and IP intel.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StreamConfig {
+    pub id: String,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub protocol: StreamProtocol,
+    /// Address to listen on, e.g. "0.0.0.0:5432". Read at startup only.
+    pub listen: String,
+    pub targets: Vec<StreamTargetConfig>,
+    #[serde(default)]
+    pub algorithm: StreamAlgorithm,
+    /// Only `accepts_connections` (and `off`) apply to streams.
+    #[serde(default)]
+    pub health_check: Option<HealthCheckConfig>,
+    /// Checked in order when a connection opens; the first match decides.
+    /// No match → the connection is allowed.
+    #[serde(default)]
+    pub rules: Vec<StreamRuleConfig>,
+    /// Send a PROXY protocol header to the target so it sees the client IP.
+    #[serde(default)]
+    pub proxy_protocol: ProxyProtocolVersion,
+    #[serde(default = "default_stream_connect_secs")]
+    pub connect_timeout_secs: u64,
+    /// Close a connection after this many seconds with no data in either
+    /// direction. 0 / omitted → never.
+    #[serde(default)]
+    pub idle_secs: u64,
+}
+
+fn default_stream_connect_secs() -> u64 {
+    5
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum StreamProtocol {
+    #[default]
+    Tcp,
+}
+
+impl StreamProtocol {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            StreamProtocol::Tcp => "tcp",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StreamTargetConfig {
+    pub id: String,
+    pub host: String,
+    pub port: u16,
+    #[serde(default = "default_weight")]
+    pub weight: u32,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum StreamAlgorithm {
+    #[default]
+    RoundRobin,
+    WeightedRoundRobin,
+    LeastConnections,
+    /// Same client IP → same target (while the target set doesn't change).
+    IpHash,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StreamRuleConfig {
+    pub id: String,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub conditions: Vec<Condition>,
+    pub action: StreamRuleAction,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum StreamRuleAction {
+    Allow,
+    Block,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ProxyProtocolVersion {
+    #[default]
+    Off,
+    V1,
+    V2,
 }

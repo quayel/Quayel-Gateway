@@ -38,6 +38,8 @@ pub struct GatewayState {
     pub metrics: Arc<crate::utils::metrics::PluginMetrics>,
     /// Per-IP connection/request counters and bans (server.protection).
     pub ip_tracker: Arc<IpTracker>,
+    /// Stream target health and balancing counters.
+    pub streams: crate::streams::StreamRuntime,
 }
 
 impl GatewayState {
@@ -76,6 +78,7 @@ impl GatewayState {
             auto_ssl,
             metrics: Arc::new(crate::utils::metrics::PluginMetrics::new()),
             ip_tracker,
+            streams: Default::default(),
         }
     }
 }

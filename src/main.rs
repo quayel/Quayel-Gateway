@@ -8,6 +8,7 @@ mod jwt;
 mod lb;
 mod logging;
 mod plugins;
+mod streams;
 mod utils;
 
 // Use jemalloc as the global allocator for better performance under high concurrency
@@ -19,6 +20,7 @@ use crate::config::{compile_config, load_config, ConfigWatcher};
 use crate::gateway::conn_guard::GuardedApp;
 use crate::gateway::gateway::{GatewayState, QuayelGateway};
 use crate::logging::queue::LogQueue;
+use crate::streams::edge::EdgeApp;
 use pingora_core::apps::HttpServerOptions;
 use pingora_core::server::configuration::Opt;
 use pingora_core::server::Server;
@@ -248,13 +250,26 @@ fn main() {
     server_options.keepalive_request_limit = state.config.load().server.max_requests_per_connection;
     proxy.server_options = Some(server_options);
     // GuardedApp applies server.protection connection limits and the
-    // request-header deadline before Pingora parses each request.
+    // request-header deadline before Pingora parses each request. EdgeApp
+    // sends connections on stream ports to the TCP proxy instead.
+    let stream_listens = state.config.load().streams.listen_addrs();
     let mut proxy_service = Service::new(
         "Quayel Gateway".to_string(),
-        GuardedApp::new(proxy, state.clone()),
+        EdgeApp::new(
+            GuardedApp::new(proxy, state.clone()),
+            state.clone(),
+            stream_listens.clone(),
+        ),
     );
 
     proxy_service.add_tcp(&listen_addr);
+    for s in &state.config.load().streams.list {
+        tracing::info!(stream = %s.id, listen = %s.listen, "TCP stream listening");
+    }
+    for addr in &stream_listens {
+        proxy_service.add_tcp(&addr.to_string());
+    }
+    crate::streams::health::spawn(state.clone(), &bg_handle);
 
     // Start HTTPS listener with Auto-SSL if configured
     if let Some(ref auto_ssl_manager) = state.auto_ssl {

@@ -41,6 +41,8 @@ pub struct CompiledConfig {
     pub auto_ssl: Option<CompiledAutoSsl>,
     /// The metrics listener (startup only).
     pub metrics: Option<CompiledMetrics>,
+    /// TCP proxies. Listen addresses are opened at startup only.
+    pub streams: crate::streams::CompiledStreams,
 }
 
 #[derive(Debug, Clone)]
@@ -346,6 +348,14 @@ pub fn compile_config(raw: &GatewayConfig) -> Result<CompiledConfig, String> {
         }
     }
 
+    let streams = crate::streams::compile_streams(
+        &raw.streams,
+        raw.listen.http.as_deref().unwrap_or("0.0.0.0:80"),
+        auto_ssl
+            .as_ref()
+            .map(|_| raw.listen.https.as_deref().unwrap_or("0.0.0.0:443")),
+    )?;
+
     Ok(CompiledConfig {
         gateway_id: Arc::from(raw.gateway_id.as_str()),
         gateway_name: Arc::from(raw.gateway_name.as_str()),
@@ -366,6 +376,7 @@ pub fn compile_config(raw: &GatewayConfig) -> Result<CompiledConfig, String> {
         logging,
         auto_ssl,
         metrics,
+        streams,
     })
 }
 

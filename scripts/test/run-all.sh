@@ -11,10 +11,13 @@
 #   7. logging.py                  access log, X-QG-Request-Id, rotation, reload
 #   8. websocket.py                WebSocket proxying, body limit, idle timeout
 #   9. sink-backpressure.py        slow sink: concurrency, spool instead of drop
-#  10. auto-ssl.py                 ACME issuance against Pebble (needs Docker)
-#  11. sinks.py                    log sinks + /metrics against ClickHouse, Loki,
+#  10. tcp-proxy.py               TCP streams: balancing, failover, health, rules,
+#                                  PROXY protocol, idle, logs (+ Redis/Postgres
+#                                  with Docker)
+#  11. auto-ssl.py                 ACME issuance against Pebble (needs Docker)
+#  12. sinks.py                    log sinks + /metrics against ClickHouse, Loki,
 #                                  OTel Collector, Prometheus (needs Docker)
-#  12. grpc.py                     HTTP/2 + gRPC: h2c/h2 in and out, streaming,
+#  13. grpc.py                     HTTP/2 + gRPC: h2c/h2 in and out, streaming,
 #                                  gRPC error statuses (needs Docker)
 #
 # Each suite prints its own PASS/FAIL list; a summary per suite is at the end.
@@ -45,6 +48,7 @@ run "jwt-verify"         env BIN="$BIN" python3 scripts/test/jwt-verify.py
 run "logging"            env BIN="$BIN" python3 scripts/test/logging.py
 run "websocket"          env BIN="$BIN" python3 scripts/test/websocket.py
 run "sink-backpressure"  env BIN="$BIN" python3 scripts/test/sink-backpressure.py
+run "tcp-proxy"          env BIN="$BIN" python3 scripts/test/tcp-proxy.py
 if command -v docker >/dev/null && docker info >/dev/null 2>&1; then
     run "auto-ssl"       env BIN="$BIN" python3 scripts/test/auto-ssl.py
     run "sinks"          env BIN="$BIN" python3 scripts/test/sinks.py

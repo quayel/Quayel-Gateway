@@ -106,6 +106,12 @@ impl ConfigWatcher {
                     }
                 }
 
+                if compiled.streams.listen_addrs() != state.config.load().streams.listen_addrs() {
+                    tracing::warn!(
+                        "streams: listen addresses changed; new or moved listeners open after \
+                         a restart (targets, rules and timeouts apply now)"
+                    );
+                }
                 state.reload_logging(compiled.logging.as_ref(), &handle_clone);
                 state.config.store(Arc::new(compiled));
                 last_hash = Some(hash);

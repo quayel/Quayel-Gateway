@@ -302,7 +302,7 @@ impl IpIntelPlugin {
         PluginFlow::Continue
     }
 
-    async fn lookup_ip(&self, ip: IpAddr) -> Arc<IpIntel> {
+    pub async fn lookup_ip(&self, ip: IpAddr) -> Arc<IpIntel> {
         // Check cache first — sharded cache uses read lock on one shard only.
         if let Some(cached) = self.cache.get(&ip) {
             return cached;
