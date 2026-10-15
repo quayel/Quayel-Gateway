@@ -12,6 +12,30 @@ write entries for people running the gateway, not for people reading the diff.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Load-balancer health checks now take unhealthy targets out.** The
+  checks ran and logged `Target … is now unhealthy`, but requests kept going
+  to that target until it recovered. Unhealthy targets now get no traffic,
+  and when every target in a pool is down the gateway answers
+  `503 {"error":"no_healthy_upstream"}` as documented. Pools with
+  `health_check.mode: "off"` (the default) are unchanged. Health is tracked
+  per pool, so a backend used in two pools with different checks gets its
+  own result in each, and the log line names the pool:
+  `Target 10.0.0.21:8000 is now unhealthy (pool api)`.
+- **Health checks honour `expected_statuses`.** Any 2xx or 3xx used to count
+  as healthy whatever the list said. When the list is set, only those codes
+  count now; when it's unset or empty, any 2xx or 3xx still does. Health
+  checks no longer follow redirects, so a `301`/`302` is matched as itself.
+- **`req.scheme` is `https` for HTTPS requests.** It was `http` unless the
+  client sent `X-Forwarded-Proto`, so `req.scheme` conditions (such as an
+  HTTP → HTTPS redirect rule) didn't work on the gateway's own HTTPS port,
+  and backends received `X-Forwarded-Proto: http` for HTTPS traffic.
+- **`X-Forwarded-Proto` is only believed from `client_ip.trusted_proxies`.**
+  Any client could set it to change `req.scheme`, the cache key and the
+  `X-Forwarded-Proto` sent upstream. From other clients the header is now
+  ignored and the scheme comes from the connection.
+
 ## [0.6.0] - 2026-10-15
 
 ### Added

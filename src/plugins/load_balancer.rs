@@ -17,6 +17,8 @@ pub struct LoadBalancerPlugin {
     pub rr_counters: DashMap<String, AtomicUsize>,
     pub connection_counts: DashMap<String, AtomicU64>,
     pub latency_ewma: DashMap<String, AtomicU64>,
+    /// Results of the active health checks; unhealthy targets get no traffic.
+    pub health: Arc<crate::lb::health::HealthChecker>,
 }
 
 impl LoadBalancerPlugin {
@@ -25,6 +27,7 @@ impl LoadBalancerPlugin {
             rr_counters: DashMap::new(),
             connection_counts: DashMap::new(),
             latency_ewma: DashMap::new(),
+            health: Arc::new(crate::lb::health::HealthChecker::new()),
         }
     }
 
@@ -50,8 +53,16 @@ impl LoadBalancerPlugin {
                 continue;
             }
 
-            let healthy_targets: Vec<&CompiledTarget> =
-                lb.targets.iter().filter(|t| t.enabled).collect();
+            // Only pools with active checks have health state to look up.
+            let checked = lb
+                .health_check
+                .as_ref()
+                .is_some_and(|hc| hc.mode != HealthCheckMode::Off);
+            let healthy_targets: Vec<&CompiledTarget> = lb
+                .targets
+                .iter()
+                .filter(|t| t.enabled && (!checked || self.health.is_healthy(&lb.id, &t.host, t.port)))
+                .collect();
 
             if healthy_targets.is_empty() {
                 ctx.status_code = Some(503);

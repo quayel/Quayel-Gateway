@@ -29,7 +29,7 @@ Conditions are the core matching mechanism used by Firewall, Rate Limiting, Cach
 | `req.host` / `http.host` | string | Request host header |
 | `req.path` / `http.path` | string | Request path (including query string) |
 | `req.method` / `http.method` | string | HTTP method (GET, POST, etc.) |
-| `req.scheme` / `http.scheme` | string | Request scheme (http, https) |
+| `req.scheme` / `http.scheme` | string | Request scheme (http, https). `X-Forwarded-Proto` is believed only from `client_ip.trusted_proxies` |
 | `req.ip` / `http.ip` | string | Resolved client IP |
 | `req.peer_ip` / `http.peer_ip` | string | Direct connection IP |
 | `req.user_agent` / `http.user_agent` | string | User-Agent header |

@@ -242,9 +242,13 @@ Periodic HTTP health checks.
 | `path` | string | `"/"` | Health check endpoint |
 | `interval_seconds` | int | `5` | Check interval |
 | `timeout_ms` | int | `1000` | Request timeout |
-| `expected_statuses` | array | `[200]` | Healthy status codes |
+| `expected_statuses` | array | any 2xx/3xx | Status codes that count as healthy. When unset or empty, any 2xx or 3xx does. Redirects are not followed |
 | `healthy_threshold` | int | `2` | Consecutive successes to mark healthy |
 | `unhealthy_threshold` | int | `3` | Consecutive failures to mark unhealthy |
+
+Unhealthy targets get no traffic until they pass `healthy_threshold` checks again. Health is tracked per pool, so the same backend can be healthy in one pool and down in another with different checks.
+
+> **Note:** health checks are started when the gateway starts. A config reload applies `enabled`, weights and new targets straight away, but new targets aren't health-checked and changed `health_check` settings don't take effect until the next restart.
 
 ### Accepts Connections mode
 

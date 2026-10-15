@@ -398,7 +398,8 @@ fn start_background_tasks(state: &Arc<GatewayState>, bg_handle: &tokio::runtime:
     let config = state.config.load();
     if let Some(lb_config) = &config.load_balancer {
         if lb_config.enabled {
-            let health_checker = Arc::new(crate::lb::health::HealthChecker::new());
+            // Shared with the load balancer, which skips unhealthy targets.
+            let health_checker = state.plugin_runner.load_balancer.health.clone();
             // Clone the configs so we can move them into the spawned task
             let lb_configs = lb_config.load_balancers.clone();
             let checker = health_checker.clone();

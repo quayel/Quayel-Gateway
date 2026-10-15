@@ -43,7 +43,7 @@ These paths can be used in the `left` field of any condition (firewall, rate lim
 | `req.host` / `http.host` | string | Host header | `"api.example.com"` |
 | `req.path` / `http.path` | string | Request path + query | `"/api/v1/users?page=1"` |
 | `req.method` / `http.method` | string | HTTP method | `"GET"` |
-| `req.scheme` / `http.scheme` | string | Request scheme | `"https"` |
+| `req.scheme` / `http.scheme` | string | Request scheme: `https` for TLS connections, else `http`. `X-Forwarded-Proto` overrides it only from `client_ip.trusted_proxies` | `"https"` |
 | `req.ip` / `http.ip` | string | Resolved client IP | `"203.0.113.50"` |
 | `req.peer_ip` / `http.peer_ip` | string | Direct connection IP | `"10.0.0.1"` |
 | `req.user_agent` / `http.user_agent` | string | User-Agent header | `"Mozilla/5.0 ..."` |

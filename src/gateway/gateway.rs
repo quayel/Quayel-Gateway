@@ -374,7 +374,12 @@ impl ProxyHttp for QuayelGateway {
         set_arc_str(&mut ctx.method, session.req_header().method.as_str());
         set_arc_str(
             &mut ctx.scheme,
-            resolve_scheme_from_raw(&session.req_header().uri, raw_headers),
+            resolve_scheme_from_raw(
+                &config,
+                session.digest().is_some_and(|d| d.ssl_digest.is_some()),
+                raw_headers,
+                peer_addr,
+            ),
         );
         set_opt_arc_str(
             &mut ctx.user_agent,
@@ -1349,31 +1354,36 @@ fn set_opt_arc_str(slot: &mut Option<Arc<str>>, value: Option<&str>) {
     }
 }
 
-/// Resolve scheme directly from raw HeaderMap — avoids full header extraction.
-/// Returns a `&'static str` ("http" / "https" are the only two possible values),
-/// so the common case allocates nothing at all.
-fn resolve_scheme_from_raw(uri: &http::Uri, headers: &http::HeaderMap) -> &'static str {
-    for hdr_name in &["x-forwarded-proto", "x-forwarded-protocol", "x-scheme"] {
-        if let Some(value) = headers.get(*hdr_name).and_then(|v| v.to_str().ok()) {
-            if let Some(proto) = value.split(',').next() {
-                let proto = proto.trim();
-                if proto.eq_ignore_ascii_case("http") {
-                    return "http";
-                }
-                if proto.eq_ignore_ascii_case("https") {
-                    return "https";
+/// Resolve the request scheme: "https" when the client connection is TLS,
+/// otherwise "http". `X-Forwarded-Proto` (and its aliases) is only believed
+/// from `client_ip.trusted_proxies`, so a direct client can't claim https.
+/// Returns a `&'static str`, so the common case allocates nothing at all.
+fn resolve_scheme_from_raw(
+    config: &CompiledConfig,
+    tls: bool,
+    headers: &http::HeaderMap,
+    peer_ip: std::net::IpAddr,
+) -> &'static str {
+    if config.client_ip.trusted_proxies.contains(peer_ip) {
+        for hdr_name in &["x-forwarded-proto", "x-forwarded-protocol", "x-scheme"] {
+            if let Some(value) = headers.get(*hdr_name).and_then(|v| v.to_str().ok()) {
+                if let Some(proto) = value.split(',').next() {
+                    let proto = proto.trim();
+                    if proto.eq_ignore_ascii_case("http") {
+                        return "http";
+                    }
+                    if proto.eq_ignore_ascii_case("https") {
+                        return "https";
+                    }
                 }
             }
         }
     }
-    if let Some(scheme) = uri.scheme_str() {
-        return if scheme.eq_ignore_ascii_case("https") {
-            "https"
-        } else {
-            "http"
-        };
+    if tls {
+        "https"
+    } else {
+        "http"
     }
-    "http"
 }
 
 /// Resolve client IP directly from raw HeaderMap — avoids full header extraction.
@@ -1492,6 +1502,26 @@ mod tests {
         );
         assert_eq!(resolve(&c, "8.8.8.8", "203.0.113.9"), "8.8.8.8");
         assert_eq!(resolve(&c, "8.8.8.8", "10.1.2.3"), "10.1.2.3");
+    }
+
+    #[test]
+    fn scheme_from_tls_and_trusted_forwarded_proto() {
+        let c = compiled(r#"{"source":"peer_ip"}"#);
+        let none = http::HeaderMap::new();
+        let mut https = http::HeaderMap::new();
+        https.insert("x-forwarded-proto", "https".parse().unwrap());
+        let mut http_ = http::HeaderMap::new();
+        http_.insert("x-forwarded-proto", "http".parse().unwrap());
+        let public: std::net::IpAddr = "203.0.113.9".parse().unwrap();
+        let private: std::net::IpAddr = "10.1.2.3".parse().unwrap();
+        // The connection decides for direct clients.
+        assert_eq!(resolve_scheme_from_raw(&c, true, &none, public), "https");
+        assert_eq!(resolve_scheme_from_raw(&c, false, &none, public), "http");
+        // A direct client can't claim https (or downgrade) with the header.
+        assert_eq!(resolve_scheme_from_raw(&c, false, &https, public), "http");
+        assert_eq!(resolve_scheme_from_raw(&c, true, &http_, public), "https");
+        // A trusted proxy (private range by default) is believed.
+        assert_eq!(resolve_scheme_from_raw(&c, false, &https, private), "https");
     }
 
     #[test]
