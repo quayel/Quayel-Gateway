@@ -54,7 +54,7 @@ jobs:
             runner: ubuntu-22.04-arm
             docker_arch: arm64
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           ref: ${{ env.TAG }}
 
@@ -105,7 +105,7 @@ jobs:
           deb="$(packaging/build-deb.sh target/release/quayel-gateway "${TAG}" "${{ matrix.docker_arch }}" dist)"
           (cd dist && sha256sum "$(basename "${deb}")" > "$(basename "${deb}").sha256")
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: release-${{ matrix.target }}
           path: |
@@ -114,7 +114,7 @@ jobs:
             dist/*.sha256
           if-no-files-found: error
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: docker-bin-${{ matrix.docker_arch }}
           path: docker-bin/
@@ -127,12 +127,12 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           ref: ${{ env.TAG }}
           fetch-depth: 0   # release-notes.sh needs the previous tag
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           pattern: release-*
           path: dist
@@ -169,11 +169,11 @@ jobs:
       DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
       HAS_DOCKERHUB: ${{ secrets.DOCKERHUB_USERNAME != '' && secrets.DOCKERHUB_TOKEN != '' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           ref: ${{ env.TAG }}
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           pattern: docker-bin-*
           path: docker-bin
