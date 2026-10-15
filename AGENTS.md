@@ -75,7 +75,7 @@ EOF
 timeout -k 2 3 ./target/release/quayel-gateway config.json
 ```
 
-7. Smoke test: `curl -s -i http://localhost:8080/…` and inspect the last access-log
+7. Smoke test: `curl -s -i http://localhost/…` and inspect the last access-log
    line. On a running gateway the config hot-reloads when saved (watch stderr for
    `Config hot-reloaded successfully`; an invalid save keeps the old config live).
 

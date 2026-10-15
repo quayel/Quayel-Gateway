@@ -12,6 +12,15 @@ write entries for people running the gateway, not for people reading the diff.
 
 ## [Unreleased]
 
+### Changed
+
+- **The bundled demo and quickstart configs listen on ports 80 and 443**,
+  the gateway's defaults, instead of 8080 and 8443. The Docker image now
+  exposes only 80 and 443, and `docker-compose.yml` publishes `80:80` and
+  `443:443`. If you run the image with the bundled demo config and publish
+  `-p 8080:8080`, change it to `-p 80:80` (or publish `-p 8080:80`). Your own
+  config is unaffected: whatever it sets in `listen` is still used.
+
 ### Fixed
 
 - **Load-balancer health checks now take unhealthy targets out.** The

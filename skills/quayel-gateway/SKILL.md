@@ -66,7 +66,7 @@ other docs.
   "gateway_name": "default",
   "server_name": "api.example.com",
   "config_version": "1",
-  "listen": { "http": "0.0.0.0:8080" },
+  "listen": { "http": "0.0.0.0:80" },
   "plugins": {
     "ip_intel": { "enabled": true },
     "load_balancer": {
@@ -176,7 +176,7 @@ Load balancing — 2 backends, least-connections, TCP health checks:
 TLS — on-demand Let's Encrypt (start with `"staging": true`):
 
 ```json
-"listen": { "http": "0.0.0.0:8080", "https": "0.0.0.0:8443" },
+"listen": { "http": "0.0.0.0:80", "https": "0.0.0.0:443" },
 "plugins": { "auto_ssl": { "enabled": true, "email": "admin@example.com",
   "domains": ["api.example.com"], "staging": true } }
 ```
@@ -192,7 +192,7 @@ TLS — on-demand Let's Encrypt (start with `"staging": true`):
    ```bash
    timeout -k 2 3 ./target/release/quayel-gateway config.json
    ```
-5. **Smoke test:** `curl -s -i http://localhost:8080/<path>` and
+5. **Smoke test:** `curl -s -i http://localhost/<path>` and
    `tail -1 <access-log>.jsonl | python3 -m json.tool`.
 6. **Hot reload:** the config file is watched — a valid save reloads without
    restart (log: `Config hot-reloaded successfully`). An invalid save is

@@ -22,8 +22,8 @@ Complete reference for `config.json`.
 ```json
 {
   "listen": {
-    "http": "0.0.0.0:8080",
-    "https": "0.0.0.0:8443"
+    "http": "0.0.0.0:80",
+    "https": "0.0.0.0:443"
   }
 }
 ```
@@ -759,7 +759,7 @@ See [Auto-SSL Plugin](plugins/auto-ssl.md) for full documentation.
   "server_name": "api.example.com",
   "config_version": "2026-01-01-001",
   "listen": {
-    "http": "0.0.0.0:8080"
+    "http": "0.0.0.0:80"
   },
   "client_ip": {
     "source": "header_index",

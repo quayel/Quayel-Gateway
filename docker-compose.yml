@@ -1,7 +1,7 @@
 # Quayel Gateway — Docker Compose
 #
 # SSL-ready defaults:
-#   - host ports 80/443 published to the demo config's 8080/8443 listeners
+#   - host ports 80/443 published to the gateway's 80/443 listeners
 #   - Auto-SSL certificates persisted in the `quayel-certs` volume so ACME
 #     issuances survive container restarts (required — otherwise every start
 #     re-issues certs and hits Let's Encrypt rate limits)
@@ -26,8 +26,8 @@ services:
     container_name: quayel-gateway
     restart: unless-stopped
     ports:
-      - "80:8080"     # HTTP: ACME HTTP-01 challenges + plain HTTP
-      - "443:8443"    # HTTPS: SNI cert resolver / Auto-SSL
+      - "80:80"       # HTTP: ACME HTTP-01 challenges + plain HTTP
+      - "443:443"     # HTTPS: SNI cert resolver / Auto-SSL
     volumes:
       # Persist ACME account key + issued certs/keys across restarts
       - quayel-certs:/var/lib/quayel/certs

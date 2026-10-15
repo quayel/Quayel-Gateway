@@ -30,7 +30,7 @@ COPY examples/config.demo.json /etc/quayel-gateway/config.json
 
 WORKDIR /etc/quayel-gateway
 
-EXPOSE 80 443 8080 8443
+EXPOSE 80 443
 STOPSIGNAL SIGTERM
 
 ENTRYPOINT ["/usr/local/bin/quayel-gateway"]

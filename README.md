@@ -54,11 +54,11 @@ docker run --rm -d --name quayel --network host \
   -v $PWD/config.json:/etc/quayel-gateway/config.json:ro quayel/quayel-gateway
 
 # 4. Ask twice
-curl -s -o /dev/null -D - http://localhost:8080/ | grep -i cache-status   # MISS
-curl -s -o /dev/null -D - http://localhost:8080/ | grep -i cache-status   # HIT
+curl -s -o /dev/null -D - http://localhost/ | grep -i cache-status   # MISS
+curl -s -o /dev/null -D - http://localhost/ | grep -i cache-status   # HIT
 ```
 
-The second request never reaches the backend, and both carry `X-Powered-By: Quayel Gateway` from a response transform. Edit `config.json` while it runs and the change applies within 5 seconds. Stop it with `docker stop quayel`. No Docker? Run the [binary](#linux-binary) with `./quayel-gateway config.json`. For a real setup, see [Install](#install) and [Your first config](#your-first-config).
+The second request never reaches the backend, and both carry `X-Powered-By: Quayel Gateway` from a response transform. Edit `config.json` while it runs and the change applies within 5 seconds. Stop it with `docker stop quayel`. No Docker? Run the [binary](#linux-binary) with `sudo ./quayel-gateway config.json` (port 80 needs root or `CAP_NET_BIND_SERVICE`). For a real setup, see [Install](#install) and [Your first config](#your-first-config).
 
 ## Benchmarks
 
@@ -243,7 +243,7 @@ curl -X PUT http://127.0.0.1:9180/apisix/admin/routes/1 \
 ### Docker
 
 ```bash
-docker run --rm -p 8080:8080 -p 8443:8443 \
+docker run --rm -p 80:80 -p 443:443 \
   -v $PWD/config.json:/etc/quayel-gateway/config.json:ro \
   quayel/quayel-gateway
 ```
@@ -254,7 +254,7 @@ Also on GitHub's registry as `ghcr.io/quayel/quayel-gateway`. Tags: `:latest`, `
 <summary><b>Auto-SSL in Docker</b></summary>
 
 - **Keep your certificates.** Certificates and the ACME account key live in `/var/lib/quayel/certs`. Mount a volume there (`-v quayel-certs:/var/lib/quayel/certs`, or use the compose file). Without it, every restart requests new certificates and you will hit Let's Encrypt rate limits.
-- **Open port 80.** Let's Encrypt checks your domain over port 80 from the internet. Map `80:8080` and `443:8443` when using the demo listeners, or listen on 80/443 directly.
+- **Open port 80.** Let's Encrypt checks your domain over port 80 from the internet. Publish it with `-p 80:80` (the demo config and the gateway default both listen on 80 and 443).
 - **Shutdown is clean.** On `SIGTERM` the gateway finishes in-flight requests (5 s grace + 5 s drain), inside Docker's 10 s stop timeout.
 
 To build the image yourself, run `docker build -t quayel-gateway .`. The build downloads the IP data if `src/data/` is empty, so rebuilding is also how you refresh it.
@@ -295,8 +295,10 @@ ARCH=x86_64                        # or aarch64
 curl -LO https://github.com/quayel/Quayel-Gateway/releases/download/$VERSION/quayel-gateway-$VERSION-$ARCH-unknown-linux-gnu.tar.gz
 tar xzf quayel-gateway-$VERSION-$ARCH-unknown-linux-gnu.tar.gz
 cd quayel-gateway-$VERSION-$ARCH-unknown-linux-gnu
-./quayel-gateway config.json       # the demo config; edit it first
+sudo ./quayel-gateway config.json  # the demo config; edit it first
 ```
+
+The demo config listens on ports 80 and 443, which need root. To run as a normal user instead, give the binary the capability once (`sudo setcap cap_net_bind_service=+ep ./quayel-gateway`) or change `listen` to ports above 1024.
 
 Needs glibc 2.35 or newer (Ubuntu 22.04+, Debian 12+). On older systems, including RHEL/Rocky/Alma 9 and Amazon Linux 2023, use the Docker image. Check the download with `sha256sum -c --ignore-missing SHA256SUMS` from the release page.
 
@@ -320,7 +322,7 @@ This sends all traffic for `api.example.com` to a backend on `127.0.0.1:3000`, w
   "gateway_name": "default",
   "server_name": "api.example.com",
   "config_version": "1",
-  "listen": { "http": "0.0.0.0:8080" },
+  "listen": { "http": "0.0.0.0:80" },
   "client_ip": { "source": "peer_ip" },
   "plugins": {
     "ip_intel": { "enabled": true },

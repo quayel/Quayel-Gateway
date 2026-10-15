@@ -3,7 +3,7 @@
   "gateway_name": "quickstart",
   "server_name": "localhost",
   "config_version": "1",
-  "listen": { "http": "0.0.0.0:8080" },
+  "listen": { "http": "0.0.0.0:80" },
   "client_ip": { "source": "peer_ip" },
   "plugins": {
     "ip_intel": { "enabled": true },

@@ -64,10 +64,9 @@ COPY examples/config.demo.json /etc/quayel-gateway/config.json
 
 WORKDIR /etc/quayel-gateway
 
-# 8080/8443 = the bundled demo config's listeners. 80/443 for configs that bind
-# them directly (ACME HTTP-01 needs port 80 reachable from the internet; map
-# with -p 80:8080 -p 443:8443 if your config keeps the 8080/8443 listeners).
-EXPOSE 80 443 8080 8443
+# The bundled demo config listens on 80/443, the gateway's defaults. ACME
+# HTTP-01 needs port 80 reachable from the internet: run with -p 80:80 -p 443:443.
+EXPOSE 80 443
 
 # The gateway shuts down gracefully on SIGTERM (5s grace + 5s drain — set in
 # main.rs), so container stop is clean within Docker's default 10s timeout.

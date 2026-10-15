@@ -214,8 +214,8 @@ The gateway starts serving traffic immediately. HTTPS uses a self-signed fallbac
 
 ```
 main.rs:
-  HTTP listener starts (:8080)     ← traffic flows immediately
-  HTTPS listener starts (:8443)    ← uses fallback cert
+  HTTP listener starts (:80)       ← traffic flows immediately
+  HTTPS listener starts (:443)     ← uses fallback cert
   if auto_ssl.enabled:
     load cached certs from disk
     (no blocking — provisioning happens on first request)

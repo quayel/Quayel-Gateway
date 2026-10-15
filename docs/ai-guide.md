@@ -56,7 +56,7 @@ When you generate a `config.json`, follow this checklist **every time**:
   "gateway_name": "default",
   "server_name": "api.example.com",
   "config_version": "1",
-  "listen": { "http": "0.0.0.0:8080" },
+  "listen": { "http": "0.0.0.0:80" },
   "plugins": {
     "ip_intel": { "enabled": true },
     "load_balancer": {
@@ -312,8 +312,8 @@ Common startup errors and their meaning:
 **Step 3 — smoke test** (with the gateway running and a backend up):
 
 ```bash
-curl -s -o /dev/null -w '%{http_code}\n' http://localhost:8080/health     # 200 from backend
-curl -s -i -H 'X-Forwarded-For: 1.2.3.4' http://localhost:8080/api/x     # check firewall/rate-limit behavior
+curl -s -o /dev/null -w '%{http_code}\n' http://localhost/health     # 200 from backend
+curl -s -i -H 'X-Forwarded-For: 1.2.3.4' http://localhost/api/x     # check firewall/rate-limit behavior
 tail -1 /var/log/quayel/access.jsonl | python3 -m json.tool               # inspect the decision
 ```
 
@@ -432,7 +432,7 @@ an error, which means the old config is still live).
 ### HTTPS with on-demand Let's Encrypt
 
 ```json
-"listen": { "http": "0.0.0.0:8080", "https": "0.0.0.0:8443" },
+"listen": { "http": "0.0.0.0:80", "https": "0.0.0.0:443" },
 "plugins": {
   "auto_ssl": {
     "enabled": true,

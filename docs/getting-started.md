@@ -26,7 +26,7 @@ cat > /etc/quayel/config.json << 'EOF'
   "server_name": "api.example.com",
   "config_version": "2026-01-01-001",
   "listen": {
-    "http": "0.0.0.0:8080"
+    "http": "0.0.0.0:80"
   },
   "client_ip": {
     "source": "header",
@@ -105,7 +105,7 @@ systemctl enable --now quayel-gateway
 
 ```bash
 # Health check
-curl -v http://localhost:8080/
+curl -v http://localhost/
 
 # Check logs
 tail -f /var/log/quayel/access.jsonl | jq .
@@ -121,7 +121,7 @@ The absolute minimum `config.json`:
   "gateway_name": "default",
   "server_name": "localhost",
   "config_version": "1",
-  "listen": { "http": "0.0.0.0:8080" },
+  "listen": { "http": "0.0.0.0:80" },
   "plugins": {
     "load_balancer": {
       "enabled": true,
@@ -192,8 +192,8 @@ cargo build --release
 # Strip debug symbols (smaller binary)
 strip target/release/quayel-gateway
 
-# Run
-./target/release/quayel-gateway config.json
+# Run (ports 80/443 need root or CAP_NET_BIND_SERVICE)
+sudo ./target/release/quayel-gateway config.json
 ```
 
 ## System Requirements
