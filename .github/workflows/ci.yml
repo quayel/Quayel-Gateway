@@ -1,0 +1,49 @@
+# Quayel Gateway — CI for pushes to main and pull requests
+#
+# Builds, runs the unit tests and checks the example config, on the same
+# Ubuntu image and toolchain as the release workflow. The live test suites
+# (scripts/test/run-all.sh) need Docker services and a few minutes each, so
+# they stay a manual step before a release (see CONTRIBUTING.md).
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: Build and unit tests
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config cmake clang libclang-dev curl jq gzip
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Download IP datasets
+        run: ./setup.sh --data-only
+
+      - name: Unit tests
+        run: cargo test --locked
+
+      - name: Check example config
+        run: bash scripts/test/check-config.sh examples/config.all-rules.json

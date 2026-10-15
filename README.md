@@ -8,12 +8,14 @@ Firewall, rate limiting, caching, transforms, load balancing and automatic HTTPS
 with country, ASN, VPN, Tor and datacenter data for every visitor built in. Nothing else to run.
 
 [![Release](https://img.shields.io/github/v/release/quayel/Quayel-Gateway?label=release&color=0969da)](https://github.com/quayel/Quayel-Gateway/releases)
+[![CI](https://github.com/quayel/Quayel-Gateway/actions/workflows/ci.yml/badge.svg)](https://github.com/quayel/Quayel-Gateway/actions/workflows/ci.yml)
+[![Docs](https://img.shields.io/badge/docs-docs.quayel.com-0969da)](https://docs.quayel.com/quayel-gateway)
 [![Docker pulls](https://img.shields.io/docker/pulls/quayel/quayel-gateway?logo=docker&logoColor=white)](https://hub.docker.com/r/quayel/quayel-gateway)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue)](LICENSE)
 [![Built on Pingora](https://img.shields.io/badge/built%20on-Pingora-f38020?logo=rust&logoColor=white)](https://github.com/cloudflare/pingora)
 [![Platforms](https://img.shields.io/badge/linux-x86__64%20%7C%20arm64-lightgrey?logo=linux&logoColor=white)](#install)
 
-[**Quick start**](#try-it-in-30-seconds) · [**Benchmarks**](#benchmarks) · [**Features**](#what-you-get) · [**Install**](#install) · [**Docs**](https://docs.quayel.com/quayel-gateway/getting-started/installation)
+[**Quick start**](#try-it-in-30-seconds) · [**Benchmarks**](#benchmarks) · [**Features**](#what-you-get) · [**Install**](#install) · [**Docs**](https://docs.quayel.com/quayel-gateway) · [**Guides**](https://docs.quayel.com/quayel-gateway/guides)
 
 </div>
 
@@ -527,11 +529,19 @@ For more detail, run with `RUST_LOG=debug`.
 </details>
 
 > [!IMPORTANT]
-> Quayel Gateway is young. It's tested by five suites on every release (unit tests, config validation, 88 end-to-end rule checks, cache and transform checks, DoS checks), but it doesn't yet have HTTP/3, JSON body transforms or a cluster-wide cache. Read the [CHANGELOG](CHANGELOG.md) before upgrading: 0.x releases can include breaking changes.
+> Quayel Gateway is young. Every release is tested by unit tests and 15 end-to-end suites against real services ([Testing](https://docs.quayel.com/quayel-gateway/contributing/testing)), but it doesn't yet have HTTP/3, JSON body transforms or a cluster-wide cache. Read the [CHANGELOG](CHANGELOG.md) before upgrading: 0.x releases can include breaking changes.
 
 ## Documentation
 
-The full documentation lives at **[docs.quayel.com](https://docs.quayel.com/quayel-gateway/getting-started/installation)**. The same pages are in [`docs/`](docs/README.md):
+The full documentation lives at **[docs.quayel.com](https://docs.quayel.com/quayel-gateway)**:
+
+| | |
+|---|---|
+| **Get started** | [5-minute Quickstart](https://docs.quayel.com/quayel-gateway/getting-started/quickstart) · [Installation](https://docs.quayel.com/quayel-gateway/getting-started/installation) · [Your first config](https://docs.quayel.com/quayel-gateway/getting-started/first-config) |
+| **Guides** | [HTTPS for your app](https://docs.quayel.com/quayel-gateway/guides/https) · [Protect an API](https://docs.quayel.com/quayel-gateway/guides/protect-an-api) · [Cache](https://docs.quayel.com/quayel-gateway/guides/cache) · [Load balancing](https://docs.quayel.com/quayel-gateway/guides/load-balancing) · [Behind Cloudflare or a load balancer](https://docs.quayel.com/quayel-gateway/guides/behind-a-proxy) · [Logs and metrics](https://docs.quayel.com/quayel-gateway/guides/logs-and-metrics) · [gRPC](https://docs.quayel.com/quayel-gateway/guides/grpc) · [TCP and UDP](https://docs.quayel.com/quayel-gateway/guides/tcp-udp) · [Migrate from nginx](https://docs.quayel.com/quayel-gateway/guides/migrate-from-nginx) |
+| **Production** | [Deploy checklist](https://docs.quayel.com/quayel-gateway/operations/deploy-checklist) · [Monitoring](https://docs.quayel.com/quayel-gateway/operations/monitoring) · [Upgrading](https://docs.quayel.com/quayel-gateway/operations/upgrading) · [FAQ](https://docs.quayel.com/quayel-gateway/reference/faq) |
+
+The Markdown sources of the reference pages are also in [`docs/`](docs/README.md):
 
 | | |
 |---|---|
@@ -541,6 +551,8 @@ The full documentation lives at **[docs.quayel.com](https://docs.quayel.com/quay
 | **AI agents** | [AGENTS.md](AGENTS.md) · [AI Guide](docs/ai-guide.md) · [config.schema.json](docs/config.schema.json) · [Skill package](skills/quayel-gateway/SKILL.md) |
 
 ## Contributing
+
+Bug reports, docs fixes and pull requests are welcome: start with [CONTRIBUTING.md](CONTRIBUTING.md). Questions go in [issues](https://github.com/quayel/Quayel-Gateway/issues/new/choose), and security problems are reported privately as described in [SECURITY.md](SECURITY.md).
 
 ```bash
 ./setup.sh && cargo build --release

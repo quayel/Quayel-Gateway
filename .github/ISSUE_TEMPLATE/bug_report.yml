@@ -1,0 +1,55 @@
+name: Bug report
+description: Something doesn't work the way the docs say it should.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. **Security issues:** please don't file them here; see [SECURITY.md](https://github.com/quayel/Quayel-Gateway/blob/main/SECURITY.md).
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `quayel-gateway --version`
+      placeholder: quayel-gateway 0.6.0
+    validations:
+      required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: How do you run it?
+      options:
+        - Docker / Docker Compose
+        - .deb package (systemd)
+        - Release binary
+        - Built from source
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what did you expect?
+      placeholder: |
+        I sent `curl -i https://api.example.com/x` and got a 502.
+        I expected a 200 from the backend on 10.0.0.5:3000.
+    validations:
+      required: true
+  - type: textarea
+    id: config
+    attributes:
+      label: Relevant part of config.json
+      description: Remove secrets (API keys, passwords, JWT secrets).
+      render: json
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: The gateway's own output (`journalctl -u quayel-gateway` or `docker logs`) and, if useful, the matching access-log line.
+      render: text
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Start the gateway with the config above
+        2. Run `curl ...`

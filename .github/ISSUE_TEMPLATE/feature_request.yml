@@ -1,0 +1,21 @@
+name: Feature request
+description: Suggest something the gateway should do.
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do?
+      description: Describe the problem or use case, not only the solution. "I run 40 sites behind one gateway and need to…" helps us more than "add X".
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What would you like the gateway to do?
+      description: If you have a config shape in mind, show it.
+  - type: textarea
+    id: today
+    attributes:
+      label: How do you handle it today?
+      description: Workarounds, or how nginx / Caddy / Traefik / another tool does it.

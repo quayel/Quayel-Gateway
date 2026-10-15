@@ -1,0 +1,21 @@
+name: Question
+description: Ask how to do something with the gateway.
+labels: ["question"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        The [guides](https://docs.quayel.com/quayel-gateway/guides) and the [FAQ](https://docs.quayel.com/quayel-gateway/reference/faq) answer many common questions.
+  - type: textarea
+    id: question
+    attributes:
+      label: Your question
+      description: What are you trying to set up, and where are you stuck?
+    validations:
+      required: true
+  - type: textarea
+    id: config
+    attributes:
+      label: Relevant part of config.json (optional)
+      description: Remove secrets.
+      render: json
