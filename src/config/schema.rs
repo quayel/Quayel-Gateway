@@ -1220,7 +1220,20 @@ pub struct StreamConfig {
     #[serde(default)]
     pub protocol: StreamProtocol,
     /// Address to listen on, e.g. "0.0.0.0:5432". Read at startup only.
-    pub listen: String,
+    /// Omitted → the stream shares the HTTPS listener (listen.https) and is
+    /// picked by `sni`; connections whose server name matches no stream go
+    /// to HTTP as before.
+    #[serde(default)]
+    pub listen: Option<String>,
+    /// TLS server names that route to this stream: exact names or
+    /// "*.example.com" (one label). Several streams can share a listen
+    /// address when they set different names.
+    #[serde(default)]
+    pub sni: Vec<String>,
+    /// TLS handling. Omitted → "passthrough" when `sni` is set, otherwise
+    /// the bytes are forwarded as they are.
+    #[serde(default)]
+    pub tls: Option<StreamTlsMode>,
     pub targets: Vec<StreamTargetConfig>,
     #[serde(default)]
     pub algorithm: StreamAlgorithm,
@@ -1237,9 +1250,22 @@ pub struct StreamConfig {
     #[serde(default = "default_stream_connect_secs")]
     pub connect_timeout_secs: u64,
     /// Close a connection after this many seconds with no data in either
-    /// direction. 0 / omitted → never.
+    /// direction. TCP: omitted / 0 → never. UDP: omitted → 30 (a UDP
+    /// session has no close, so idle is how it ends).
     #[serde(default)]
-    pub idle_secs: u64,
+    pub idle_secs: Option<u64>,
+    /// UDP: most client sessions at once on this stream (new clients beyond
+    /// it are dropped). 0 → no limit.
+    #[serde(default = "default_udp_max_sessions")]
+    pub max_sessions: u32,
+    /// UDP: end a session after this many datagrams from the target, e.g. 1
+    /// for DNS. Omitted → only idle ends it.
+    #[serde(default)]
+    pub responses: Option<u32>,
+}
+
+pub fn default_udp_max_sessions() -> u32 {
+    100_000
 }
 
 fn default_stream_connect_secs() -> u64 {
@@ -1251,14 +1277,25 @@ fn default_stream_connect_secs() -> u64 {
 pub enum StreamProtocol {
     #[default]
     Tcp,
+    Udp,
 }
 
 impl StreamProtocol {
     pub fn as_str(&self) -> &'static str {
         match self {
             StreamProtocol::Tcp => "tcp",
+            StreamProtocol::Udp => "udp",
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum StreamTlsMode {
+    /// Forward the encrypted bytes; the target does TLS with its own cert.
+    Passthrough,
+    /// The gateway does TLS (Auto-SSL certificate) and forwards plain bytes.
+    Terminate,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

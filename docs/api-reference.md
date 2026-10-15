@@ -327,6 +327,7 @@ The access log records:
   "upstream_addr": "10.0.0.1:8080",
   "upstream_status": 200,
   "upstream_us": 1830,
+  "grpc_status": -1,
   "error": "",
   "user": "",
   "sample_rate": 1

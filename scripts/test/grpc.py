@@ -217,6 +217,25 @@ http {{ server {{
         check("blocked call logged as 403 firewall block",
               blocked and blocked[-1]["status"] == 403 and blocked[-1]["block"]["type"] == "fw",
               json.dumps(blocked[-1]["block"]) if blocked else "none")
+        down = [json.loads(l) for l in open(os.path.join(tmp, "b.log"))]
+
+        def last_code(ls, prefix):
+            hits = [l.get("grpc_status") for l in ls if l["path"].startswith(prefix)]
+            return hits[-1] if hits else None
+        codes = {
+            "ok": last_code(lines, "/grpcbin.GRPCBin/DummyUnary"),
+            "stream": last_code(lines, "/grpcbin.GRPCBin/DummyServerStream"),
+            "origin error": last_code(lines, "/grpcbin.GRPCBin/SpecificError"),
+            "tls": last_code(lines, "/hello.HelloService/SayHello"),
+            "blocked": last_code(lines, "/grpcbin.GRPCBin/Empty"),
+            # grpcurl's reflection lookup is what fails here; the call itself
+            # is never sent.
+            "down": last_code(down, "/"),
+            "http/1.1": next((l.get("grpc_status") for l in lines if l["method"] == "GET"), None),
+        }
+        check("grpc_status logged: 0 ok, 5 origin, 7 block, 14 down, -1 non-gRPC",
+              codes == {"ok": 0, "stream": 0, "origin error": 5, "tls": 0, "blocked": 7,
+                        "down": 14, "http/1.1": -1}, json.dumps(codes))
     finally:
         for g in gws:
             g.terminate()

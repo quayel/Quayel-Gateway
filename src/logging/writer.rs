@@ -13,7 +13,7 @@
 //!  "vpn":false,"proxy":false,"tor":false,"risk":5,
 //!  "block":{"type":"","action":"","rule":"","key":""},"allow_rule":"",
 //!  "cache":"MISS","upstream":"origin-2","upstream_addr":"10.0.0.5:8080",
-//!  "upstream_status":200,"upstream_us":1830,"error":"","user":"","sample_rate":1}
+//!  "upstream_status":200,"upstream_us":1830,"grpc_status":-1,"error":"","user":"","sample_rate":1}
 //! ```
 //!
 //! The JSON is written by hand instead of through serde: key text is fixed
@@ -129,6 +129,12 @@ impl LineWriter {
         push_u64(out, ev.upstream_status as u64);
         out.extend_from_slice(b",\"upstream_us\":");
         push_u64(out, ev.upstream_us);
+        out.extend_from_slice(b",\"grpc_status\":");
+        if ev.grpc_status < 0 {
+            out.extend_from_slice(b"-1");
+        } else {
+            push_u64(out, ev.grpc_status as u64);
+        }
 
         out.extend_from_slice(b",\"error\":");
         push_str(out, ev.error.as_deref().unwrap_or(""));
@@ -285,6 +291,7 @@ mod tests {
         "upstream_addr",
         "upstream_status",
         "upstream_us",
+        "grpc_status",
         "error",
         "user",
         "sample_rate",
@@ -340,6 +347,7 @@ mod tests {
         ev.upstream_port = 8080;
         ev.upstream_status = 200;
         ev.upstream_us = 1830;
+        ev.grpc_status = 14;
         ev.error = Some("connection refused".into());
         ev.user = Some("user_123".into());
         ev
@@ -402,6 +410,7 @@ mod tests {
         assert_eq!(v["cache"], "NONE");
         assert_eq!(v["upstream_addr"], "");
         assert_eq!(v["upstream_status"], 0);
+        assert_eq!(v["grpc_status"], -1);
         assert_eq!(v["error"], "");
         assert_eq!(v["user"], "");
         assert_eq!(v["sample_rate"], 1);
@@ -439,6 +448,7 @@ mod tests {
         assert_eq!(v["upstream_addr"], "10.0.0.5:8080");
         assert_eq!(v["upstream_status"], 200);
         assert_eq!(v["upstream_us"], 1830);
+        assert_eq!(v["grpc_status"], 14);
         assert_eq!(v["error"], "connection refused");
         assert_eq!(v["user"], "user_123");
     }

@@ -55,6 +55,7 @@ CREATE TABLE IF NOT EXISTS qg.access_log
     upstream_addr   LowCardinality(String),
     upstream_status UInt16,
     upstream_us     UInt32,
+    grpc_status     Int16 DEFAULT -1,
     error           String,
     user            String,
     sample_rate     UInt32 DEFAULT 1

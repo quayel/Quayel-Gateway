@@ -43,7 +43,7 @@ KEYS = ["schema_version", "gateway_id", "ts", "request_id", "client_ip", "method
         "host", "path", "user_agent", "status", "bytes", "req_bytes", "dur_us", "country",
         "region", "asn", "provider", "datacenter", "vpn", "proxy", "tor", "risk", "block",
         "allow_rule", "cache", "upstream", "upstream_addr", "upstream_status", "upstream_us",
-        "error", "user", "sample_rate"]
+        "grpc_status", "error", "user", "sample_rate"]
 RELOAD_WAIT = 7  # the config watcher checks every 5 s
 
 origin_seen = {}  # path → X-QG-Request-Id the origin received

@@ -14,10 +14,14 @@
 #  10. tcp-proxy.py               TCP streams: balancing, failover, health, rules,
 #                                  PROXY protocol, idle, logs (+ Redis/Postgres
 #                                  with Docker)
-#  11. auto-ssl.py                 ACME issuance against Pebble (needs Docker)
-#  12. sinks.py                    log sinks + /metrics against ClickHouse, Loki,
+#  11. sni-routing.py             streams by TLS server name: shared HTTPS port,
+#                                  passthrough / terminate, wildcards
+#  12. udp-proxy.py               UDP streams: sessions, responses, idle, rules,
+#                                  session cap, real DNS through the proxy
+#  13. auto-ssl.py                 ACME issuance against Pebble (needs Docker)
+#  14. sinks.py                    log sinks + /metrics against ClickHouse, Loki,
 #                                  OTel Collector, Prometheus (needs Docker)
-#  13. grpc.py                     HTTP/2 + gRPC: h2c/h2 in and out, streaming,
+#  15. grpc.py                     HTTP/2 + gRPC: h2c/h2 in and out, streaming,
 #                                  gRPC error statuses (needs Docker)
 #
 # Each suite prints its own PASS/FAIL list; a summary per suite is at the end.
@@ -49,6 +53,8 @@ run "logging"            env BIN="$BIN" python3 scripts/test/logging.py
 run "websocket"          env BIN="$BIN" python3 scripts/test/websocket.py
 run "sink-backpressure"  env BIN="$BIN" python3 scripts/test/sink-backpressure.py
 run "tcp-proxy"          env BIN="$BIN" python3 scripts/test/tcp-proxy.py
+run "sni-routing"        env BIN="$BIN" python3 scripts/test/sni-routing.py
+run "udp-proxy"          env BIN="$BIN" python3 scripts/test/udp-proxy.py
 if command -v docker >/dev/null && docker info >/dev/null 2>&1; then
     run "auto-ssl"       env BIN="$BIN" python3 scripts/test/auto-ssl.py
     run "sinks"          env BIN="$BIN" python3 scripts/test/sinks.py

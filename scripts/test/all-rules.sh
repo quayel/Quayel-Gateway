@@ -338,7 +338,7 @@ e = find("/test/tf/api/hello")
 out(e is not None, "logging:path is the client's, without query", e and e["path"])
 e = find("/test/tf/host")
 out(e and e["host"] == "127.0.0.1:8099", "logging:host is the client's (not rewritten)", e and e["host"])
-out(all(len(e) == 33 for e in ev), "logging:every line has all 33 keys", f"lines={len(ev)}")
+out(all(len(e) == 34 for e in ev), "logging:every line has all 34 keys", f"lines={len(ev)}")
 out(all("?" not in e["path"] for e in ev), "logging:no query string in any path", "-")
 blocks = [e for e in ev if e["status"] in (403, 429) and e["block"]["type"] in ("fw", "rl", "dos")]
 out(blocks and all(e["block"]["rule"] for e in blocks), "logging:403/429 blocks name their rule",

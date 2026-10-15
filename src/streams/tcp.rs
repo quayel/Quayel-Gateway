@@ -6,21 +6,27 @@
 //! connecting fails, an optional PROXY protocol header, an optional idle
 //! timeout, and one access-log line when the connection ends.
 //!
-//! Log line fields for streams: `method` is "TCP", `scheme` "tcp", `path` the
-//! stream id, `req_bytes` / `bytes` the bytes from / to the client, `dur_us`
-//! the whole connection and `upstream_us` the connect time. `status` is 200
-//! once the target connection is made, 403 when a rule blocks, 502 when no
-//! target accepts the connection, 503 when every target is unhealthy and 504
-//! when connecting timed out.
+//! Log line fields for streams: `method` is "TCP", `scheme` "tcp" (or "tls"
+//! for SNI-routed / TLS-terminated streams), `host` the TLS server name,
+//! `path` the stream id, `req_bytes` / `bytes` the bytes from / to the
+//! client, `dur_us` the whole connection and `upstream_us` the connect time.
+//! `status` is 200 once the target connection is made, 403 when a rule
+//! blocks, 421 when no stream on the port matches the server name, 502 when
+//! no target accepts the connection, 503 when every target is unhealthy and
+//! 504 when connecting timed out.
 
 use crate::config::compiler::CompiledConfig;
 use crate::config::schema::{ProxyProtocolVersion, StreamRuleAction};
 use crate::gateway::gateway::GatewayState;
+use crate::gateway::protection::ConnPermit;
 use crate::gateway::request_context::{BlockResult, RequestContext};
 use crate::gateway::request_id;
 use crate::logging::event::LogEvent;
 use crate::plugins::firewall::{deciding_conditions, evaluate_conditions};
-use crate::streams::{CompiledStream, CompiledStreamTarget};
+use crate::streams::sni::{peek_sni, Peeked};
+use crate::streams::{CompiledStream, CompiledStreamTarget, TlsHandling};
+use pingora_core::listeners::tls::Acceptor;
+use pingora_core::protocols::l4::stream::Stream as L4Stream;
 use pingora_core::protocols::Stream;
 use pingora_core::server::ShutdownWatch;
 use std::io;
@@ -37,24 +43,143 @@ use tokio::net::TcpStream;
 /// open, so this stays small.
 const COPY_BUF: usize = 16 * 1024;
 
-/// One connection on a stream listener.
-pub async fn serve(
+/// One connection on a stream port.
+pub async fn serve_port(
     state: &Arc<GatewayState>,
-    stream: Stream,
+    mut stream: Stream,
     peer: SocketAddr,
     local: SocketAddr,
+    tls: Option<&Acceptor>,
     shutdown: &ShutdownWatch,
 ) {
     let config = state.config.load_full();
-    let Some(s) = config.streams.for_listener(local).cloned() else {
+    let Some(l) = config.streams.for_listener(local).cloned() else {
         // The stream was removed by a reload; its listener stays open until
         // the next restart.
         return;
     };
-    proxy(
-        state, &config, &s, stream, peer, local, None, "tcp", shutdown,
-    )
-    .await;
+    let ip = peer.ip().to_canonical();
+    let Ok(permit) = admit(state, &config, ip) else {
+        return;
+    };
+    if !l.routes_by_sni() {
+        if let Some(s) = &l.default {
+            serve_stream(
+                state, &config, s, stream, peer, local, None, permit, tls, shutdown,
+            )
+            .await;
+        }
+        return;
+    }
+    let started = Instant::now();
+    let name = match peek_sni(&mut stream, config.server.header_timeout).await {
+        Ok(Peeked::Tls(name)) => name,
+        Ok(Peeked::Other) => None,
+        Err(_) => return, // closed, or nothing arrived in time
+    };
+    let routed = name
+        .as_deref()
+        .and_then(|n| l.sni.route(n))
+        .or(l.default.as_ref());
+    let sni = name.map(|n| Arc::from(n.as_str()));
+    match routed.cloned() {
+        Some(s) => {
+            serve_stream(
+                state, &config, &s, stream, peer, local, sni, permit, tls, shutdown,
+            )
+            .await
+        }
+        None => {
+            let mut line = ConnLog::new(&config, Arc::from(""), ip, sni, "tls");
+            line.ev.ts_ms =
+                request_id::now_ms().saturating_sub(started.elapsed().as_millis() as u64);
+            let why = if line.ev.host.is_some() {
+                "no stream for this server name"
+            } else {
+                "no server name (SNI) sent"
+            };
+            line.finish(state, 421, started, Some(why.into()));
+        }
+    }
+}
+
+/// server.protection applies to stream connections exactly as to HTTP ones
+/// (and shares the same per-IP counters). Refusals aren't logged, same as
+/// for HTTP connections.
+pub fn admit(
+    state: &GatewayState,
+    config: &CompiledConfig,
+    ip: IpAddr,
+) -> Result<Option<ConnPermit>, ()> {
+    match &config.server.protection {
+        Some(p) => match state.ip_tracker.open_connection(p, ip) {
+            Ok(pm) => Ok(Some(pm)),
+            Err(v) => {
+                tracing::debug!(client_ip = %ip, reason = v.as_str(), "Protection: stream connection refused");
+                Err(())
+            }
+        },
+        None => Ok(None),
+    }
+}
+
+/// A connection already matched to a stream: terminate TLS if the stream
+/// asks for it, then proxy.
+#[allow(clippy::too_many_arguments)]
+pub async fn serve_stream(
+    state: &Arc<GatewayState>,
+    config: &Arc<CompiledConfig>,
+    s: &Arc<CompiledStream>,
+    stream: Stream,
+    peer: SocketAddr,
+    local: SocketAddr,
+    sni: Option<Arc<str>>,
+    permit: Option<ConnPermit>,
+    tls: Option<&Acceptor>,
+    shutdown: &ShutdownWatch,
+) {
+    let client: Stream = if s.tls == TlsHandling::Terminate {
+        let started = Instant::now();
+        let fail = |e: String| {
+            let mut line = ConnLog::new(
+                config,
+                Arc::clone(&s.id),
+                peer.ip().to_canonical(),
+                sni.clone(),
+                "tls",
+            );
+            line.ev.ts_ms =
+                request_id::now_ms().saturating_sub(started.elapsed().as_millis() as u64);
+            line.finish(state, 400, started, Some(e));
+        };
+        let Some(acceptor) = tls else {
+            fail("tls terminate: no certificates (Auto-SSL is off)".into());
+            return;
+        };
+        let l4 = match stream.into_any().downcast::<L4Stream>() {
+            Ok(l4) => *l4,
+            Err(_) => return,
+        };
+        let handshake = acceptor.tls_handshake(l4);
+        let done = match config.server.header_timeout {
+            Some(d) => tokio::time::timeout(d, handshake).await.ok(),
+            None => Some(handshake.await),
+        };
+        match done {
+            Some(Ok(tls)) => Box::new(tls),
+            Some(Err(e)) => {
+                fail(format!("tls handshake: {e}"));
+                return;
+            }
+            None => {
+                fail("tls handshake: timed out".into());
+                return;
+            }
+        }
+    } else {
+        stream
+    };
+    proxy(state, config, s, client, peer, local, sni, permit, shutdown).await;
 }
 
 /// Proxy `client` to one of the stream's targets. `sni` is the TLS server
@@ -68,75 +193,18 @@ pub async fn proxy(
     peer: SocketAddr,
     local: SocketAddr,
     sni: Option<Arc<str>>,
-    scheme: &'static str,
+    _permit: Option<ConnPermit>,
     shutdown: &ShutdownWatch,
 ) {
     let started = Instant::now();
-    let ts_ms = request_id::now_ms();
     let ip = peer.ip().to_canonical();
+    let scheme = s.scheme();
 
-    // server.protection applies to stream connections exactly as to HTTP
-    // ones (and shares the same per-IP counters). Refusals aren't logged,
-    // same as for HTTP connections.
-    let _permit = match &config.server.protection {
-        Some(p) => match state.ip_tracker.open_connection(p, ip) {
-            Ok(pm) => Some(pm),
-            Err(v) => {
-                tracing::debug!(client_ip = %ip, stream = %s.id, reason = v.as_str(), "Protection: stream connection refused");
-                return;
-            }
-        },
-        None => None,
-    };
+    let mut line = ConnLog::new(config, Arc::clone(&s.id), ip, sni.clone(), scheme);
 
-    let mut line = ConnLog::new(config, s, ip, ts_ms, sni.clone(), scheme);
-
-    if !s.rules.is_empty() || s.needs_intel || config.ip_intel.is_some() {
-        let mut ctx = RequestContext::new(
-            Arc::clone(&config.gateway_id),
-            Arc::clone(&config.gateway_name),
-            Arc::clone(&config.server_name),
-            Arc::clone(&config.config_version),
-            ip,
-            ip,
-            Arc::from("peer_ip"),
-            sni,
-            Arc::clone(&s.id),
-            Arc::from(s.protocol.as_str().to_ascii_uppercase()),
-            Arc::from(scheme),
-            None,
-            http::HeaderMap::new(),
-        );
-        if s.needs_intel || config.ip_intel.is_some() {
-            ctx.ip_intel = Some(state.plugin_runner.ip_intel.lookup_ip(ip).await);
-            line.ev.ip_intel = ctx.ip_intel.clone();
-        }
-        for rule in &s.rules {
-            if !rule.conditions.is_empty() && !evaluate_conditions(&mut ctx, &rule.conditions) {
-                continue;
-            }
-            match rule.action {
-                StreamRuleAction::Allow => {
-                    line.ev.allow_rule = Some(Arc::clone(&rule.id));
-                }
-                StreamRuleAction::Block => {
-                    let key = if rule.conditions.is_empty() {
-                        format!("client_ip={ip}")
-                    } else {
-                        deciding_conditions(&mut ctx, &rule.conditions)
-                    };
-                    line.ev.block = BlockResult {
-                        kind: "stream",
-                        action: "block",
-                        rule: Some(Arc::clone(&rule.id)),
-                        key,
-                    };
-                    line.finish(state, 403, started, None);
-                    return;
-                }
-            }
-            break;
-        }
+    if !check_rules(state, config, s, ip, sni, &mut line).await {
+        line.finish(state, 403, started, None);
+        return;
     }
 
     // Connect: the algorithm's pick first, the other healthy targets after.
@@ -213,6 +281,66 @@ pub async fn proxy(
     line.finish(state, 200, started, end);
 }
 
+/// IP intel for the log line, then the stream's rules. false → blocked
+/// (`line.ev.block` says by which rule).
+pub(crate) async fn check_rules(
+    state: &GatewayState,
+    config: &CompiledConfig,
+    s: &CompiledStream,
+    ip: IpAddr,
+    sni: Option<Arc<str>>,
+    line: &mut ConnLog,
+) -> bool {
+    let scheme = s.scheme();
+    if !s.rules.is_empty() || s.needs_intel || config.ip_intel.is_some() {
+        let mut ctx = RequestContext::new(
+            Arc::clone(&config.gateway_id),
+            Arc::clone(&config.gateway_name),
+            Arc::clone(&config.server_name),
+            Arc::clone(&config.config_version),
+            ip,
+            ip,
+            Arc::from("peer_ip"),
+            sni,
+            Arc::clone(&s.id),
+            Arc::from(s.protocol.as_str().to_ascii_uppercase()),
+            Arc::from(scheme),
+            None,
+            http::HeaderMap::new(),
+        );
+        if s.needs_intel || config.ip_intel.is_some() {
+            ctx.ip_intel = Some(state.plugin_runner.ip_intel.lookup_ip(ip).await);
+            line.ev.ip_intel = ctx.ip_intel.clone();
+        }
+        for rule in &s.rules {
+            if !rule.conditions.is_empty() && !evaluate_conditions(&mut ctx, &rule.conditions) {
+                continue;
+            }
+            match rule.action {
+                StreamRuleAction::Allow => {
+                    line.ev.allow_rule = Some(Arc::clone(&rule.id));
+                }
+                StreamRuleAction::Block => {
+                    let key = if rule.conditions.is_empty() {
+                        format!("client_ip={ip}")
+                    } else {
+                        deciding_conditions(&mut ctx, &rule.conditions)
+                    };
+                    line.ev.block = BlockResult {
+                        kind: "stream",
+                        action: "block",
+                        rule: Some(Arc::clone(&rule.id)),
+                        key,
+                    };
+                    return false;
+                }
+            }
+            break;
+        }
+    }
+    true
+}
+
 /// Resolves when nothing has moved in either direction for `idle`.
 async fn idle_timer(idle: Option<Duration>, activity: Option<&AtomicU64>, base: Instant) {
     let (Some(idle), Some(activity)) = (idle, activity) else {
@@ -282,29 +410,29 @@ fn to_v6(ip: IpAddr) -> std::net::Ipv6Addr {
 
 // ── Access log line ──────────────────────────────────────────────────────────
 
-struct ConnLog {
-    ev: LogEvent,
+pub(crate) struct ConnLog {
+    pub(crate) ev: LogEvent,
 }
 
 impl ConnLog {
-    fn new(
+    pub(crate) fn new(
         config: &CompiledConfig,
-        s: &CompiledStream,
+        path: Arc<str>,
         ip: IpAddr,
-        ts_ms: u64,
         sni: Option<Arc<str>>,
         scheme: &'static str,
     ) -> Self {
+        let ts_ms = request_id::now_ms();
         ConnLog {
             ev: LogEvent {
                 ts_ms,
                 gateway_id: Arc::clone(&config.gateway_id),
                 request_id: request_id::generate_at(ts_ms),
                 client_ip: ip,
-                method: Arc::from(s.protocol.as_str().to_ascii_uppercase()),
+                method: Arc::from("TCP"),
                 scheme: Arc::from(scheme),
                 host: sni,
-                path: Arc::clone(&s.id),
+                path,
                 user_agent: None,
                 status: 0,
                 bytes: 0,
@@ -319,6 +447,7 @@ impl ConnLog {
                 upstream_port: 0,
                 upstream_status: 0,
                 upstream_us: 0,
+                grpc_status: -1,
                 error: None,
                 user: None,
                 sample_rate: 1,
@@ -326,7 +455,7 @@ impl ConnLog {
         }
     }
 
-    fn finish(
+    pub(crate) fn finish(
         mut self,
         state: &GatewayState,
         status: u16,

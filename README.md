@@ -537,7 +537,7 @@ The full documentation lives at **[docs.quayel.com](https://docs.quayel.com/quay
 |---|---|
 | **Start** | [Getting Started](docs/getting-started.md) · [Configuration Reference](docs/configuration.md) · [Conditions](docs/conditions.md) |
 | **Plugins** | [IP Intel](docs/plugins/ip-intel.md) · [Firewall](docs/plugins/firewall.md) · [Rate Limiting](docs/plugins/rate-limiting.md) · [Transform](docs/plugins/transform.md) · [Cache](docs/plugins/cache.md) · [Load Balancer](docs/plugins/load-balancer.md) · [Auto-SSL](docs/plugins/auto-ssl.md) |
-| **Reference** | [Streams (TCP)](docs/streams.md) · [Architecture](docs/architecture.md) · [API Reference](docs/api-reference.md) · [Logging](docs/logging.md) · [Data Sources](docs/data-sources.md) |
+| **Reference** | [Streams (TCP/UDP)](docs/streams.md) · [Architecture](docs/architecture.md) · [API Reference](docs/api-reference.md) · [Logging](docs/logging.md) · [Data Sources](docs/data-sources.md) |
 | **AI agents** | [AGENTS.md](AGENTS.md) · [AI Guide](docs/ai-guide.md) · [config.schema.json](docs/config.schema.json) · [Skill package](skills/quayel-gateway/SKILL.md) |
 
 ## Contributing

@@ -106,7 +106,10 @@ impl ConfigWatcher {
                     }
                 }
 
-                if compiled.streams.listen_addrs() != state.config.load().streams.listen_addrs() {
+                let current = state.config.load();
+                if compiled.streams.listen_addrs() != current.streams.listen_addrs()
+                    || compiled.streams.udp_addrs() != current.streams.udp_addrs()
+                {
                     tracing::warn!(
                         "streams: listen addresses changed; new or moved listeners open after \
                          a restart (targets, rules and timeouts apply now)"

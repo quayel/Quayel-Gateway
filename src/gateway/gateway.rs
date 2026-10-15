@@ -673,6 +673,20 @@ impl ProxyHttp for QuayelGateway {
         Ok(())
     }
 
+    fn upstream_response_trailer_filter(
+        &self,
+        _session: &mut Session,
+        upstream_trailers: &mut http::HeaderMap,
+        ctx: &mut Self::CTX,
+    ) -> pingora_core::Result<()> {
+        if ctx.grpc {
+            if let Some(code) = parse_grpc_status(upstream_trailers.get("grpc-status")) {
+                ctx.grpc_status = Some(code);
+            }
+        }
+        Ok(())
+    }
+
     // response_filter: capture upstream response headers for cache
 
     async fn response_filter(
@@ -683,6 +697,12 @@ impl ProxyHttp for QuayelGateway {
     ) -> pingora_core::Result<()> {
         let status = upstream_response.status.as_u16();
         ctx.upstream_status = Some(status);
+        if ctx.grpc {
+            // A "trailers-only" response carries grpc-status in the headers.
+            if let Some(code) = parse_grpc_status(upstream_response.headers.get("grpc-status")) {
+                ctx.grpc_status = Some(code);
+            }
+        }
         if let Some(sent) = ctx.upstream_sent_at {
             ctx.upstream_us = sent.elapsed().as_micros() as u64;
         }
@@ -1127,6 +1147,11 @@ fn grpc_code(status: u16) -> u8 {
     }
 }
 
+/// `grpc-status` value (0–255; real codes are 0–16).
+fn parse_grpc_status(value: Option<&http::HeaderValue>) -> Option<u8> {
+    value?.to_str().ok()?.trim().parse().ok()
+}
+
 /// `grpc-message`: the gateway's text body if it is one short line, else the
 /// HTTP reason phrase. Percent-encoded as the gRPC spec requires.
 fn grpc_message(status: u16, body: &[u8]) -> String {
@@ -1206,6 +1231,7 @@ async fn send_grpc_error(
         let _ = header.insert_header(name.clone(), val.clone());
     }
     ctx.status_code = Some(status);
+    ctx.grpc_status = Some(grpc_code(status));
     if h2 {
         session.write_response_header(Box::new(header), false).await?;
         session.write_response_trailers(status_fields).await
@@ -1421,6 +1447,11 @@ mod tests {
         assert_eq!(grpc_code(429), 8);
         assert_eq!(grpc_code(502), 14);
         assert_eq!(grpc_code(418), 2);
+        let v = |s: &'static str| http::HeaderValue::from_static(s);
+        assert_eq!(parse_grpc_status(Some(&v("0"))), Some(0));
+        assert_eq!(parse_grpc_status(Some(&v(" 14 "))), Some(14));
+        assert_eq!(parse_grpc_status(Some(&v("x"))), None);
+        assert_eq!(parse_grpc_status(None), None);
         assert_eq!(
             grpc_message(403, br#"{"error":"blocked","status":403,"rule_id":"r1"}"#),
             "blocked (rule r1)"

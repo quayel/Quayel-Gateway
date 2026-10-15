@@ -30,7 +30,7 @@ A high-performance API gateway built on [Pingora](https://github.com/cloudflare/
 
 | Document | Description |
 |----------|-------------|
-| [Streams](streams.md) | TCP proxy: raw ports to backends, load balancing, health checks, IP rules, PROXY protocol |
+| [Streams](streams.md) | TCP / UDP proxy: raw ports to backends, SNI routing (also on 443), load balancing, health checks, IP rules, PROXY protocol |
 | [Logging](logging.md) | JSONL access log format, fields, sinks (ClickHouse, Datadog, OTLP, Loki, Elasticsearch, Splunk) and Prometheus metrics |
 | [API Reference](api-reference.md) | Request/response headers, APISIX variables |
 

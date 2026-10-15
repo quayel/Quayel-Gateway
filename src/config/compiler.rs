@@ -351,9 +351,8 @@ pub fn compile_config(raw: &GatewayConfig) -> Result<CompiledConfig, String> {
     let streams = crate::streams::compile_streams(
         &raw.streams,
         raw.listen.http.as_deref().unwrap_or("0.0.0.0:80"),
-        auto_ssl
-            .as_ref()
-            .map(|_| raw.listen.https.as_deref().unwrap_or("0.0.0.0:443")),
+        raw.listen.https.as_deref().unwrap_or("0.0.0.0:443"),
+        auto_ssl.is_some(),
     )?;
 
     Ok(CompiledConfig {

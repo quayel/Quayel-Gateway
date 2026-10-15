@@ -50,6 +50,9 @@ pub struct LogEvent {
     /// request never got an answer from the origin.
     pub upstream_status: u16,
     pub upstream_us: u64,
+    /// gRPC status code of the call, -1 when the request isn't gRPC or no
+    /// status was seen (for example the stream was reset).
+    pub grpc_status: i16,
 
     /// Why the request failed. Query strings are already removed.
     pub error: Option<String>,
@@ -107,6 +110,7 @@ impl LogEvent {
             },
             upstream_status: ctx.upstream_status.unwrap_or(0),
             upstream_us: ctx.upstream_us,
+            grpc_status: ctx.grpc_status.map_or(-1, i16::from),
 
             error: None,
             user: None,

@@ -110,6 +110,7 @@ about 600 bytes):
   "upstream_addr": "10.0.0.5:8080",
   "upstream_status": 200,
   "upstream_us": 1830,
+  "grpc_status": -1,
   "error": "",
   "user": "user_123",
   "sample_rate": 1
@@ -218,6 +219,7 @@ log.
 | `upstream_addr` | string | `host:port` it was sent to |
 | `upstream_status` | int | Status the origin sent, before `response_transform`. `0` when the origin never answered |
 | `upstream_us` | int | From sending the request to the origin until its response header arrived (or until it failed), microseconds |
+| `grpc_status` | int | gRPC status code of a gRPC call (`0` = OK): the origin's `grpc-status`, or the code the gateway answered with (for example `7` for a firewall block, `14` when the origin is down). `-1` for requests that aren't gRPC and for calls that ended without a status (stream reset) |
 | `error` | string | Why the request failed (connection refused, timeout, …), or `client closed` with status `499` |
 
 ### user and sample_rate
@@ -414,6 +416,15 @@ SELECT block.type, block.rule, sum(sample_rate) AS requests
 FROM qg.access_log
 WHERE block.type != '' AND time > now() - INTERVAL 1 HOUR
 GROUP BY block.type, block.rule ORDER BY requests DESC;
+```
+
+The sink inserts with `input_format_skip_unknown_fields=1`, so a table made
+by an older version keeps working when a release adds a key; the new key is
+just not stored. To keep it, add the column, for example the `grpc_status`
+key added in 0.6.0:
+
+```sql
+ALTER TABLE qg.access_log ADD COLUMN IF NOT EXISTS grpc_status Int16 DEFAULT -1 AFTER upstream_us;
 ```
 
 The sink inserts synchronously (`async_insert=0`): it already sends large

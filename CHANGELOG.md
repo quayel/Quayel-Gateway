@@ -26,6 +26,39 @@ write entries for people running the gateway, not for people reading the diff.
   gets one access-log line (`method: "TCP"`, `path`: the stream id,
   bytes each way, connect time). Targets, rules and timeouts follow config
   reloads; new listen addresses need a restart. See `docs/streams.md`.
+- **SNI routing for streams.** TLS connections can be routed by server name:
+  `sni: ["db.example.com", "*.mqtt.example.com"]`. A stream without `listen`
+  shares the HTTPS port: names that match a stream go to it, everything else
+  (other names, no SNI) is HTTPS as before. Several streams can also share
+  their own port by name, with an optional default stream for the rest.
+  `tls: "passthrough"` (default with `sni`) forwards the encrypted bytes so
+  the backend keeps its own certificate; `tls: "terminate"` does TLS at the
+  gateway with Auto-SSL certificates. Names can be added or changed by
+  config reload.
+- **UDP proxy.** `protocol: "udp"` streams forward datagrams (DNS, games,
+  VoIP, WireGuard, syslog) with a session per client address: same target
+  for all of a client's datagrams, replies sent back to it. Sessions end
+  after `idle_secs` (30 s by default), after `responses` replies (`1` for
+  DNS) or at shutdown, with one access-log line each (`method: "UDP"`).
+  `max_sessions` (default 100,000) caps sessions per stream. Rules,
+  balancing and `server.protection` work as for TCP. A TCP and a UDP stream
+  can share a port number.
+- **`grpc_status` in the access log.** The gRPC status code of each gRPC
+  call: the origin's `grpc-status` (headers or trailers), or the code the
+  gateway answered with (`7` for a firewall block, `14` when the origin is
+  down). `-1` for requests that aren't gRPC. Existing ClickHouse tables keep
+  working without the column; to store it, run
+  `ALTER TABLE qg.access_log ADD COLUMN IF NOT EXISTS grpc_status Int16 DEFAULT -1 AFTER upstream_us`.
+
+### Changed
+
+- **HTTPS handshakes now have a deadline.** The HTTPS port is now a plain TCP
+  listener and the gateway runs the TLS handshake itself (needed to read the
+  server name first). Reading the ClientHello and finishing the handshake
+  must take less than `server.timeouts.header_secs` (10 s by default);
+  before, a client could hold a connection open indefinitely by never
+  finishing the handshake. HTTPS behaviour is otherwise unchanged (same
+  certificates, ALPN h2 / http/1.1, keep-alive).
 
 ## [0.5.0] - 2026-10-14
 

@@ -228,7 +228,7 @@ Startup error → fix map:
 - Rate-limit counters and cache are in-memory per process; a restart clears them.
 - Access log = one JSON object per line, same keys on every line; check
   `.block.type` / `.block.rule` / `.block.key` (what stopped it, `""` if
-  nothing), `.allow_rule`, `.cache`, `.upstream`, `.upstream_status`, `.error`,
+  nothing), `.allow_rule`, `.cache`, `.upstream`, `.upstream_status`, `.grpc_status`, `.error`,
   `.dur_us` to see why a request was handled the way it was. `path` never
   includes the query string.
 - `ip.*` fields are only populated when `ip_intel` is enabled; booleans can be

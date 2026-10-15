@@ -18,7 +18,7 @@
     "metrics": { "$ref": "#/definitions/metrics" },
     "streams": {
       "type": "array",
-      "description": "TCP proxies (layer 4). See docs/streams.md.",
+      "description": "TCP and UDP proxies (layer 4). See docs/streams.md.",
       "items": { "$ref": "#/definitions/stream" }
     },
     "plugins": { "$ref": "#/definitions/plugins" }
@@ -827,13 +827,15 @@
     "stream": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "listen", "targets"],
+      "required": ["id", "targets"],
       "properties": {
         "id": { "type": "string", "minLength": 1, "description": "Unique; logged as path" },
         "name": { "type": "string" },
         "enabled": { "type": "boolean", "default": true },
-        "protocol": { "enum": ["tcp"], "default": "tcp" },
-        "listen": { "type": "string", "description": "ip:port, read at startup only. Must not share a port with listen.http, listen.https or another stream" },
+        "protocol": { "enum": ["tcp", "udp"], "default": "tcp" },
+        "listen": { "type": "string", "description": "ip:port, read at startup only. Omitted → shares the HTTPS port and needs sni" },
+        "sni": { "type": "array", "items": { "type": "string" }, "description": "TLS server names (exact or *.example.com) that pick this stream" },
+        "tls": { "enum": ["passthrough", "terminate"], "description": "Omitted → passthrough when sni is set, raw otherwise. terminate needs plugins.auto_ssl" },
         "targets": {
           "type": "array",
           "minItems": 1,
@@ -880,7 +882,9 @@
         },
         "proxy_protocol": { "enum": ["off", "v1", "v2"], "default": "off" },
         "connect_timeout_secs": { "type": "integer", "minimum": 1, "default": 5 },
-        "idle_secs": { "type": "integer", "minimum": 0, "default": 0, "description": "0 = never close idle connections" }
+        "idle_secs": { "type": "integer", "minimum": 0, "description": "TCP: omitted/0 = never. UDP: omitted = 30, 0 = never" },
+        "max_sessions": { "type": "integer", "minimum": 0, "default": 100000, "description": "UDP only: sessions at once, 0 = no limit" },
+        "responses": { "type": "integer", "minimum": 1, "description": "UDP only: end a session after this many replies (1 for DNS)" }
       }
     },
     "metrics": {

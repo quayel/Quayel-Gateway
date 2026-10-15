@@ -253,55 +253,110 @@ fn main() {
     // request-header deadline before Pingora parses each request. EdgeApp
     // sends connections on stream ports to the TCP proxy instead.
     let stream_listens = state.config.load().streams.listen_addrs();
+    let https_addr = state
+        .config
+        .load()
+        .listen_https
+        .clone()
+        .unwrap_or_else(|| DEFAULT_HTTPS_LISTEN.to_string());
+
+    // TLS for HTTPS (ALPN h2 + http/1.1) and for streams with
+    // `tls: "terminate"` (no ALPN), both with Auto-SSL certificates.
+    let tls_acceptor = |h2: bool| {
+        let manager = state.auto_ssl.as_ref()?;
+        let mut tls_settings = pingora_core::listeners::tls::TlsSettings::intermediate("", "")
+            .unwrap_or_else(|_| {
+                pingora_core::listeners::tls::TlsSettings::intermediate("/dev/null", "/dev/null")
+                    .unwrap()
+            });
+        tls_settings.set_cert_resolver(Arc::new(SniCertResolver::new(manager.clone())));
+        if h2 {
+            tls_settings.enable_h2();
+        }
+        Some(tls_settings.build())
+    };
+    let http_tls = tls_acceptor(state.config.load().server.http2);
+    let stream_tls = tls_acceptor(false);
+
+    // The HTTPS port is a plain TCP listener: EdgeApp reads the server name
+    // first (for streams that share the port) and then does the TLS
+    // handshake itself. It opens with Auto-SSL, or without it when a stream
+    // uses the port.
+    let https_port = if http_tls.is_some() || !state.config.load().streams.https.is_empty() {
+        match crate::streams::parse_listen(&https_addr) {
+            Some(listen) => Some(crate::streams::edge::HttpsPort {
+                listen,
+                tls: http_tls,
+            }),
+            None => {
+                tracing::error!("listen.https {:?} is not an ip:port address", https_addr);
+                std::process::exit(1);
+            }
+        }
+    } else {
+        None
+    };
+    match (&state.auto_ssl, &https_port) {
+        (Some(_), _) => tracing::info!("Auto-SSL enabled — HTTPS listening on {}", https_addr),
+        (None, Some(_)) => tracing::info!(
+            "Auto-SSL disabled — {} serves SNI-routed streams only",
+            https_addr
+        ),
+        (None, None) => tracing::info!("Auto-SSL disabled — no HTTPS listener"),
+    }
+
     let mut proxy_service = Service::new(
         "Quayel Gateway".to_string(),
         EdgeApp::new(
             GuardedApp::new(proxy, state.clone()),
             state.clone(),
             stream_listens.clone(),
+            https_port,
+            stream_tls,
         ),
     );
 
     proxy_service.add_tcp(&listen_addr);
+    if state.auto_ssl.is_some() || !state.config.load().streams.https.is_empty() {
+        proxy_service.add_tcp(&https_addr);
+    }
     for s in &state.config.load().streams.list {
-        tracing::info!(stream = %s.id, listen = %s.listen, "TCP stream listening");
+        match s.listen {
+            Some(addr) => tracing::info!(stream = %s.id, listen = %addr, sni = ?s.sni, "TCP stream listening"),
+            None => tracing::info!(stream = %s.id, listen = %https_addr, sni = ?s.sni, "TCP stream on the HTTPS port"),
+        }
     }
     for addr in &stream_listens {
         proxy_service.add_tcp(&addr.to_string());
     }
     crate::streams::health::spawn(state.clone(), &bg_handle);
 
-    // Start HTTPS listener with Auto-SSL if configured
-    if let Some(ref auto_ssl_manager) = state.auto_ssl {
-        let https_addr = state
-            .config
-            .load()
-            .listen_https
-            .clone()
-            .unwrap_or_else(|| DEFAULT_HTTPS_LISTEN.to_string());
-
-        tracing::info!("Auto-SSL enabled — HTTPS listening on {}", https_addr);
-
-        // Create SNI cert resolver
-        let sni_resolver = Arc::new(SniCertResolver::new(auto_ssl_manager.clone()));
-
-        // Create TLS settings with SNI resolver
-        let mut tls_settings = pingora_core::listeners::tls::TlsSettings::intermediate("", "")
-            .unwrap_or_else(|_| {
-                // Fallback: create minimal settings
-                pingora_core::listeners::tls::TlsSettings::intermediate("/dev/null", "/dev/null")
-                    .unwrap()
-            });
-        tls_settings.set_cert_resolver(sni_resolver);
-        // server.http2: offer h2 over ALPN; HTTP/1.1 clients still get h1.
-        if state.config.load().server.http2 {
-            tls_settings.enable_h2();
+    // UDP streams: bound now so a port in use stops startup with a clear
+    // error; served by their own background service.
+    let udp_addrs = state.config.load().streams.udp_addrs();
+    let udp_service = if udp_addrs.is_empty() {
+        None
+    } else {
+        let sockets = match crate::streams::udp::bind(&udp_addrs) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::error!("{}", e);
+                std::process::exit(1);
+            }
+        };
+        for s in &state.config.load().streams.udp {
+            tracing::info!(stream = %s.id, listen = ?s.listen, "UDP stream listening");
         }
+        let mut svc = pingora_core::services::background::background_service(
+            "Quayel UDP streams",
+            crate::streams::udp::UdpProxy::new(state.clone(), sockets),
+        );
+        svc.threads = Some(worker_count);
+        Some(svc)
+    };
 
-        // Add TLS listener
-        proxy_service.add_tls_with_settings(&https_addr, None, tls_settings);
-
-        // Start daily renewal task
+    // Daily Auto-SSL renewal
+    if let Some(ref auto_ssl_manager) = state.auto_ssl {
         let auto_ssl_clone = auto_ssl_manager.clone();
         let bg_handle_clone = bg_handle.clone();
         bg_handle.spawn(async move {
@@ -311,8 +366,6 @@ fn main() {
                 auto_ssl_clone.daily_renewal_check(&bg_handle_clone).await;
             }
         });
-    } else {
-        tracing::info!("Auto-SSL disabled — no HTTPS listener");
     }
 
     // Start background tasks (health checks, etc.) on the background runtime
@@ -325,6 +378,9 @@ fn main() {
 
     // Add service and run
     server.add_service(proxy_service);
+    if let Some(svc) = udp_service {
+        server.add_service(svc);
+    }
 
     tracing::info!("Quayel Gateway starting...");
     // run() returns once Pingora has shut down (run_forever() would exit the

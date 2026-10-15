@@ -92,6 +92,9 @@ pub struct RequestContext {
     /// gRPC request (`content-type: application/grpc*`): long-lived like a
     /// WebSocket, and gateway errors are sent as gRPC status codes.
     pub grpc: bool,
+    /// gRPC status of the call: from the origin's `grpc-status` (headers or
+    /// trailers), or the one the gateway sent with a gRPC error.
+    pub grpc_status: Option<u8>,
     pub client_bytes_out: u64,
     pub upstream_bytes_out: u64,
     pub upstream_bytes_in: u64,
@@ -196,6 +199,7 @@ impl RequestContext {
             client_bytes_in: 0,
             upgrade: false,
             grpc: false,
+            grpc_status: None,
             client_bytes_out: 0,
             upstream_bytes_out: 0,
             upstream_bytes_in: 0,

@@ -1,8 +1,10 @@
 //! Layer 4 proxy (`streams` in config.json).
 //!
-//! Each stream owns a listen address. Connections to it are forwarded byte
-//! for byte to one of its targets (see `tcp.rs`). Listeners are opened at
-//! startup; everything else (targets, rules, timeouts) follows config reloads.
+//! Each stream has a listen address, or shares the HTTPS port and is picked
+//! by TLS server name (SNI). Connections are forwarded byte for byte to one
+//! of its targets (see `tcp.rs`); TLS can be passed through or terminated.
+//! Listeners are opened at startup; everything else (targets, rules, SNI
+//! names on existing ports, timeouts) follows config reloads.
 //!
 //! `EdgeApp` (in `edge.rs`) sits in front of the HTTP app on the shared
 //! Pingora service and sends connections on a stream port to the stream
@@ -10,7 +12,9 @@
 
 pub mod edge;
 pub mod health;
+pub mod sni;
 pub mod tcp;
+pub mod udp;
 
 use crate::condition::CompiledCondition;
 use crate::config::compiler::compile_conditions;
@@ -29,6 +33,22 @@ use std::time::Duration;
 #[derive(Debug, Clone, Default)]
 pub struct CompiledStreams {
     pub list: Vec<Arc<CompiledStream>>,
+    /// Stream ports, each with the streams that share it.
+    pub listeners: Vec<Arc<CompiledListener>>,
+    /// Streams without `listen`: picked by SNI on the HTTPS listener.
+    pub https: SniRouter,
+    /// UDP streams, one per port.
+    pub udp: Vec<Arc<CompiledStream>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TlsHandling {
+    /// Bytes forwarded as they are.
+    Raw,
+    /// TLS from the client forwarded untouched (routed by SNI).
+    Passthrough,
+    /// The gateway does TLS; the target gets plain bytes.
+    Terminate,
 }
 
 #[derive(Debug)]
@@ -36,7 +56,10 @@ pub struct CompiledStream {
     pub id: Arc<str>,
     pub name: Arc<str>,
     pub protocol: StreamProtocol,
-    pub listen: SocketAddr,
+    /// None → shares the HTTPS listener.
+    pub listen: Option<SocketAddr>,
+    pub sni: Vec<Arc<str>>,
+    pub tls: TlsHandling,
     /// Enabled targets only.
     pub targets: Vec<CompiledStreamTarget>,
     pub algorithm: StreamAlgorithm,
@@ -46,9 +69,25 @@ pub struct CompiledStream {
     pub proxy_protocol: ProxyProtocolVersion,
     pub connect_timeout: Duration,
     pub idle: Option<Duration>,
+    /// UDP: session cap (0 → none) and replies per session.
+    pub max_sessions: u32,
+    pub responses: Option<u32>,
     /// A rule reads `ip.*`, so IP intel is looked up even when the
     /// ip_intel plugin is off.
     pub needs_intel: bool,
+}
+
+impl CompiledStream {
+    /// `scheme` in the access log.
+    pub fn scheme(&self) -> &'static str {
+        if self.protocol == StreamProtocol::Udp {
+            return "udp";
+        }
+        match self.tls {
+            TlsHandling::Raw => "tcp",
+            TlsHandling::Passthrough | TlsHandling::Terminate => "tls",
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -68,20 +107,92 @@ pub struct CompiledStreamRule {
     pub action: StreamRuleAction,
 }
 
-impl CompiledStreams {
-    /// The stream listening on the address a connection arrived at.
-    pub fn for_listener(&self, local: SocketAddr) -> Option<&Arc<CompiledStream>> {
-        self.list
-            .iter()
-            .find(|s| s.listen == local)
-            .or_else(|| self.list.iter().find(|s| listen_matches(s.listen, local)))
+/// One stream port.
+#[derive(Debug)]
+pub struct CompiledListener {
+    pub listen: SocketAddr,
+    /// Streams on this port picked by TLS server name.
+    pub sni: SniRouter,
+    /// The stream for connections no `sni` entry matches (or all of them
+    /// when there are no `sni` entries).
+    pub default: Option<Arc<CompiledStream>>,
+}
+
+impl CompiledListener {
+    /// Does a connection have to be peeked for its server name? Only then:
+    /// a plain port never waits for the client to speak first.
+    pub fn routes_by_sni(&self) -> bool {
+        !self.sni.is_empty()
+    }
+}
+
+/// Server name → stream. Exact names first, then "*.rest" wildcards that
+/// cover exactly one more label.
+#[derive(Debug, Clone, Default)]
+pub struct SniRouter {
+    exact: HashMap<Box<str>, Arc<CompiledStream>>,
+    wildcard: HashMap<Box<str>, Arc<CompiledStream>>,
+}
+
+impl SniRouter {
+    pub fn is_empty(&self) -> bool {
+        self.exact.is_empty() && self.wildcard.is_empty()
     }
 
+    pub fn route(&self, name: &str) -> Option<&Arc<CompiledStream>> {
+        if let Some(s) = self.exact.get(name) {
+            return Some(s);
+        }
+        let (_, rest) = name.split_once('.')?;
+        self.wildcard.get(rest)
+    }
+
+    fn insert(&mut self, name: &str, s: &Arc<CompiledStream>) -> Result<(), String> {
+        let (map, key) = match name.strip_prefix("*.") {
+            Some(rest) => (&mut self.wildcard, rest),
+            None => (&mut self.exact, name),
+        };
+        if let Some(prev) = map.get(key) {
+            return Err(format!(
+                "streams[id={}]: sni {name:?} is already used by stream {}",
+                s.id, prev.id
+            ));
+        }
+        map.insert(Box::from(key), Arc::clone(s));
+        Ok(())
+    }
+}
+
+impl CompiledStreams {
+    /// The stream port a connection arrived at.
+    pub fn for_listener(&self, local: SocketAddr) -> Option<&Arc<CompiledListener>> {
+        self.listeners
+            .iter()
+            .find(|l| l.listen == local)
+            .or_else(|| {
+                self.listeners
+                    .iter()
+                    .find(|l| listen_matches(l.listen, local))
+            })
+    }
+
+    /// TCP stream ports (the HTTPS listener isn't included).
     pub fn listen_addrs(&self) -> Vec<SocketAddr> {
-        let mut v: Vec<SocketAddr> = self.list.iter().map(|s| s.listen).collect();
-        v.sort();
-        v.dedup();
-        v
+        self.listeners.iter().map(|l| l.listen).collect()
+    }
+
+    /// UDP stream ports.
+    pub fn udp_addrs(&self) -> Vec<SocketAddr> {
+        self.udp.iter().filter_map(|s| s.listen).collect()
+    }
+
+    pub fn udp_for(&self, listen: SocketAddr) -> Option<&Arc<CompiledStream>> {
+        self.udp.iter().find(|s| s.listen == Some(listen))
+    }
+
+    /// Does any stream terminate TLS (and so need certificates)?
+    pub fn terminates_tls(&self) -> bool {
+        self.list.iter().any(|s| s.tls == TlsHandling::Terminate)
     }
 }
 
@@ -118,13 +229,36 @@ fn listens_overlap(a: SocketAddr, b: SocketAddr) -> bool {
             || canonical(a.ip()) == canonical(b.ip()))
 }
 
+/// Lowercase, no trailing dot; `*` only as a whole first label.
+fn normalize_sni(where_: &str, name: &str) -> Result<String, String> {
+    let n = name.trim().trim_end_matches('.').to_ascii_lowercase();
+    let body = n.strip_prefix("*.").unwrap_or(&n);
+    if body.is_empty() || body.contains('*') || body.contains(':') || body.contains('/') {
+        return Err(format!(
+            "{where_}: sni {name:?} must be a host name or \"*.example.com\""
+        ));
+    }
+    Ok(n)
+}
+
+/// `https_listen` is where streams without `listen` attach; `https_open`
+/// says whether that listener is opened anyway (Auto-SSL on).
 pub fn compile_streams(
     raw: &[StreamConfig],
     listen_http: &str,
-    listen_https: Option<&str>,
+    listen_https: &str,
+    auto_ssl: bool,
 ) -> Result<CompiledStreams, String> {
     let http = parse_listen(listen_http);
-    let https = listen_https.and_then(parse_listen);
+    let uses_https = raw.iter().any(|s| s.enabled && s.listen.is_none());
+    let https = if auto_ssl || uses_https {
+        Some(
+            parse_listen(listen_https)
+                .ok_or_else(|| format!("streams: can't parse listen.https {listen_https:?}"))?,
+        )
+    } else {
+        None
+    };
     let mut ids = HashSet::new();
     let mut list: Vec<Arc<CompiledStream>> = Vec::new();
 
@@ -139,25 +273,89 @@ pub fn compile_streams(
         if !s.enabled {
             continue;
         }
-        let listen = s
-            .listen
-            .parse::<SocketAddr>()
-            .map_err(|_| format!("{where_}: listen must be ip:port, got {:?}", s.listen))?;
-        for (other, what) in [(http, "listen.http"), (https, "listen.https")] {
-            if let Some(o) = other {
-                if listens_overlap(listen, o) {
-                    return Err(format!(
-                        "{where_}: listen {listen} clashes with {what} ({o})"
-                    ));
-                }
+        let udp = s.protocol == StreamProtocol::Udp;
+        if udp {
+            let unsupported = [
+                (!s.sni.is_empty(), "sni"),
+                (s.tls.is_some(), "tls"),
+                (
+                    s.proxy_protocol != ProxyProtocolVersion::Off,
+                    "proxy_protocol",
+                ),
+                (
+                    s.health_check
+                        .as_ref()
+                        .is_some_and(|h| h.mode != HealthCheckMode::Off),
+                    "health_check",
+                ),
+                (s.listen.is_none(), "a missing listen"),
+            ];
+            if let Some((_, what)) = unsupported.iter().find(|(bad, _)| *bad) {
+                return Err(format!("{where_}: udp streams don't support {what}"));
             }
-        }
-        if let Some(prev) = list.iter().find(|p| listens_overlap(p.listen, listen)) {
+        } else if s.max_sessions != default_udp_max_sessions() || s.responses.is_some() {
             return Err(format!(
-                "{where_}: listen {listen} clashes with stream {} ({})",
-                prev.id, prev.listen
+                "{where_}: max_sessions and responses are for udp streams"
             ));
         }
+        let listen = match &s.listen {
+            None => None,
+            Some(l) => {
+                let listen = l
+                    .parse::<SocketAddr>()
+                    .map_err(|_| format!("{where_}: listen must be ip:port, got {l:?}"))?;
+                let tcp_ports: &[(Option<SocketAddr>, &str)] = if udp {
+                    &[]
+                } else {
+                    &[(http, "listen.http"), (https, "listen.https")]
+                };
+                for &(other, what) in tcp_ports {
+                    if let Some(o) = other {
+                        if listens_overlap(listen, o) {
+                            return Err(format!(
+                                "{where_}: listen {listen} clashes with {what} ({o}); \
+                                 leave listen out to share the HTTPS port by sni"
+                            ));
+                        }
+                    }
+                }
+                if let Some(prev) = list.iter().find(|p| {
+                    p.protocol == s.protocol
+                        && p.listen
+                            .is_some_and(|pl| (udp || pl != listen) && listens_overlap(pl, listen))
+                }) {
+                    return Err(format!(
+                        "{where_}: listen {listen} clashes with stream {} ({})",
+                        prev.id,
+                        prev.listen.unwrap()
+                    ));
+                }
+                Some(listen)
+            }
+        };
+        let sni = s
+            .sni
+            .iter()
+            .map(|n| normalize_sni(&where_, n).map(|n| Arc::from(n.as_str())))
+            .collect::<Result<Vec<Arc<str>>, String>>()?;
+        if listen.is_none() && sni.is_empty() {
+            return Err(format!(
+                "{where_}: needs a listen address, or sni names to share the HTTPS port"
+            ));
+        }
+        let tls = match (s.tls, sni.is_empty()) {
+            (Some(StreamTlsMode::Terminate), _) => {
+                if !auto_ssl {
+                    return Err(format!(
+                        "{where_}: tls \"terminate\" needs plugins.auto_ssl (its certificates \
+                         are used); use \"passthrough\" to let the target do TLS"
+                    ));
+                }
+                TlsHandling::Terminate
+            }
+            (_, false) => TlsHandling::Passthrough,
+            (_, true) => TlsHandling::Raw,
+        };
 
         if s.targets.is_empty() {
             return Err(format!("{where_}: needs at least one target"));
@@ -213,18 +411,82 @@ pub fn compile_streams(
             name: Arc::from(s.name.as_deref().unwrap_or(&s.id)),
             protocol: s.protocol,
             listen,
+            sni,
+            tls,
             targets,
             algorithm: s.algorithm,
             health_check,
             rules,
             proxy_protocol: s.proxy_protocol,
             connect_timeout: Duration::from_secs(s.connect_timeout_secs.max(1)),
-            idle: (s.idle_secs > 0).then(|| Duration::from_secs(s.idle_secs)),
+            idle: match (s.idle_secs, udp) {
+                (Some(0), _) | (None, false) => None,
+                (Some(n), _) => Some(Duration::from_secs(n)),
+                (None, true) => Some(Duration::from_secs(UDP_IDLE_SECS)),
+            },
+            max_sessions: s.max_sessions,
+            responses: s.responses.filter(|n| *n > 0),
             needs_intel,
         }));
     }
-    Ok(CompiledStreams { list })
+
+    // Group by port: SNI routes plus at most one default per port.
+    let mut https_router = SniRouter::default();
+    let mut ports: Vec<(SocketAddr, SniRouter, Option<Arc<CompiledStream>>)> = Vec::new();
+    let mut udp = Vec::new();
+    for s in &list {
+        if s.protocol == StreamProtocol::Udp {
+            udp.push(Arc::clone(s));
+            continue;
+        }
+        let router = match s.listen {
+            None => &mut https_router,
+            Some(addr) => {
+                let i = match ports.iter().position(|p| p.0 == addr) {
+                    Some(i) => i,
+                    None => {
+                        ports.push((addr, SniRouter::default(), None));
+                        ports.len() - 1
+                    }
+                };
+                if s.sni.is_empty() {
+                    if let Some(prev) = &ports[i].2 {
+                        return Err(format!(
+                            "streams[id={}]: listen {addr} is already used by stream {}; \
+                             streams sharing a port need different sni names",
+                            s.id, prev.id
+                        ));
+                    }
+                    ports[i].2 = Some(Arc::clone(s));
+                    continue;
+                }
+                &mut ports[i].1
+            }
+        };
+        for name in &s.sni {
+            router.insert(name, s)?;
+        }
+    }
+
+    Ok(CompiledStreams {
+        list,
+        listeners: ports
+            .into_iter()
+            .map(|(listen, sni, default)| {
+                Arc::new(CompiledListener {
+                    listen,
+                    sni,
+                    default,
+                })
+            })
+            .collect(),
+        https: https_router,
+        udp,
+    })
 }
+
+/// How long a UDP session lives without traffic when idle_secs is omitted.
+pub const UDP_IDLE_SECS: u64 = 30;
 
 // ── Runtime state (balancing, health) ────────────────────────────────────────
 
@@ -352,7 +614,7 @@ mod tests {
 
     fn stream(json: &str) -> Result<CompiledStreams, String> {
         let raw: Vec<StreamConfig> = serde_json::from_str(json).unwrap();
-        compile_streams(&raw, "0.0.0.0:80", Some("0.0.0.0:443"))
+        compile_streams(&raw, "0.0.0.0:80", "0.0.0.0:443", true)
     }
 
     const TWO: &str = r#"[{"id":"pg","listen":"0.0.0.0:5432","targets":[
@@ -363,6 +625,10 @@ mod tests {
     fn listener_lookup_handles_wildcard_and_mapped_addresses() {
         let c = stream(TWO).unwrap();
         assert!(c.for_listener("10.1.2.3:5432".parse().unwrap()).is_some());
+        assert_eq!(
+            c.listeners[0].default.as_ref().unwrap().tls,
+            TlsHandling::Raw
+        );
         assert!(c
             .for_listener("[::ffff:10.1.2.3]:5432".parse().unwrap())
             .is_some());
@@ -386,6 +652,97 @@ mod tests {
         );
         assert!(e.unwrap_err().contains("accepts_connections"));
         assert!(stream(r#"[{"id":"x","listen":"0.0.0.0:9000","targets":[]}]"#).is_err());
+    }
+
+    const T: &str = r#""targets":[{"id":"a","host":"h","port":1}]"#;
+
+    #[test]
+    fn sni_routes_on_shared_and_own_ports() {
+        let c = stream(&format!(
+            r#"[{{"id":"r","sni":["DB1.Example.com."],{T}}},
+                {{"id":"w","sni":["*.wild.example.com"],"tls":"terminate",{T}}},
+                {{"id":"p1","listen":"0.0.0.0:9000","sni":["a.test"],{T}}},
+                {{"id":"p2","listen":"0.0.0.0:9000","sni":["b.test"],{T}}},
+                {{"id":"pd","listen":"0.0.0.0:9000",{T}}}]"#
+        ))
+        .unwrap();
+        let id = |s: Option<&Arc<CompiledStream>>| s.map(|s| s.id.to_string());
+        assert_eq!(id(c.https.route("db1.example.com")), Some("r".into()));
+        assert_eq!(id(c.https.route("x.wild.example.com")), Some("w".into()));
+        assert_eq!(id(c.https.route("a.b.wild.example.com")), None);
+        assert_eq!(id(c.https.route("wild.example.com")), None);
+        assert_eq!(
+            c.https.route("db1.example.com").unwrap().tls,
+            TlsHandling::Passthrough
+        );
+        assert_eq!(c.listen_addrs().len(), 1);
+        let l = c.for_listener("10.0.0.1:9000".parse().unwrap()).unwrap();
+        assert!(l.routes_by_sni());
+        assert_eq!(id(l.sni.route("b.test")), Some("p2".into()));
+        assert_eq!(id(l.default.as_ref()), Some("pd".into()));
+        assert!(c.terminates_tls());
+    }
+
+    #[test]
+    fn udp_streams() {
+        let c = stream(&format!(
+            r#"[{{"id":"dns","protocol":"udp","listen":"0.0.0.0:53","responses":1,{T}}},
+                {{"id":"dns-tcp","listen":"0.0.0.0:53",{T}}},
+                {{"id":"quic","protocol":"udp","listen":"0.0.0.0:443","idle_secs":0,{T}}}]"#
+        ))
+        .unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(c.udp.len(), 2);
+        assert_eq!(c.listeners.len(), 1); // TCP 53 only
+        let dns = c.udp_for("0.0.0.0:53".parse().unwrap()).unwrap();
+        assert_eq!(dns.idle, Some(Duration::from_secs(UDP_IDLE_SECS)));
+        assert_eq!(dns.responses, Some(1));
+        assert_eq!(dns.max_sessions, 100_000);
+        assert_eq!(dns.scheme(), "udp");
+        assert_eq!(
+            c.udp_for("0.0.0.0:443".parse().unwrap()).unwrap().idle,
+            None
+        );
+        let e = |j: String| stream(&j).unwrap_err();
+        assert!(e(format!(
+            r#"[{{"id":"u","protocol":"udp","sni":["a.b"],"listen":"0.0.0.0:1",{T}}}]"#
+        ))
+        .contains("sni"));
+        assert!(e(format!(r#"[{{"id":"u","protocol":"udp",{T}}}]"#)).contains("listen"));
+        assert!(e(format!(
+            r#"[{{"id":"t","listen":"0.0.0.0:1","responses":1,{T}}}]"#
+        ))
+        .contains("udp"));
+        assert!(e(format!(
+            r#"[{{"id":"u","protocol":"udp","listen":"0.0.0.0:9","targets":[{{"id":"a","host":"h","port":1}}]}},
+                {{"id":"v","protocol":"udp","listen":"0.0.0.0:9",{T}}}]"#
+        ))
+        .contains("clashes"));
+    }
+
+    #[test]
+    fn sni_config_errors() {
+        let e = |j: String| stream(&j).unwrap_err();
+        assert!(e(format!(r#"[{{"id":"x",{T}}}]"#)).contains("needs a listen"));
+        assert!(e(format!(
+            r#"[{{"id":"x","sni":["a.test"],{T}}},{{"id":"y","sni":["A.test"],{T}}}]"#
+        ))
+        .contains("already used by stream x"));
+        assert!(e(format!(
+            r#"[{{"id":"x","listen":"0.0.0.0:9000",{T}}},{{"id":"y","listen":"0.0.0.0:9000",{T}}}]"#
+        ))
+        .contains("need different sni"));
+        assert!(e(format!(r#"[{{"id":"x","sni":["a.*.test"],{T}}}]"#)).contains("host name"));
+        let raw: Vec<StreamConfig> = serde_json::from_str(&format!(
+            r#"[{{"id":"x","listen":"0.0.0.0:9000","tls":"terminate",{T}}}]"#
+        ))
+        .unwrap();
+        assert!(compile_streams(&raw, "0.0.0.0:80", "0.0.0.0:443", false)
+            .unwrap_err()
+            .contains("auto_ssl"));
+        // Without Auto-SSL the HTTPS port is free unless a stream attaches to it.
+        let raw: Vec<StreamConfig> =
+            serde_json::from_str(&format!(r#"[{{"id":"x","listen":"0.0.0.0:443",{T}}}]"#)).unwrap();
+        assert!(compile_streams(&raw, "0.0.0.0:80", "0.0.0.0:443", false).is_ok());
     }
 
     #[test]
