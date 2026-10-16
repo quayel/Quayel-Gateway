@@ -41,7 +41,7 @@ regex = "1"
 ipnet = "2"
 
 # GeoIP / MMDB
-maxminddb = "0.24"
+maxminddb = "0.32"
 
 # Concurrency
 dashmap = "6"
