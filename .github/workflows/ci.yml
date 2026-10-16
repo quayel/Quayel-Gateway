@@ -27,7 +27,7 @@ jobs:
     name: Build and unit tests
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Install build tools
         run: |
