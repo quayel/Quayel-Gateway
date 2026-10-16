@@ -60,7 +60,7 @@ crossbeam-queue = "0.3"
 bytes = "1"
 
 # JWT
-jsonwebtoken = "9"
+jsonwebtoken = "11"
 base64 = "0.23"
 
 # Hashing — FxHash for cache keys, SHA-256 for config change detection
