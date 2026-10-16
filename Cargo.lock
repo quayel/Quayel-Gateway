@@ -2040,7 +2040,7 @@ version = "0.6.0"
 dependencies = [
  "arc-swap",
  "async-trait",
- "base64 0.22.1",
+ "base64 0.23.1",
  "bytes",
  "chrono",
  "crossbeam-queue",
