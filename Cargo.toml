@@ -99,7 +99,7 @@ rustls = { version = "0.23", features = ["ring", "std"] }
 time = "0.3"
 
 # LRU cache for IP lookups — lock-free reads via parking_lot::RwLock
-lru = "0.12"
+lru = "0.18"
 
 
 [profile.release]
