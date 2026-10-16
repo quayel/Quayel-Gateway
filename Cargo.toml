@@ -61,7 +61,7 @@ bytes = "1"
 
 # JWT
 jsonwebtoken = "9"
-base64 = "0.22"
+base64 = "0.23"
 
 # Hashing — FxHash for cache keys, SHA-256 for config change detection
 sha2 = "0.11"
