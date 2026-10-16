@@ -1,6 +1,8 @@
 # Quayel Gateway Documentation
 
-A high-performance API gateway built on [Pingora](https://github.com/cloudflare/pingora) with embedded IP intelligence, firewall, rate limiting, caching, and load balancing — all in a single Rust binary.
+A high-performance API gateway built on [Pingora](https://github.com/cloudflare/pingora) with embedded IP intelligence, firewall, rate limiting, caching, load balancing, HTTP/2 and gRPC, and a TCP/UDP stream proxy — all in a single Rust binary.
+
+> **Reading as a user?** The published docs at **[docs.quayel.com](https://docs.quayel.com/quayel-gateway)** walk you from a 5-minute Quickstart through install (Docker, Compose, `.deb`, binary, source), task guides and a production checklist. The files in this folder are the reference they're built from.
 
 ## Quick Links
 
@@ -8,7 +10,7 @@ A high-performance API gateway built on [Pingora](https://github.com/cloudflare/
 |----------|-------------|
 | [AI Agent Guide](ai-guide.md) | Machine-oriented contract for AI agents: exact schema, enums, defaults, validation loop, recipes |
 | [config.schema.json](config.schema.json) | JSON Schema for validating `config.json` |
-| [Getting Started](getting-started.md) | Install, configure, and run your first gateway |
+| [Getting Started](getting-started.md) | Install, configure, and run your first gateway ([full version on the site](https://docs.quayel.com/quayel-gateway/getting-started/quickstart)) |
 | [Architecture](architecture.md) | System design, plugin pipeline, data flow |
 | [Configuration Reference](configuration.md) | Every `config.json` field explained |
 | [Conditions System](conditions.md) | How to write matching rules |
@@ -22,8 +24,9 @@ A high-performance API gateway built on [Pingora](https://github.com/cloudflare/
 | [IP Intelligence](plugins/ip-intel.md) | Geo, ASN, VPN, Tor, datacenter, proxy detection |
 | [Firewall](plugins/firewall.md) | Allow/block/redirect based on any request attribute |
 | [Rate Limiting](plugins/rate-limiting.md) | Sliding-window rate limits per IP, header, or key |
+| [Transform](plugins/transform.md) | Rewrite request path, query and headers; set response headers |
 | [Cache](plugins/cache.md) | Edge caching with TTL, bypass, and custom keys |
-| [Load Balancer](plugins/load-balancer.md) | Round-robin, weighted, least-conn, sticky, fast-response |
+| [Load Balancer](plugins/load-balancer.md) | Round-robin, weighted, least-conn, sticky, fast-response; health checks; HTTP/2 and gRPC targets |
 | [Auto-SSL](plugins/auto-ssl.md) | On-demand TLS certificates via Let's Encrypt (ACME) |
 
 ## Reference
@@ -51,10 +54,10 @@ A high-performance API gateway built on [Pingora](https://github.com/cloudflare/
 
 4. **Embedded IP intelligence** — Every request is enriched with country, ASN, VPN/Tor/datacenter/proxy detection, risk scoring, and network classification — all in ~5μs (cached).
 
-5. **Deterministic plugin pipeline** — Plugins execute in a fixed order: IP Intel → Firewall → Rate Limit → Load Balancer → Cache → Logging. Any plugin can short-circuit the pipeline.
+5. **Deterministic plugin pipeline** — Plugins execute in a fixed order: IP Intel → Firewall → Rate Limit → Request Transform → Cache → Load Balancer → Logging. Any plugin can short-circuit the pipeline.
 
 6. **Structured JSONL logging** — Every request produces a single JSON line with full context: IP intel, firewall decisions, rate limit state, cache status, load balancer target, and per-phase timing.
 
 ## License
 
-Internal tool — not open source.
+Apache License 2.0 — see [LICENSE](../LICENSE). Embedded DB-IP data is CC BY 4.0.

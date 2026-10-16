@@ -20,6 +20,13 @@ write entries for people running the gateway, not for people reading the diff.
   `443:443`. If you run the image with the bundled demo config and publish
   `-p 8080:8080`, change it to `-p 80:80` (or publish `-p 8080:80`). Your own
   config is unaffected: whatever it sets in `listen` is still used.
+- **`docker-compose.yml` mounts a config folder (`./gw`) instead of a single
+  `config.json` file.** Editors replace the file on save, and a single-file
+  bind mount keeps showing the old one, so hot reload never saw edits.
+- **The AI agent guide, the skill and `AGENTS.md` cover everything since
+  0.4.1:** `trusted_proxies`, HTTP/2 and gRPC targets, `streams` (TCP, UDP,
+  SNI routing), the health-check fixes and the `grpc_status` log field. The
+  skill no longer suggests trusting `X-Forwarded-For` index 0.
 
 ### Fixed
 

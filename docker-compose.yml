@@ -11,7 +11,9 @@
 #   docker compose up -d --build
 #
 # Using your own config:
-#   1. put it at ./config.json and uncomment the config mount below
+#   1. put it at ./gw/config.json and uncomment the config mount below
+#      (mount the folder, not the file: editors replace the file on save and a
+#      single-file mount never sees the new one, so hot reload wouldn't work)
 #      (keep `auto_ssl.cert_storage_path` = /var/lib/quayel/certs so certs
 #      land in the persistent volume)
 #   2. `docker compose up -d --build`
@@ -31,9 +33,9 @@ services:
     volumes:
       # Persist ACME account key + issued certs/keys across restarts
       - quayel-certs:/var/lib/quayel/certs
-      # Your own config (file must exist before `up`; the bundled demo config
-      # is used when this stays commented out):
-      # - ./config.json:/etc/quayel-gateway/config.json:ro
+      # Your own config (./gw/config.json must exist before `up`; the bundled
+      # demo config is used when this stays commented out):
+      # - ./gw:/etc/quayel-gateway:ro
       # Optional: access logs on the host
       # - ./logs:/var/log/quayel
     environment:

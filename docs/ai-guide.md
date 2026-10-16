@@ -13,8 +13,12 @@ Quayel Gateway is a single-binary reverse proxy / API gateway (Rust, Pingora cor
 Run: `quayel-gateway [OPTIONS] [CONFIG_PATH]`. One JSON file describes everything:
 listeners, client-IP resolution, and a plugin pipeline
 (`ip_intel → firewall → rate_limiting → request_transform → cache → load_balancer → logging`, plus `auto_ssl`
-for TLS). All IP-intelligence data is embedded in the binary. There are **no** external
-services to install (no Redis/etcd/DB).
+for TLS). HTTP/1.1, HTTP/2 and gRPC are served on the same ports. A separate
+top-level `streams` list proxies raw TCP and UDP (databases, brokers, DNS), optionally
+routed by TLS server name (SNI). All IP-intelligence data is embedded in the binary.
+There are **no** external services to install (no Redis/etcd/DB).
+
+Human docs: <https://docs.quayel.com/quayel-gateway> (Quickstart, install methods, guides, production).
 
 | Fact | Value |
 |---|---|
@@ -96,7 +100,11 @@ GatewayConfig
 │   ├── source: peer_ip | header | header_index        (default peer_ip)
 │   ├── header: string                       (required when source is header|header_index)
 │   ├── index: integer ≥ 0                   (required when source is header_index)
-│   └── fallback: peer_ip                    (only valid value)
+│   ├── fallback: peer_ip                    (only valid value)
+│   └── trusted_proxies: string[]            (IPs/CIDRs whose header is believed; default loopback + private ranges + Cloudflare)
+├── server                                   (optional) { workers?, http2 = true, timeouts{…}, limits{…}, protection{…}, request_id{…} }  (see configuration.md)
+├── jwt                                      (optional) token verification keys (public_key | jwks_url | secret_env, …)
+├── streams: Stream[]                        (optional; TCP/UDP proxy, see Stream below and streams.md)
 ├── metrics                                  (optional; startup only) { enabled = true, listen = "127.0.0.1:9464", path = "/metrics", max_hosts = 1000 }
 └── plugins                                  (required object; every sub-plugin optional)
     ├── ip_intel       { enabled: bool = true }
@@ -168,11 +176,34 @@ first LB in the array whose conditions match handles the request),
 `path: string = "/"` (used by `https` mode), `interval_seconds = 5`, `timeout_ms = 1000`,
 `expected_statuses?: int[]`, `healthy_threshold = 2`, `unhealthy_threshold = 3`
 
-- `https` → HTTP(S) GET to the target's protocol/host/port at `path`.
-- `accepts_connections` → TCP connect check only.
+- `https` → HTTP(S) GET to the target's protocol/host/port at `path`. Healthy = status in
+  `expected_statuses`, or any 2xx/3xx when unset. Redirects are **not** followed.
+- `accepts_connections` → TCP connect check only. Use it for gRPC (`h2c`/`h2`) targets,
+  which usually reject a plain GET.
+- Unhealthy targets are taken out of their pool (health is tracked per pool). A config
+  reload applies `enabled`, weights and new targets at once, but changed `health_check`
+  settings, and health checks for new targets, only start after a restart.
 - No healthy target → `503` with `{"error":"no_healthy_upstream"}`. (With
   `health_check: {mode:"off"}` all targets are assumed healthy; a dead backend then
   yields Pingora's plain `502`.)
+
+### Stream (top-level `streams[]`, TCP / UDP proxy)
+`id*`, `name?`, `enabled = true`, `protocol: "tcp" | "udp" = "tcp"`,
+`listen?: "host:port"` (omitted → shares `listen.https` and is picked by `sni`; startup only),
+`sni?: string[]` (exact names or `*.example.com`), `tls?: "passthrough" | "terminate"`
+(default `passthrough` when `sni` is set),
+`targets*: [{ id*, host*, port*, weight = 100, enabled = true }]` (≥1),
+`algorithm: "round_robin" | "weighted_round_robin" | "least_connections" | "ip_hash" = "round_robin"`
+(⚠️ a **string**, not the `{type}` object HTTP load balancers use),
+`health_check?` (only `accepts_connections` / `off`),
+`rules?: [{ id*, enabled = true, conditions = [], action*: "allow" | "block" }]`
+(first match decides; no match → allowed; conditions see `req.ip` and `ip.*` only),
+`proxy_protocol: "off" | "v1" | "v2" = "off"`, `connect_timeout_secs = 5`,
+`idle_secs?` (TCP: omitted/0 → never; UDP: default 30),
+UDP only: `max_sessions = 100000`, `responses?` (e.g. `1` for DNS).
+
+HTTP features (path, headers, JWT, cache, transform) don't apply to streams. Unknown fields
+in a stream are a config error.
 
 ### Condition
 `left*: string (path, §6)`, `operator*: Operator`, `value: any` (omit for
@@ -202,6 +233,11 @@ in, not_in, greater_than, greater_than_or_equal, less_than, less_than_or_equal, 
 | `target.protocol` | `http` `https` `h2c` `h2` |
 | `host_header.mode` | `visitor` `custom` `target` |
 | `health_check.mode` | `https` `accepts_connections` `off` |
+| `streams[].protocol` | `tcp` `udp` |
+| `streams[].tls` | `passthrough` `terminate` |
+| `streams[].algorithm` | `round_robin` `weighted_round_robin` `least_connections` `ip_hash` |
+| `streams[].rules[].action` | `allow` `block` |
+| `streams[].proxy_protocol` | `off` `v1` `v2` |
 
 ---
 
@@ -210,6 +246,13 @@ in, not_in, greater_than, greater_than_or_equal, less_than, less_than_or_equal, 
 | Location | Field | Default |
 |---|---|---|
 | `client_ip` | whole object | `{ "source": "peer_ip" }` |
+| `client_ip` | `trusted_proxies` | loopback, private ranges, Cloudflare |
+| `listen` | `http` / `https` | `0.0.0.0:80` / `0.0.0.0:443` |
+| `server` | `http2` | `true` (h2c on the HTTP port, ALPN `h2` on HTTPS; startup only) |
+| health check | `expected_statuses` | any 2xx/3xx |
+| stream | `protocol` / `algorithm` / `proxy_protocol` / `connect_timeout_secs` | `tcp` / `round_robin` / `off` / `5` |
+| stream | `idle_secs` | TCP: never · UDP: `30` |
+| stream (UDP) | `max_sessions` | `100000` |
 | every plugin | `enabled` | `true` (a plugin object that is present runs) |
 | `firewall` / `rate_limiting` / `cache` / `load_balancer` | `rules` / `load_balancers` | `[]` |
 | `cache` | `max_object_size_bytes` | `10485760` (10 MB) |
@@ -237,8 +280,8 @@ in, not_in, greater_than, greater_than_or_equal, less_than, less_than_or_equal, 
 | `req.host` (alias `http.host`) | string | Host header |
 | `req.path` (`http.path`) | string | Path **including** query string |
 | `req.method` (`http.method`) | string | e.g. `"POST"` |
-| `req.scheme` (`http.scheme`) | string | `http` / `https` |
-| `req.ip` (`http.ip`) | string | Resolved client IP (per `client_ip` config) |
+| `req.scheme` (`http.scheme`) | string | `https` for TLS connections, else `http`. `X-Forwarded-Proto` overrides it only from `client_ip.trusted_proxies` |
+| `req.ip` (`http.ip`) | string | Resolved client IP (per `client_ip` config; the header is only read from `trusted_proxies`) |
 | `req.peer_ip` (`http.peer_ip`) | string | Direct TCP peer |
 | `req.user_agent` (`http.user_agent`) | string | |
 | `req.client_ip` | string | **Rate-limit keys only** — alias of `req.ip` |
@@ -445,14 +488,79 @@ an error, which means the old config is still live).
 
 Set `staging: true` first, verify issuance works, then flip to `false`. Port 80 must be
 reachable for the HTTP-01 challenge. First handshake serves a self-signed fallback cert
-until ACME finishes in the background.
+until ACME finishes in the background. To send HTTP to HTTPS, add a firewall rule
+(`req.scheme equals http` → `redirect` with `location: "https://${req.host}${req.path}"`);
+ACME challenges are answered before the firewall, so it can't break issuance.
+
+### Behind Cloudflare or a load balancer (real client IP)
+
+```json
+"client_ip": {
+  "source": "header",
+  "header": "X-Real-IP",
+  "fallback": "peer_ip",
+  "trusted_proxies": ["10.0.0.0/8"]
+}
+```
+
+Behind Cloudflare use `{"source":"header","header":"CF-Connecting-IP"}` (Cloudflare ranges
+are trusted by default). The header is ignored from any peer outside `trusted_proxies`, so
+clients can't fake their IP. A proxy with a **public, non-Cloudflare** IP must be listed.
+
+### gRPC backend (plain-text HTTP/2)
+
+```json
+"targets": [{ "id": "grpc-1", "host": "10.0.0.7", "port": 50051, "protocol": "h2c" }],
+"health_check": { "mode": "accepts_connections" }
+```
+
+Use `"protocol": "h2"` for a TLS gRPC backend. Clients can use HTTP/2 over TLS on 443 or
+h2c on port 80. Errors the gateway itself returns reach gRPC clients as gRPC statuses
+(403 → `PermissionDenied`, 429 → `ResourceExhausted`, 502/503 → `Unavailable`).
+
+### TCP proxy with an IP allowlist (PostgreSQL)
+
+```json
+"streams": [{
+  "id": "postgres",
+  "listen": "0.0.0.0:5432",
+  "targets": [{ "id": "pg-1", "host": "10.0.0.5", "port": 5432 }],
+  "health_check": { "mode": "accepts_connections" },
+  "rules": [
+    { "id": "office", "action": "allow",
+      "conditions": [{ "left": "req.ip", "operator": "starts_with", "value": "203.0.113." }] },
+    { "id": "everyone-else", "action": "block" }
+  ]
+}]
+```
+
+### Route TLS by server name on the shared 443
+
+```json
+"streams": [
+  { "id": "redis-a", "sni": ["a.redis.example.com"], "tls": "terminate",
+    "targets": [{ "id": "r", "host": "10.0.0.5", "port": 6379 }] }
+]
+```
+
+No `listen` → the stream shares `listen.https`. Matching names go to the stream; every other
+name stays normal HTTPS. `terminate` uses Auto-SSL certificates; `passthrough` forwards the
+encrypted bytes untouched.
+
+### DNS over UDP
+
+```json
+"streams": [{ "id": "dns", "protocol": "udp", "listen": "0.0.0.0:53", "responses": 1,
+  "targets": [{ "id": "d1", "host": "10.0.0.53", "port": 53 }] }]
+```
 
 ---
 
 ## 9. What backends receive / what logs contain
 
 Upstream requests get `X-Forwarded-For: <client_ip>` (appended to the chain),
-`X-Forwarded-Proto`, `X-Forwarded-Host`. Extra headers can be injected with a firewall
+`X-Forwarded-Proto` (from the connection; an incoming value is only kept from a trusted
+proxy), `X-Forwarded-Host`, `X-QG-Request-Id`. Extra headers can be injected with a firewall
 `set_request_header` rule.
 
 Access log = one JSON object per line. Useful JSON paths for automation:
@@ -465,7 +573,9 @@ Access log = one JSON object per line. Useful JSON paths for automation:
 | Cache outcome | `.cache` (`HIT`/`MISS`/`BYPASS`/`STALE`/`REVALIDATING`/`NONE`) |
 | Which backend? | `.upstream`, `.upstream_addr`, `.upstream_status` |
 | Failed? | `.error` (`client closed` with status `499` when the client gave up) |
+| gRPC status | `.grpc_status` (`-1` = not gRPC / no status) |
 | Latency | `.dur_us`, `.upstream_us` |
+| Stream connection? | `.method` = `TCP`/`UDP`, `.path` = stream id, `.block.type` = `stream` |
 
 Every line has every key (`""` / `0` / `false` when not applicable), and `path`
 never includes the query string.
@@ -494,9 +604,22 @@ never includes the query string.
 - **TLS targets:** `tls.verify` defaults to `false` (self-signed upstreams work out of the
   box). Set `verify: true` for production upstreams. SNI rules: `tls.sni` if set, else the
   visitor Host for IP targets, else the target hostname.
-- The gateway returns `502` (empty body) when a supposedly-healthy upstream refuses the
-  connection, and `503 {"error":"no_healthy_upstream"}` only when health checks have marked
-  every target down.
+- The gateway returns `502` (empty body) when a target refuses the connection before
+  health checks have noticed (there is no retry to another target), and
+  `503 {"error":"no_healthy_upstream"}` once health checks have marked every target in the
+  pool down. A request that matches no load balancer gets `404 {"error":"Not Found"}`.
+- **Client IP behind a proxy:** set `client_ip` *and* make sure the proxy's IP is in
+  `trusted_proxies` (the default covers private ranges, loopback and Cloudflare). Otherwise
+  every request appears to come from the proxy.
+- **HTTPS handshake deadline:** a TLS handshake on the HTTPS port must finish within
+  `server.timeouts.header_secs` (default 10 s).
+- **Ports below 1024** need root, `CAP_NET_BIND_SERVICE`
+  (`sudo setcap cap_net_bind_service=+ep ./quayel-gateway`) or Docker. The `.deb` service
+  already has the capability.
+- **Docker + hot reload:** mount the config **directory** (`-v ./gw:/etc/quayel-gateway`),
+  not the single file. Editors replace the file, and a single-file bind mount never sees it.
+- **Startup-only settings:** `listen`, stream `listen`, `server.http2`, `metrics` and
+  `health_check` changes need a restart; the rest hot-reloads.
 
 ---
 
@@ -511,4 +634,6 @@ never includes the query string.
 | Headers, variables, response bodies | [`api-reference.md`](api-reference.md) |
 | Plugin internals (cache singleflight, ACME flow, …) | [`plugins/`](plugins/) |
 | Request / response transforms | [`plugins/transform.md`](plugins/transform.md) |
+| TCP / UDP streams, SNI routing | [`streams.md`](streams.md) |
+| Task guides, install methods, production checklist | <https://docs.quayel.com/quayel-gateway> |
 | Reusable skill package for AI tools | [`../skills/quayel-gateway/SKILL.md`](../skills/quayel-gateway/SKILL.md) |

@@ -1,8 +1,13 @@
 # AGENTS.md — working on / with Quayel Gateway
 
 **Read this first if you are an AI agent.** Quayel Gateway is a single-binary
-Rust (Pingora) API gateway configured by one `config.json`. IP-intelligence data
-is embedded in the binary; there are no external services.
+Rust (Pingora) API gateway configured by one `config.json`. It serves HTTP/1.1,
+HTTP/2 and gRPC, and proxies raw TCP/UDP through the top-level `streams` list.
+IP-intelligence data is embedded in the binary; there are no external services.
+
+Human documentation (Quickstart, install methods, task guides, production):
+**<https://docs.quayel.com/quayel-gateway>**. The files below are the source the
+site is synced from.
 
 ## Documentation map (for agents)
 
@@ -14,7 +19,8 @@ is embedded in the binary; there are no external services.
 | [docs/configuration.md](docs/configuration.md) | Human field-by-field reference. |
 | [docs/conditions.md](docs/conditions.md) | Condition matching semantics and coercion. |
 | [docs/api-reference.md](docs/api-reference.md) | Upstream headers, response bodies, variables. |
-| [docs/logging.md](docs/logging.md) | JSONL access-log format. |
+| [docs/logging.md](docs/logging.md) | JSONL access-log format, sinks, `/metrics`. |
+| [docs/streams.md](docs/streams.md) | TCP / UDP proxy, SNI routing (also on the shared 443), PROXY protocol. |
 | [docs/plugins/](docs/plugins/) | Per-plugin internals (cache singleflight, ACME, LB algorithms). |
 
 Precedence when docs disagree: `src/config/schema.rs` + `src/config/loader.rs`
@@ -32,15 +38,18 @@ src/config/schema.rs   # ← authoritative config schema (serde structs + enums)
 src/config/loader.rs   # ← authoritative startup validation rules
 src/plugins/           # firewall, rate_limit, cache, load_balancer, ip_intel
 src/gateway/           # pipeline: ip_intel → firewall → rate_limiting → request_transform → cache → load_balancer → logging
+src/streams/           # TCP/UDP proxy, SNI peek on the HTTPS port (edge.rs), stream health checks
+tests/                 # end-to-end suites; `bash tests/run-all.sh` runs them all
 docs/                  # documentation (see map above)
 skills/                # AI skill package
 ```
 
 ## Hard rules when changing the code
 
-- Enum changes in `src/config/schema.rs` **must** be reflected in:
+- Enum and field changes in `src/config/schema.rs` (including `streams`) **must** be reflected in:
   `docs/config.schema.json`, `docs/ai-guide.md`, `skills/quayel-gateway/SKILL.md`,
-  and `docs/configuration.md`. Keep all five in sync — agents rely on them.
+  and `docs/configuration.md` (or `docs/streams.md`). Keep them in sync — agents rely on them.
+- User-visible changes get a line in `CHANGELOG.md` under `Unreleased`.
 - Keep `docs/config.schema.json` validating `examples/config.demo.json` and `config.json`
   (test with `python3` + `jsonschema`, see below).
 - Do not document a field name that serde does not accept (e.g. redirect uses
@@ -51,11 +60,18 @@ skills/                # AI skill package
 1. Copy enum strings exactly — they are snake_case and case-sensitive.
 2. Firewall rules need ≥1 condition; rate-limit/cache/LB rules may match all
    (empty `conditions`).
-3. `limit`/`window_seconds` ≥ 1; every load balancer needs ≥1 target;
+3. `limit`/`window_seconds` ≥ 1; every load balancer and stream needs ≥1 target;
    `auto_ssl` needs `email` + non-empty `domains`.
-4. Rules are evaluated in array order, first match wins — most specific first.
-5. Bump `config_version` on every change (it is logged on hot reload).
-6. Validate before declaring done:
+   Stream `algorithm` and rule `action` are plain strings (`"least_connections"`,
+   `"block"`), not the objects HTTP load balancers and firewall rules use.
+4. Behind a proxy, set `client_ip` and make sure the proxy's IP is in
+   `client_ip.trusted_proxies` (default: loopback, private ranges, Cloudflare).
+   Never trust `X-Forwarded-For` index 0 on an internet-facing gateway.
+5. gRPC targets: `"protocol": "h2c"` (plain) or `"h2"` (TLS) with an
+   `accepts_connections` health check.
+6. Rules are evaluated in array order, first match wins — most specific first.
+7. Bump `config_version` on every change (it is logged on hot reload).
+8. Validate before declaring done:
 
 ```bash
 # 1. syntax
@@ -75,7 +91,7 @@ EOF
 timeout -k 2 3 ./target/release/quayel-gateway config.json
 ```
 
-7. Smoke test: `curl -s -i http://localhost/…` and inspect the last access-log
+9. Smoke test: `curl -s -i http://localhost/…` and inspect the last access-log
    line. On a running gateway the config hot-reloads when saved (watch stderr for
    `Config hot-reloaded successfully`; an invalid save keeps the old config live).
 
@@ -88,6 +104,8 @@ timeout -k 2 3 ./target/release/quayel-gateway config.json
 | `Firewall rule '<id>' has no conditions` | firewall rules cannot be catch-all |
 | `Rate limit rule '<id>' has zero limit / zero window` | values must be ≥1 |
 | `Load balancer '<id>' has no targets` | add ≥1 target |
+| `streams[id=<id>]: …` | stream field error (see `docs/streams.md`) |
+| `Permission denied` on bind to port 80/443 | run as root, `setcap cap_net_bind_service=+ep`, or Docker |
 | `No config file found` | pass a path, set `QUAYEL_GATEWAY_CONFIG`, or create `/etc/quayel-gateway/config.json` |
 
 ## Using the skill from other AI tools

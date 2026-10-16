@@ -243,8 +243,9 @@ curl -X PUT http://127.0.0.1:9180/apisix/admin/routes/1 \
 ### Docker
 
 ```bash
+# config.json goes in ./gw; mount the folder so edits hot-reload
 docker run --rm -p 80:80 -p 443:443 \
-  -v $PWD/config.json:/etc/quayel-gateway/config.json:ro \
+  -v $PWD/gw:/etc/quayel-gateway:ro \
   quayel/quayel-gateway
 ```
 
@@ -531,7 +532,7 @@ For more detail, run with `RUST_LOG=debug`.
 </details>
 
 > [!IMPORTANT]
-> Quayel Gateway is young. Every release is tested by unit tests and 15 end-to-end suites against real services ([Testing](https://docs.quayel.com/quayel-gateway/contributing/testing)), but it doesn't yet have HTTP/3, JSON body transforms or a cluster-wide cache. Read the [CHANGELOG](CHANGELOG.md) before upgrading: 0.x releases can include breaking changes.
+> Quayel Gateway is young. Every release is tested by unit tests and 16 end-to-end suites against real services ([Testing](https://docs.quayel.com/quayel-gateway/contributing/testing)), but it doesn't yet have HTTP/3, JSON body transforms or a cluster-wide cache. Read the [CHANGELOG](CHANGELOG.md) before upgrading: 0.x releases can include breaking changes.
 
 ## Documentation
 
