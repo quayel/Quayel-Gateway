@@ -316,11 +316,29 @@ fn main() {
         ),
     );
 
+    // Pingora binds inside run() and panics when it can't, so a port the
+    // user may not open (below 1024 without root) is reported here first.
+    let mut tcp_addrs = vec![listen_addr.clone()];
+    if state.auto_ssl.is_some() || !state.config.load().streams.https.is_empty() {
+        tcp_addrs.push(https_addr.clone());
+    }
+    tcp_addrs.extend(stream_listens.iter().map(|a| a.to_string()));
+    for addr in &tcp_addrs {
+        if let Err(e) = check_bind_permission(addr) {
+            tracing::error!("{}", e);
+            std::process::exit(1);
+        }
+    }
+
     proxy_service.add_tcp(&listen_addr);
     if state.auto_ssl.is_some() || !state.config.load().streams.https.is_empty() {
         proxy_service.add_tcp(&https_addr);
     }
     for s in &state.config.load().streams.list {
+        // UDP streams are logged when their sockets are bound, below.
+        if s.protocol == crate::config::schema::StreamProtocol::Udp {
+            continue;
+        }
         match s.listen {
             Some(addr) => tracing::info!(stream = %s.id, listen = %addr, sni = ?s.sni, "TCP stream listening"),
             None => tracing::info!(stream = %s.id, listen = %https_addr, sni = ?s.sni, "TCP stream on the HTTPS port"),
@@ -391,6 +409,23 @@ fn main() {
     }
     tracing::info!("Quayel Gateway stopped");
     std::process::exit(0)
+}
+
+/// Fails only on permission errors. "Address in use" is left to Pingora,
+/// which retries the bind for a few seconds (e.g. while an old process exits).
+fn check_bind_permission(addr: &str) -> Result<(), String> {
+    match std::net::TcpListener::bind(addr) {
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+            let port = addr.rsplit(':').next().unwrap_or(addr);
+            Err(format!(
+                "Cannot listen on {}: permission denied. Ports below 1024 need root \
+                 or the capability: sudo setcap cap_net_bind_service=+ep <path to quayel-gateway>. \
+                 Or listen on a port above 1024 instead of {}.",
+                addr, port
+            ))
+        }
+        _ => Ok(()),
+    }
 }
 
 fn start_background_tasks(state: &Arc<GatewayState>, bg_handle: &tokio::runtime::Handle) {

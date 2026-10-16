@@ -12,6 +12,8 @@ write entries for people running the gateway, not for people reading the diff.
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-10-16
+
 ### Changed
 
 - **The bundled demo and quickstart configs listen on ports 80 and 443**,
@@ -30,6 +32,12 @@ write entries for people running the gateway, not for people reading the diff.
 
 ### Fixed
 
+- **A port the gateway isn't allowed to open is a clear error.** Started
+  as a normal user on port 80 or 443, the gateway crashed with a Rust panic
+  (exit code 134). It now logs `Cannot listen on 0.0.0.0:80: permission
+  denied …` with the `setcap` fix and exits with code 1.
+- **UDP streams are no longer also logged as `TCP stream listening`** at
+  startup. Only the UDP socket was ever opened; the extra line was wrong.
 - **Load-balancer health checks now take unhealthy targets out.** The
   checks ran and logged `Target … is now unhealthy`, but requests kept going
   to that target until it recovered. Unhealthy targets now get no traffic,
@@ -535,7 +543,8 @@ Initial version (not published as a release): reverse proxy built on Pingora
 with IP intelligence, firewall rules, rate limiting, caching, load balancing,
 Auto-SSL and JSONL access logs.
 
-[Unreleased]: https://github.com/quayel/Quayel-Gateway/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/quayel/Quayel-Gateway/compare/v0.6.1...HEAD
+[0.6.1]: https://github.com/quayel/Quayel-Gateway/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/quayel/Quayel-Gateway/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/quayel/Quayel-Gateway/compare/v0.4.1...v0.5.0
 [0.4.1]: https://github.com/quayel/Quayel-Gateway/compare/v0.4.0...v0.4.1
