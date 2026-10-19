@@ -12,6 +12,21 @@ write entries for people running the gateway, not for people reading the diff.
 
 ## [Unreleased]
 
+## [0.6.2] - 2026-10-19
+
+### Fixed
+
+- **Auto-SSL can get certificates from Let's Encrypt again**
+  ([#12](https://github.com/quayel/Quayel-Gateway/issues/12)). Since 0.6.0
+  the certificate request carried rcgen's default subject
+  `CN=rcgen self signed cert`, so Let's Encrypt refused every order with
+  `Cannot issue for "rcgen self signed cert"` and the gateway kept serving
+  its self-signed fallback certificate. The request now has an empty subject
+  and names the domain only in its subjectAltName. No config change is
+  needed: failed attempts are only remembered in memory, so after the
+  upgrade's restart the next HTTPS request for each domain starts a new
+  order.
+
 ## [0.6.1] - 2026-10-16
 
 ### Changed
@@ -543,7 +558,8 @@ Initial version (not published as a release): reverse proxy built on Pingora
 with IP intelligence, firewall rules, rate limiting, caching, load balancing,
 Auto-SSL and JSONL access logs.
 
-[Unreleased]: https://github.com/quayel/Quayel-Gateway/compare/v0.6.1...HEAD
+[Unreleased]: https://github.com/quayel/Quayel-Gateway/compare/v0.6.2...HEAD
+[0.6.2]: https://github.com/quayel/Quayel-Gateway/compare/v0.6.1...v0.6.2
 [0.6.1]: https://github.com/quayel/Quayel-Gateway/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/quayel/Quayel-Gateway/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/quayel/Quayel-Gateway/compare/v0.4.1...v0.5.0

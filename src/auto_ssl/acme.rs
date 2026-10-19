@@ -235,17 +235,10 @@ impl AcmeClient {
             )));
         }
 
-        // Fresh ECDSA P-256 key per certificate; the CSR names only this domain.
-        let key = rcgen::KeyPair::generate()
-            .map_err(|e| AcmeError::CertificateFailed(format!("key generation: {}", e)))?;
-        let params = rcgen::CertificateParams::new(vec![domain.to_string()])
-            .map_err(|e| AcmeError::CertificateFailed(format!("invalid domain: {}", e)))?;
-        let csr = params
-            .serialize_request(&key)
-            .map_err(|e| AcmeError::CertificateFailed(format!("CSR: {}", e)))?;
+        let (key, csr) = build_csr(domain)?;
 
         order
-            .finalize_csr(csr.der())
+            .finalize_csr(&csr)
             .await
             .map_err(|e| AcmeError::OrderFailed(format!("finalize: {}", e)))?;
         let cert_pem = order
@@ -258,6 +251,23 @@ impl AcmeClient {
             key_pem: key.serialize_pem(),
         })
     }
+}
+
+/// Fresh ECDSA P-256 key and a DER CSR that names only `domain`.
+///
+/// rcgen fills in a default subject (`CN=rcgen self signed cert`), and
+/// Let's Encrypt rejects any CSR whose CN isn't one of the order's
+/// identifiers, so the subject is cleared and the domain lives in the SAN only.
+fn build_csr(domain: &str) -> Result<(rcgen::KeyPair, Vec<u8>), AcmeError> {
+    let key = rcgen::KeyPair::generate()
+        .map_err(|e| AcmeError::CertificateFailed(format!("key generation: {}", e)))?;
+    let mut params = rcgen::CertificateParams::new(vec![domain.to_string()])
+        .map_err(|e| AcmeError::CertificateFailed(format!("invalid domain: {}", e)))?;
+    params.distinguished_name = rcgen::DistinguishedName::new();
+    let csr = params
+        .serialize_request(&key)
+        .map_err(|e| AcmeError::CertificateFailed(format!("CSR: {}", e)))?;
+    Ok((key, csr.der().to_vec()))
 }
 
 /// One account file per ACME directory, so switching between staging,
@@ -304,6 +314,33 @@ mod tests {
         assert_ne!(a, b);
         assert_eq!(a, account_file(dir, LETS_ENCRYPT_PROD));
         assert!(a.to_string_lossy().starts_with("/tmp/x/acme-account-"));
+    }
+
+    /// Regression for #12: the CSR must carry no subject (rcgen's default CN
+    /// made Let's Encrypt reject every order) and exactly one SAN, the domain.
+    #[test]
+    fn csr_names_only_the_domain() {
+        use x509_parser::certification_request::X509CertificationRequest;
+        use x509_parser::extensions::{GeneralName, ParsedExtension};
+        use x509_parser::prelude::FromDer;
+
+        let (_key, der) = build_csr("app.example.com").unwrap();
+        let (_, req) = X509CertificationRequest::from_der(&der).unwrap();
+        let info = &req.certification_request_info;
+        assert_eq!(info.subject.iter_attributes().count(), 0, "subject: {}", info.subject);
+
+        let mut sans = Vec::new();
+        for ext in req.requested_extensions().into_iter().flatten() {
+            if let ParsedExtension::SubjectAlternativeName(san) = ext {
+                for name in &san.general_names {
+                    match name {
+                        GeneralName::DNSName(d) => sans.push(d.to_string()),
+                        other => panic!("unexpected SAN {:?}", other),
+                    }
+                }
+            }
+        }
+        assert_eq!(sans, vec!["app.example.com"]);
     }
 
     /// Talks to the real Let's Encrypt staging server, so it's opt-in:
