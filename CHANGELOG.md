@@ -16,9 +16,9 @@ write entries for people running the gateway, not for people reading the diff.
 
 ### Fixed
 
-- **Auto-SSL can get certificates from Let's Encrypt again**
-  ([#12](https://github.com/quayel/Quayel-Gateway/issues/12)). Since 0.6.0
-  the certificate request carried rcgen's default subject
+- **Auto-SSL now gets certificates from Let's Encrypt**
+  ([#12](https://github.com/quayel/Quayel-Gateway/issues/12)). In every
+  earlier release the certificate request carried rcgen's default subject
   `CN=rcgen self signed cert`, so Let's Encrypt refused every order with
   `Cannot issue for "rcgen self signed cert"` and the gateway kept serving
   its self-signed fallback certificate. The request now has an empty subject
