@@ -90,7 +90,7 @@ flate2 = "1"
 urlencoding = "2"
 
 # Auto-SSL — certificate generation + parsing (pure Rust, no OpenSSL)
-rcgen = "0.13"
+rcgen = "0.14"
 # ACME v2 client (JWS signing, nonces, account keys). ring backend to match rustls.
 instant-acme = { version = "0.8", default-features = false, features = ["ring", "hyper-rustls"] }
 x509-parser = "0.16"
