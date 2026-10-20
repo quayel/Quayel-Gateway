@@ -48,7 +48,7 @@ dashmap = "6"
 parking_lot = "0.12"
 
 # Random request IDs (X-QG-Request-Id)
-rand = "0.8"
+rand = "0.10"
 
 # Integer formatting for the access log writer
 itoa = "1"
