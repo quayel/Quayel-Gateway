@@ -20,10 +20,12 @@
 #                                  session cap, real DNS through the proxy
 #  13. lb-health.py               load-balancer health checks, req.scheme and
 #                                  X-Forwarded-Proto on HTTP / HTTPS
-#  14. auto-ssl.py                 ACME issuance against Pebble (needs Docker)
-#  15. sinks.py                    log sinks + /metrics against ClickHouse, Loki,
+#  14. routing.py                 host over HTTP/2, unmatched requests (404),
+#                                  targets that don't resolve (needs curl)
+#  15. auto-ssl.py                 ACME issuance against Pebble (needs Docker)
+#  16. sinks.py                    log sinks + /metrics against ClickHouse, Loki,
 #                                  OTel Collector, Prometheus (needs Docker)
-#  16. grpc.py                     HTTP/2 + gRPC: h2c/h2 in and out, streaming,
+#  17. grpc.py                     HTTP/2 + gRPC: h2c/h2 in and out, streaming,
 #                                  gRPC error statuses (needs Docker)
 #
 # Each suite prints its own PASS/FAIL list; a summary per suite is at the end.
@@ -58,6 +60,7 @@ run "tcp-proxy"          env BIN="$BIN" python3 scripts/test/tcp-proxy.py
 run "sni-routing"        env BIN="$BIN" python3 scripts/test/sni-routing.py
 run "udp-proxy"          env BIN="$BIN" python3 scripts/test/udp-proxy.py
 run "lb-health"          env BIN="$BIN" python3 scripts/test/lb-health.py
+run "routing"            env BIN="$BIN" python3 scripts/test/routing.py
 if command -v docker >/dev/null && docker info >/dev/null 2>&1; then
     run "auto-ssl"       env BIN="$BIN" python3 scripts/test/auto-ssl.py
     run "sinks"          env BIN="$BIN" python3 scripts/test/sinks.py

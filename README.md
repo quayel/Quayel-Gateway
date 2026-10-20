@@ -249,7 +249,7 @@ docker run --rm -p 80:80 -p 443:443 \
   quayel/quayel-gateway
 ```
 
-Also on GitHub's registry as `ghcr.io/quayel/quayel-gateway`. Tags: `:latest`, `:0.6.2`, `:0.6`. For a production-style setup with HTTPS on ports 80/443 and saved certificates, use `docker compose up -d` with the included [`docker-compose.yml`](docker-compose.yml).
+Also on GitHub's registry as `ghcr.io/quayel/quayel-gateway`. Tags: `:latest`, `:0.6.3`, `:0.6`. For a production-style setup with HTTPS on ports 80/443 and saved certificates, use `docker compose up -d` with the included [`docker-compose.yml`](docker-compose.yml).
 
 <details>
 <summary><b>Auto-SSL in Docker</b></summary>
@@ -264,7 +264,7 @@ To build the image yourself, run `docker build -t quayel-gateway .`. The build d
 ### `.deb` package (Ubuntu / Debian)
 
 ```bash
-VERSION=0.6.2
+VERSION=0.6.3
 ARCH=$(dpkg --print-architecture)  # amd64 or arm64
 curl -LO https://github.com/quayel/Quayel-Gateway/releases/download/v$VERSION/quayel-gateway_${VERSION}_$ARCH.deb
 sudo apt install ./quayel-gateway_${VERSION}_$ARCH.deb
@@ -291,7 +291,7 @@ Follow the logs with `journalctl -u quayel-gateway -f`. To upgrade, install the 
 ### Linux binary
 
 ```bash
-VERSION=v0.6.2
+VERSION=v0.6.3
 ARCH=x86_64                        # or aarch64
 curl -LO https://github.com/quayel/Quayel-Gateway/releases/download/$VERSION/quayel-gateway-$VERSION-$ARCH-unknown-linux-gnu.tar.gz
 tar xzf quayel-gateway-$VERSION-$ARCH-unknown-linux-gnu.tar.gz

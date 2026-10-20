@@ -12,6 +12,41 @@ write entries for people running the gateway, not for people reading the diff.
 
 ## [Unreleased]
 
+## [0.6.3] - 2026-10-20
+
+### Security
+
+- **HTTP/2 requests are now routed by their host and can no longer spoof
+  the client IP** ([#14](https://github.com/quayel/Quayel-Gateway/issues/14)).
+  The host was read only from the `Host` header, but HTTP/2 clients send
+  `:authority`, so over HTTP/2 no `req.host` route or rule matched. The
+  request then went to the default upstream `127.0.0.1:80`, which is the
+  gateway's own HTTP listener, and was handled a second time with
+  `127.0.0.1` as the client. On that second pass IP rules and per-IP rate
+  limits saw `127.0.0.1`, and because loopback is a trusted proxy, a
+  client-supplied `client_ip.header` (such as `CF-Connecting-IP`) was
+  believed. Affects every release with HTTP/2 on (0.5.0 to 0.6.2); the
+  workaround was `server.http2: false`. The host now comes from
+  `:authority` (or an absolute request URI) first, then `Host`.
+
+### Changed
+
+- **A request that matches no load balancer gets `404 {"error":"no_route"}`**
+  from the gateway. Before, it was proxied to `127.0.0.1:80`, which the docs
+  never described and which is how #14 could loop back into the gateway. If
+  you relied on that, add a catch-all load balancer with no conditions.
+
+### Fixed
+
+- **A target whose hostname doesn't resolve no longer crashes the gateway**
+  ([#13](https://github.com/quayel/Quayel-Gateway/issues/13)). Pingora's
+  peer constructor panicked on a failed DNS lookup, so a stopped Docker
+  container in one pool restarted the whole gateway on every request routed
+  to it, taking down every site. The lookup now happens first (with the
+  `upstream_connect_secs` timeout) and a failure is a `502` for that request,
+  logged as `cannot resolve upstream <host>:<port>`. An
+  `accepts_connections` health check takes such a target out of the pool.
+
 ## [0.6.2] - 2026-10-19
 
 ### Fixed
@@ -558,7 +593,8 @@ Initial version (not published as a release): reverse proxy built on Pingora
 with IP intelligence, firewall rules, rate limiting, caching, load balancing,
 Auto-SSL and JSONL access logs.
 
-[Unreleased]: https://github.com/quayel/Quayel-Gateway/compare/v0.6.2...HEAD
+[Unreleased]: https://github.com/quayel/Quayel-Gateway/compare/v0.6.3...HEAD
+[0.6.3]: https://github.com/quayel/Quayel-Gateway/compare/v0.6.2...v0.6.3
 [0.6.2]: https://github.com/quayel/Quayel-Gateway/compare/v0.6.1...v0.6.2
 [0.6.1]: https://github.com/quayel/Quayel-Gateway/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/quayel/Quayel-Gateway/compare/v0.5.0...v0.6.0

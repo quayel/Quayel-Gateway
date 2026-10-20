@@ -607,7 +607,11 @@ never includes the query string.
 - The gateway returns `502` (empty body) when a target refuses the connection before
   health checks have noticed (there is no retry to another target), and
   `503 {"error":"no_healthy_upstream"}` once health checks have marked every target in the
-  pool down. A request that matches no load balancer gets `404 {"error":"Not Found"}`.
+  pool down. A request that matches no load balancer gets `404 {"error":"no_route"}`
+  (0.6.3+; before that it was proxied to `127.0.0.1:80`).
+- A target whose hostname doesn't resolve gets `502` for the requests sent to it (0.6.3+;
+  before that the gateway panicked). Add an `accepts_connections` health check so the
+  pool stops picking it.
 - **Client IP behind a proxy:** set `client_ip` *and* make sure the proxy's IP is in
   `trusted_proxies` (the default covers private ranges, loopback and Cloudflare). Otherwise
   every request appears to come from the proxy.

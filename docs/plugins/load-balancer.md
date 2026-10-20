@@ -459,7 +459,8 @@ The gateway adds these headers to upstream requests:
 ## Notes
 
 - Multiple load balancers are evaluated in order — first match wins
-- If no load balancer matches, the request has no upstream target (will fail)
+- If no load balancer matches, the gateway answers `404 {"error": "no_route"}` (0.6.3+; earlier versions proxied it to `127.0.0.1:80`)
+- A target hostname is looked up for each request. If the lookup fails (for example a stopped Docker container), that request gets `502`; add a health check so the pool stops picking the target (0.6.3+; earlier versions panicked)
 - Connection counts are per-gateway-instance (not distributed)
 - Health checks run in a background task (when enabled)
 - The `503` response for no healthy upstream is: `{"error": "no_healthy_upstream"}`

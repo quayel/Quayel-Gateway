@@ -358,10 +358,7 @@ impl ProxyHttp for QuayelGateway {
             &mut ctx.client_ip_source,
             config.client_ip.header.as_deref().unwrap_or("peer_ip"),
         );
-        set_opt_arc_str(
-            &mut ctx.host,
-            raw_headers.get("host").and_then(|v| v.to_str().ok()),
-        );
+        set_opt_arc_str(&mut ctx.host, request_host(session.req_header()));
         set_arc_str(
             &mut ctx.path,
             session
@@ -487,6 +484,23 @@ impl ProxyHttp for QuayelGateway {
                 send_gateway_response(session, &resp, ctx, transform).await?;
                 Ok(true)
             }
+            // No load balancer matched, so there is nowhere to send it. Answer
+            // here: proxying it to a default address could loop back through
+            // the gateway with 127.0.0.1 as the trusted client (#14).
+            PluginFlow::Continue if ctx.load_balancer.target_host.is_none() => {
+                ctx.termination_phase = Some(TerminationPhase::LoadBalancer);
+                ctx.status_code = Some(404);
+                let resp = GatewayResponse {
+                    status: 404,
+                    headers: Arc::new(vec![(
+                        "content-type".to_string(),
+                        "application/json".to_string(),
+                    )]),
+                    body: Bytes::from_static(b"{\"error\":\"no_route\"}"),
+                };
+                send_gateway_response(session, &resp, ctx, None).await?;
+                Ok(true)
+            }
             PluginFlow::Continue => Ok(false),
         }
     }
@@ -532,12 +546,26 @@ impl ProxyHttp for QuayelGateway {
         _session: &mut Session,
         ctx: &mut Self::CTX,
     ) -> pingora_core::Result<Box<HttpPeer>> {
-        let target_host = ctx
-            .load_balancer
-            .target_host
-            .clone()
-            .unwrap_or_else(|| Arc::from("127.0.0.1"));
+        // request_filter answers requests no load balancer matched, so this is
+        // always set here.
+        let target_host = ctx.load_balancer.target_host.clone().ok_or_else(|| {
+            pingora_error::Error::explain(pingora_error::ErrorType::HTTPStatus(404), "no route")
+        })?;
         let target_port = ctx.load_balancer.target_port.unwrap_or(80);
+        let config = self.state.config.load();
+        let server = &config.server;
+        let lookup_timeout = server
+            .upstream_connect_timeout
+            .unwrap_or(Duration::from_secs(5));
+        let addr = resolve_target(&target_host, target_port, lookup_timeout)
+            .await
+            .ok_or_else(|| {
+                pingora_error::Error::explain(
+                    pingora_error::ErrorType::ConnectNoRoute,
+                    format!("cannot resolve upstream {target_host}:{target_port}"),
+                )
+                .into_up()
+            })?;
         let target_protocol = ctx
             .load_balancer
             .target_protocol
@@ -549,11 +577,11 @@ impl ProxyHttp for QuayelGateway {
         let tls = matches!(target_protocol.as_ref(), "https" | "h2");
         let mut peer = if tls {
             let sni = resolve_upstream_sni(&target_host, tls_sni.as_deref(), ctx.host.as_deref());
-            let mut peer = HttpPeer::new((target_host.as_ref(), target_port), true, sni);
+            let mut peer = HttpPeer::new(addr, true, sni);
             peer.options.verify_cert = tls_verify;
             peer
         } else {
-            HttpPeer::new((target_host.as_ref(), target_port), false, String::new())
+            HttpPeer::new(addr, false, String::new())
         };
         // h2c / h2 targets: HTTP/2 only (prior knowledge without TLS, ALPN h2
         // with it), with many requests multiplexed on one connection.
@@ -562,8 +590,6 @@ impl ProxyHttp for QuayelGateway {
             peer.options.max_h2_streams = H2_UPSTREAM_STREAMS;
         }
         // server.timeouts.upstream_*
-        let config = self.state.config.load();
-        let server = &config.server;
         peer.options.connection_timeout = server.upstream_connect_timeout;
         peer.options.total_connection_timeout = server.upstream_total_connect_timeout;
         peer.options.read_timeout = if ctx.upgrade || ctx.grpc {
@@ -1347,6 +1373,37 @@ fn set_arc_str(slot: &mut Arc<str>, value: &str) {
 
 /// Like `set_arc_str`, for optional fields.
 #[inline]
+/// The request's host as the client sent it (with `:port` if given). HTTP/2
+/// clients send it as `:authority`, which Pingora puts in the URI, and
+/// HTTP/1.1 clients usually only in `Host`. The URI wins when both are set,
+/// as RFC 9113 §8.3.1 and RFC 9112 §3.2.2 require.
+fn request_host(req: &pingora_http::RequestHeader) -> Option<&str> {
+    req.uri
+        .authority()
+        // drop deprecated "user@" userinfo
+        .map(|a| a.as_str().rsplit('@').next().unwrap_or(a.as_str()))
+        .or_else(|| req.headers.get("host").and_then(|v| v.to_str().ok()))
+}
+
+/// Resolve a load balancer target to one address. An IP literal needs no
+/// lookup. A failed or slow lookup is `None` (a 502), never a panic: Pingora's
+/// `HttpPeer::new((host, port), ..)` unwraps the lookup itself.
+async fn resolve_target(
+    host: &str,
+    port: u16,
+    timeout: Duration,
+) -> Option<std::net::SocketAddr> {
+    let bare = host.trim_start_matches('[').trim_end_matches(']');
+    if let Ok(ip) = bare.parse::<std::net::IpAddr>() {
+        return Some(std::net::SocketAddr::new(ip, port));
+    }
+    tokio::time::timeout(timeout, tokio::net::lookup_host((bare, port)))
+        .await
+        .ok()?
+        .ok()?
+        .next()
+}
+
 fn set_opt_arc_str(slot: &mut Option<Arc<str>>, value: Option<&str>) {
     match (slot.as_deref(), value) {
         (Some(cur), Some(new)) if cur == new => {}
@@ -1532,5 +1589,36 @@ mod tests {
         )
         .unwrap();
         assert!(crate::config::compiler::compile_config(&raw).is_err());
+    }
+
+    // #14: HTTP/2 sends the host as :authority (in the URI), not Host.
+    #[test]
+    fn request_host_prefers_uri_authority() {
+        let mut h2 = pingora_http::RequestHeader::build("GET", b"/x", None).unwrap();
+        h2.set_uri("https://api.example.com:8443/x".parse().unwrap());
+        assert_eq!(request_host(&h2), Some("api.example.com:8443"));
+        h2.insert_header("host", "other.example").unwrap();
+        assert_eq!(request_host(&h2), Some("api.example.com:8443"));
+
+        let mut h1 = pingora_http::RequestHeader::build("GET", b"/x", None).unwrap();
+        assert_eq!(request_host(&h1), None);
+        h1.insert_header("host", "site.example").unwrap();
+        assert_eq!(request_host(&h1), Some("site.example"));
+    }
+
+    // #13: an unresolvable target is None (a 502), not a panic.
+    #[tokio::test]
+    async fn resolve_target_never_panics() {
+        let t = Duration::from_secs(5);
+        assert_eq!(
+            resolve_target("10.0.0.5", 8080, t).await,
+            Some("10.0.0.5:8080".parse().unwrap())
+        );
+        assert_eq!(
+            resolve_target("[::1]", 80, t).await,
+            Some("[::1]:80".parse().unwrap())
+        );
+        assert!(resolve_target("localhost", 80, t).await.is_some());
+        assert_eq!(resolve_target("no-such-host.invalid", 80, t).await, None);
     }
 }
