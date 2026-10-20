@@ -2086,7 +2086,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "urlencoding",
- "x509-parser 0.16.0",
+ "x509-parser 0.18.1",
 ]
 
 [[package]]
