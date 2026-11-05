@@ -12,6 +12,26 @@ write entries for people running the gateway, not for people reading the diff.
 
 ## [Unreleased]
 
+### Security
+
+- **The Docker image now runs the gateway as a non-root user** (`quayel`,
+  UID 10001) ([#29](https://github.com/quayel/Quayel-Gateway/issues/29)).
+  The image previously ran as root. The binary gets `cap_net_bind_service`,
+  so it can still bind ports 80 and 443. `/var/lib/quayel` and
+  `/var/log/quayel` are owned by that user.
+  **Upgrading:** a volume or host directory that was populated while the
+  image ran as root keeps root ownership, and the gateway cannot write ACME
+  state into it. Before you start the new image, run
+  `chown -R 10001:10001` on the mounted directory (for example
+  `/var/lib/quayel/certs` or `./logs`). A new named volume needs no change.
+  Binding 80/443 relies on the file capability, which Docker's
+  `--cap-drop ALL` removes and `--security-opt no-new-privileges` blocks. Do
+  not use either flag for this image, or bind high ports and map them.
+- **The Docker image defaults to Let's Encrypt staging.** The image's
+  built-in config sets `auto_ssl.staging` to `true`, so a fresh container
+  gets untrusted staging certificates until you mount your own config with
+  `staging: false`. The release archives and the `.deb` are unchanged.
+
 ## [0.6.3] - 2026-10-20
 
 ### Security
